@@ -1,5 +1,6 @@
 import { TerminalPane } from './terminal-pane';
 import { openNewSessionDialog } from './new-session-dialog';
+import { openAdoptDialog } from './adopt-dialog';
 import type {
   AgentKind,
   SessionSnapshot,
@@ -29,6 +30,7 @@ export class App {
   private panes = new Map<string, TerminalPane>();
   private activeId: string | null = null;
   private lastCwd: string | null = null;
+  private notice: string | null = null;
   private adapters: import('../shared/types').AdapterStatus | null = null;
 
   private el = {
@@ -59,6 +61,7 @@ export class App {
     });
 
     menu.on('new-session', () => void this.promptNewSession());
+    menu.on('import-sessions', () => void this.promptAdopt());
     menu.on('close-tab', () => this.activeId && this.closeTab(this.activeId));
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
     menu.on('stop', () => this.activeId && void api.killSession(this.activeId));
@@ -125,18 +128,54 @@ export class App {
     this.render();
   }
 
+  /**
+   * Wireframe C18. Adopts sessions running elsewhere: daemon-hosted ones get
+   * a real terminal, the rest become live status rows.
+   */
+  async promptAdopt(): Promise<void> {
+    const picked = await openAdoptDialog();
+    if (!picked?.length) return;
+    for (const d of picked) {
+      const snapshot =
+        d.adoptMode === 'attach'
+          ? await api.attachSession(d)
+          : await api.monitorSession(d);
+      this.sessions.set(snapshot.id, snapshot);
+      this.activeId = snapshot.id;
+    }
+    this.render();
+  }
+
+  /** Raises the OS window owning a session we cannot render. */
+  private async revealExternal(s: SessionSnapshot): Promise<void> {
+    if (s.pid === null) return;
+    const result = await api.focusExternal(s.pid);
+    if (!result.ok && result.reason) {
+      this.notice = result.reason;
+      this.render();
+    }
+  }
+
   private select(id: string): void {
+    const session = this.sessions.get(id);
+    // A monitored session has no terminal here, so selecting it means going
+    // to where it actually lives.
+    if (session?.origin === 'monitored') void this.revealExternal(session);
     if (this.activeId === id) return;
+    this.notice = null;
     this.activeId = id;
     this.render();
   }
 
   /** Closing a tab detaches the view; it never destroys work. */
   private closeTab(id: string): void {
+    const session = this.sessions.get(id);
     const pane = this.panes.get(id);
     pane?.dispose();
     this.panes.delete(id);
+    // A monitored session is someone else's process: forget it, never kill it.
     void api.removeSession(id);
+    if (session?.origin === 'monitored') this.notice = null;
     this.sessions.delete(id);
     if (this.activeId === id) {
       this.activeId = [...this.sessions.keys()][0] ?? null;
@@ -211,6 +250,10 @@ export class App {
           text('span', s.activity ?? shortCwd(s.cwd), 'activity'),
         );
         row.append(dot(s.status), stack);
+        if (s.origin === 'monitored') {
+          row.append(text('span', '↗', 'external-mark'));
+          row.classList.add('is-external');
+        }
         row.title = `${s.cwd}\n${s.activity ?? ''}`.trim();
         row.onclick = () => this.select(s.id);
         list.append(row);
@@ -237,6 +280,11 @@ export class App {
       text('span', active.cwd, 'branch'),
     );
 
+    if (active.origin === 'monitored') {
+      host.replaceChildren(this.externalPane(active));
+      return;
+    }
+
     let pane = this.panes.get(active.id);
     if (!pane) {
       pane = new TerminalPane(active);
@@ -244,6 +292,37 @@ export class App {
     }
     host.replaceChildren();
     pane.mount(host);
+  }
+
+  /**
+   * Shown in place of a terminal for a monitored session. States plainly why
+   * there is no terminal rather than looking broken.
+   */
+  private externalPane(s: SessionSnapshot): HTMLElement {
+    const wrap = div('external');
+    const h = document.createElement('h2');
+    h.textContent = s.label;
+    wrap.append(h);
+
+    wrap.append(text('div', s.cwd, 'external-cwd'));
+    if (s.activity) wrap.append(text('div', s.activity, 'external-summary'));
+
+    const why = document.createElement('p');
+    why.textContent =
+      'This session runs in another terminal. Its pseudo-terminal belongs to that app, so it cannot be drawn here — but its status stays live, and you can jump to it.';
+    wrap.append(why);
+
+    const row = div('row');
+    row.append(
+      button('Reveal its window', 'primary', () => void this.revealExternal(s)),
+      button('Stop tracking', 'ghost', () => this.closeTab(s.id)),
+    );
+    wrap.append(row);
+
+    if (this.notice) {
+      wrap.append(text('div', this.notice, 'external-notice'));
+    }
+    return wrap;
   }
 
   private emptyState(): HTMLElement {
@@ -256,6 +335,7 @@ export class App {
     const row = div('row');
     row.append(
       button('New session…', 'primary', () => void this.promptNewSession()),
+      button('Import running sessions…', '', () => void this.promptAdopt()),
     );
     wrap.append(h, p, row);
     return wrap;

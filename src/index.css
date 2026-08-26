@@ -266,3 +266,48 @@ input.field:focus { outline: none; border-color: var(--accent); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sb-row.active .sb-stack .activity { color: var(--ink-2); }
+
+/* ---------- adopt dialog (wireframe C18) ---------- */
+.dialog.wide { width: 620px; }
+.adopt-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+.adopt-empty { font-size: 11px; color: var(--muted); line-height: 1.6; padding: 12px 0; }
+.adopt-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.adopt-row:hover { border-color: var(--accent); }
+.adopt-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.adopt-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.adopt-name { font-size: 12px; font-weight: 600; }
+.adopt-summary { font-size: 11px; color: var(--ink-2); line-height: 1.45; }
+.adopt-cwd { font-family: var(--font-mono); font-size: 9px; color: var(--muted); }
+.adopt-why { font-size: 10px; color: var(--muted); line-height: 1.5; }
+.minichip {
+  font-size: 8px; font-weight: 700; letter-spacing: 0.4px;
+  padding: 2px 5px; border-radius: 3px;
+  background: var(--surface-2); color: var(--ink-2);
+}
+.minichip.ok { background: var(--ok-soft); color: var(--ok); }
+.minichip.warn { background: var(--warn-soft); color: var(--warn); }
+
+/* ---------- external session pane ---------- */
+.external {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  background: var(--surface); text-align: center; padding: 32px;
+}
+.external h2 { margin: 0; font-size: 19px; letter-spacing: -0.3px; }
+.external-cwd { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.external-summary {
+  font-size: 12px; color: var(--ink); max-width: 460px;
+  line-height: 1.5; font-style: italic;
+}
+.external p { margin: 6px 0 4px; font-size: 12px; color: var(--ink-2); max-width: 440px; line-height: 1.6; }
+.external .row { display: flex; gap: 8px; margin-top: 4px; }
+.external-notice {
+  margin-top: 8px; font-size: 11px; color: var(--warn);
+  background: var(--warn-soft); padding: 8px 12px; border-radius: 5px; max-width: 440px;
+}
+.external-mark { font-size: 10px; color: var(--muted); flex: none; }
+.sb-row.is-external .name { font-style: italic; }

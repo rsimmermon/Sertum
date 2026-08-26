@@ -36,6 +36,8 @@ Phase 01 (de-risking) and folder selection are done and verified:
       git validation, recent folders, and auto-derived tab labels
 - [x] **Plane 2 for Claude Code** — loopback hook endpoint, per-session binding,
       status and activity driven by real agent events
+- [x] **Adopting sessions started elsewhere** — discovery, transcript
+      summaries, and raising the owning OS window
 - [ ] Plane 2 for Codex (app-server JSON-RPC) — next
 - [ ] Split views (wireframes G1–G8)
 - [ ] Worktree management (C9), diff review (C11), settings (E1–E7)
@@ -67,6 +69,42 @@ Observed transitions for one real turn (`uname -a`), all hook-driven:
 The dot moves because the agent said so — never because output went quiet.
 Late events for an exited process are ignored, so a dead session's dot cannot
 be resurrected.
+
+## Adopting sessions started outside the app
+
+A PTY's master file descriptor belongs to whoever spawned it. A session started
+in iTerm2 therefore **cannot** have its terminal rendered here — no OS offers a
+way to take that over. This is why tmux exists, and it is a constraint rather
+than a missing feature.
+
+What is possible splits in two, and the UI says which you are getting:
+
+| Session | Listed | Summary | Status | Terminal here | Raise its window |
+|---|---|---|---|---|---|
+| `claude --bg` (daemon-hosted) | ✓ | ✓ | ✓ | ✓ `claude attach` | n/a |
+| Interactive claude in another terminal | ✓ | ✓ | ✓ polled | ✗ | ✓ |
+| Codex in another terminal | ✓ | ✓ | ✓ polled | ✗ | ✓ |
+| Started inside tmux | ✓ | ✓ | ✓ | ✓ (planned) | ✓ |
+
+Clicking a monitored row raises the exact terminal tab that owns it. On macOS
+the tab is matched by controlling tty, so a window with ten tabs still lands on
+the right one; other platforms fall back to activating the app, and unsupported
+ones say so instead of failing quietly.
+
+Discovery is agent-agnostic by construction. `AgentDiscoverer` implementations
+are tried richest-first and merged by pid:
+
+- **claude** — `claude agents --json` gives session id, name and live status
+- **process scan** — walks the process table for any known agent binary, so
+  Codex works today with no vendor API; adding an agent is one row in
+  `AGENT_COMMANDS`
+
+Summaries come from each agent's own transcript, which is on disk regardless of
+who owns the process — `~/.claude/projects/**/<id>.jsonl` and
+`~/.codex/sessions/**/rollout-*.jsonl`. Only the tail is read.
+
+When the Codex app-server adapter lands it becomes a richer discoverer
+registered ahead of the process scan; nothing downstream changes.
 
 ## Running
 
@@ -104,11 +142,16 @@ src/
   main/workspace.ts           Folder validation, git/worktree detection
   main/hook-server.ts         Plane 2 ingress — loopback HTTP, per-session URLs
   main/adapters/claude.ts     Hook settings builder + event to status mapping
+  main/adapters/discovery.ts  Agent-agnostic discoverer registry
+  main/adapters/process-scan.ts  Universal agent-process scanner
+  main/adapters/transcript.ts    Per-agent transcript summaries
+  main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
   shared/types.ts             Contracts shared across processes
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
   renderer/terminal-pane.ts   One xterm bound to one PTY
   renderer/new-session-dialog.ts  Wireframe C1
+  renderer/adopt-dialog.ts        Wireframe C18
 scripts/
   smoke-pty.js                Headless PTY test
   drive.js                    CDP driver for headless verification

@@ -21,7 +21,8 @@ export type SpawnDecorator = (
 
 interface Session {
   snapshot: SessionSnapshot;
-  proc: IPty;
+  /** Absent for monitored sessions: they run in someone else's terminal. */
+  proc?: IPty;
 }
 
 const DEFAULT_COLS = 120;
@@ -68,6 +69,8 @@ export class PtyManager extends EventEmitter {
     const snapshot: SessionSnapshot = {
       ...resolved,
       id,
+      origin: 'owned',
+      externalId: null,
       status: 'working',
       pid: proc.pid,
       startedAt: Date.now(),
@@ -95,6 +98,83 @@ export class PtyManager extends EventEmitter {
   }
 
   /**
+   * Registers a session running in another terminal. There is no PTY to own:
+   * the OS gives its master fd to whoever spawned it, so this is a live status
+   * row rather than a terminal.
+   */
+  registerMonitored(input: {
+    label: string;
+    agent: SessionSpec['agent'];
+    cwd: string;
+    externalId: string;
+    pid: number | null;
+    status: SessionStatus;
+  }): SessionSnapshot {
+    const existing = [...this.sessions.values()].find(
+      (s) => s.snapshot.externalId === input.externalId,
+    );
+    if (existing) return { ...existing.snapshot };
+
+    const snapshot: SessionSnapshot = {
+      id: randomUUID(),
+      origin: 'monitored',
+      externalId: input.externalId,
+      label: input.label,
+      agent: input.agent,
+      cwd: input.cwd,
+      command: '',
+      args: [],
+      status: input.status,
+      pid: input.pid,
+      startedAt: Date.now(),
+      exitCode: null,
+      activity: 'running in another terminal',
+      lastEventAt: Date.now(),
+    };
+    this.sessions.set(snapshot.id, { snapshot });
+    this.emit('session-updated', { ...snapshot });
+    return { ...snapshot };
+  }
+
+  /** Refreshes monitored rows from a discovery sweep. */
+  syncMonitored(
+    seen: Array<{ externalId: string; status: SessionStatus }>,
+  ): void {
+    const byId = new Map(seen.map((s) => [s.externalId, s]));
+    for (const session of this.sessions.values()) {
+      const snap = session.snapshot;
+      if (snap.origin !== 'monitored' || !snap.externalId) continue;
+      const hit = byId.get(snap.externalId);
+      if (!hit) {
+        if (snap.status !== 'done') {
+          snap.status = 'done';
+          snap.activity = 'no longer running';
+          this.emit('session-updated', { ...snap });
+        }
+        continue;
+      }
+      if (hit.status !== snap.status) {
+        snap.status = hit.status;
+        snap.activity =
+          hit.status === 'working' ? 'working' : 'idle in another terminal';
+        snap.lastEventAt = Date.now();
+        this.emit('session-updated', { ...snap });
+      }
+    }
+  }
+
+  /** Pids of sessions we spawned, so discovery can exclude them. */
+  ownedPids(): Set<number> {
+    const pids = new Set<number>();
+    for (const s of this.sessions.values()) {
+      if (s.snapshot.origin === 'owned' && s.snapshot.pid !== null) {
+        pids.add(s.snapshot.pid);
+      }
+    }
+    return pids;
+  }
+
+  /**
    * Applies a plane 2 status update. Ignored once the process has exited --
    * a late hook must not resurrect a dead session's dot.
    */
@@ -104,7 +184,9 @@ export class PtyManager extends EventEmitter {
   ): SessionSnapshot | null {
     const session = this.sessions.get(id);
     if (!session) return null;
-    if (session.snapshot.pid === null) return null;
+    if (session.snapshot.origin === 'owned' && session.snapshot.pid === null) {
+      return null;
+    }
     if (!update.status && !update.activity) return null;
 
     if (update.status) session.snapshot.status = update.status;
@@ -116,12 +198,12 @@ export class PtyManager extends EventEmitter {
   }
 
   write(id: string, data: string): void {
-    this.sessions.get(id)?.proc.write(data);
+    this.sessions.get(id)?.proc?.write(data);
   }
 
   resize(id: string, { cols, rows }: PtySize): void {
     const session = this.sessions.get(id);
-    if (!session || session.snapshot.pid === null) return;
+    if (!session?.proc || session.snapshot.pid === null) return;
     // xterm can report 0 mid-layout; a 0-column PTY throws on some platforms.
     if (cols < 1 || rows < 1) return;
     try {
@@ -133,7 +215,7 @@ export class PtyManager extends EventEmitter {
 
   kill(id: string): void {
     const session = this.sessions.get(id);
-    if (!session) return;
+    if (!session?.proc) return;
     try {
       session.proc.kill();
     } catch {

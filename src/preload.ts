@@ -27,6 +27,10 @@ const api: AgentStationApi = {
   inspectDirectory: (dir: string) =>
     ipcRenderer.invoke('workspace:inspect', dir),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),
+  discoverSessions: () => ipcRenderer.invoke('discovery:list'),
+  attachSession: (d) => ipcRenderer.invoke('discovery:attach', d),
+  monitorSession: (d) => ipcRenderer.invoke('discovery:monitor', d),
+  focusExternal: (pid: number) => ipcRenderer.invoke('discovery:focus', pid),
   write: (id, data) => ipcRenderer.send('pty:input', { id, data }),
   resize: (id, size: PtySize) =>
     ipcRenderer.send('pty:resize', { id, ...size }),

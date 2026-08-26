@@ -5,6 +5,9 @@ import { PtyManager } from './main/pty-manager';
 import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
 import { buildClaudeSettings, mapClaudeHook } from './main/adapters/claude';
+import { discoverSessions } from './main/adapters/discovery';
+import { focusExternalSession } from './main/adapters/window-focus';
+import type { DiscoveredSession, SessionStatus } from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
 
 if (started) app.quit();
@@ -84,6 +87,36 @@ ipcMain.handle('session:list', () => ptys.list());
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
 ipcMain.handle('session:remove', (_e, id: string) => ptys.remove(id));
 ipcMain.handle('workspace:default-cwd', () => defaultCwd());
+ipcMain.handle('discovery:list', () => discoverSessions(ptys.ownedPids()));
+ipcMain.handle('discovery:focus', (_e, pid: number) =>
+  focusExternalSession(pid),
+);
+
+/**
+ * Daemon-hosted sessions can have a real terminal opened onto them, because
+ * the supervisor -- not another terminal emulator -- owns the PTY.
+ */
+ipcMain.handle('discovery:attach', (_e, d: DiscoveredSession) =>
+  ptys.create({
+    label: d.name,
+    agent: d.agent,
+    cwd: d.cwd || defaultCwd(),
+    command: 'claude',
+    args: ['attach', d.sessionId],
+  }),
+);
+
+ipcMain.handle('discovery:monitor', (_e, d: DiscoveredSession) =>
+  ptys.registerMonitored({
+    label: d.name,
+    agent: d.agent,
+    cwd: d.cwd,
+    externalId: d.sessionId,
+    pid: d.pid,
+    status: d.status,
+  }),
+);
+
 ipcMain.handle('adapters:status', () => ({
   claude: { connected: hooks.port > 0, port: hooks.port, events: hooks.eventCount },
 }));
@@ -114,6 +147,7 @@ app.on('ready', async () => {
     console.error('[agentstation] hook server failed to start:', err);
   }
   buildMenu();
+  startMonitorPolling();
   createWindow();
 });
 
@@ -121,7 +155,30 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+/**
+ * Monitored sessions emit no hooks to us -- they were not spawned with our
+ * settings -- so their status is polled from the agent's own roster.
+ */
+let monitorTimer: NodeJS.Timeout | null = null;
+function startMonitorPolling() {
+  if (monitorTimer) return;
+  monitorTimer = setInterval(async () => {
+    const monitored = ptys
+      .list()
+      .filter((s) => s.origin === 'monitored' && s.externalId);
+    if (monitored.length === 0) return;
+    const found = await discoverSessions(new Set());
+    ptys.syncMonitored(
+      found.map((f: { sessionId: string; status: SessionStatus }) => ({
+        externalId: f.sessionId,
+        status: f.status,
+      })),
+    );
+  }, 3000);
+}
+
 app.on('before-quit', () => {
+  if (monitorTimer) clearInterval(monitorTimer);
   ptys.disposeAll();
   void hooks.stop();
 });
@@ -153,7 +210,10 @@ function buildMenu() {
         },
         { type: 'separator' },
         { label: 'Add Repository…', enabled: false },
-        { label: 'Import Running Sessions…', enabled: false },
+        {
+          label: 'Import Running Sessions…',
+          click: send('menu:import-sessions'),
+        },
         { type: 'separator' },
         {
           label: 'Close Tab',
