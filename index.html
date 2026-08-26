@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>AgentStation</title>
+  </head>
+  <body>
+    <div id="root">
+      <div class="tabstrip"></div>
+
+      <div class="body">
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <span>Sessions</span>
+            <span id="sidebar-count">0</span>
+          </div>
+          <div id="sidebar-list"></div>
+        </aside>
+
+        <section class="pane">
+          <header class="pane-head" id="pane-head" style="display: none">
+            <div class="pane-title" id="pane-title"></div>
+            <div class="pane-actions">
+              <button class="btn ghost" disabled>Info</button>
+              <button class="btn ghost" disabled>Diff</button>
+              <button class="btn ghost" disabled>Stop</button>
+            </div>
+          </header>
+          <div id="pane-host" style="flex: 1; display: flex; min-height: 0"></div>
+        </section>
+      </div>
+
+      <footer class="statusbar">
+        <div class="group" id="status-left"></div>
+        <div class="group" id="status-right"></div>
+      </footer>
+    </div>
+    <script type="module" src="/src/renderer.ts"></script>
+  </body>
+</html>
