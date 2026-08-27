@@ -19,6 +19,7 @@ import {
   recordAppServer,
 } from './main/adapters/codex-app-server';
 import { createAgentAdapters } from './main/adapters/agent-adapter';
+import { hydrateLoginEnv } from './main/login-env';
 import {
   provisionWorktree,
   readWorktrees,
@@ -410,6 +411,16 @@ app.on('ready', async () => {
 
   // Codex is optional: a machine with only Claude installed should still get a
   // working app, so a failure here degrades that agent rather than the window.
+  // Before anything is spawned: a GUI app inherits the launchd environment,
+  // not the user's, and every session and agent would otherwise run without
+  // the PATH their machine is actually set up with.
+  const hydrated = await hydrateLoginEnv();
+  console.log(
+    hydrated
+      ? '[sertum] environment taken from your login shell'
+      : '[sertum] using the inherited environment; login shell did not answer',
+  );
+
   try {
     const reaped = await reapStrayAppServers(appServerRecordFile());
     if (reaped) {

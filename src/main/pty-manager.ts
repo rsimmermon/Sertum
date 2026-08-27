@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sessionEnv } from './login-env';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
@@ -418,7 +419,8 @@ export class PtyManager extends EventEmitter {
 }
 
 /**
- * The parent environment with the launching agent's own variables removed.
+ * The environment sessions are spawned with: the user's shell environment,
+ * minus the launching agent's own variables.
  *
  * Starting the app from a terminal that is itself inside Claude Code leaks
  * that session's CLAUDE_CODE_* variables into every PTY we spawn. The child
@@ -432,7 +434,7 @@ export class PtyManager extends EventEmitter {
  */
 function agentSafeEnv(): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(process.env as Record<string, string>).filter(
+    Object.entries(sessionEnv()).filter(
       ([key]) => !key.startsWith('CLAUDE_CODE_'),
     ),
   );
