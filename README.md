@@ -6,9 +6,9 @@ A desktop GUI that manages multiple AI coding agents — Claude Code and Codex �
 across separate working folders and git worktrees, with a live embedded
 terminal per session and status you can trust at a glance.
 
-Design source of truth: `AgentStationDesigns.pen` (68 wireframes, 10
-storyboards). Frame ids referenced in code comments (`B3`, `C1`, …) point
-there.
+Design source of truth: `SertumDesigns.pen`, tracked at the repo root and
+opened with pen.dev. The wireframe ids in code comments (`B3`, `C1`, …) are
+frame ids in that file.
 
 ## Architecture: two planes
 
@@ -144,6 +144,7 @@ active.
 ## Layout
 
 ```
+SertumDesigns.pen             Design source of truth — wireframes, storyboards
 src/
   main.ts                     Electron main: window, menu, IPC
   main/pty-manager.ts         Plane 1 — PTY lifecycle
