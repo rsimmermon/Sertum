@@ -52,9 +52,16 @@ http://127.0.0.1:<port>/hook/<session-uuid>
 ```
 
 So an arriving event is attributable to exactly one pane with no correlation
-guesswork. `http` hooks are used rather than `command` hooks on purpose: a
-shell-command hook would be a per-OS script to maintain, while an HTTP POST is
-identical on macOS, Linux and Windows.
+guesswork.
+
+The hooks are `command` hooks running a one-line `curl` POST. The endpoint was
+originally built for the `http` hook type, which reads better, but as of Claude
+Code 2.1.247 an `http` hook is accepted in settings and then never fires --
+registering both types on one event shows only the command arriving. That
+failure is silent and total: the settings are accepted and the endpoint is
+live, so plane 2 looks wired while no status ever moves. curl keeps the
+cross-platform property the http type was chosen for, shipping with macOS,
+mainstream Linux, and Windows 10 and later.
 
 Observed transitions for one real turn (`uname -a`), all hook-driven:
 
@@ -129,9 +136,10 @@ npx electron scripts/smoke-pty.js claude   # a real agent TUI
 node scripts/drive.js "document.querySelectorAll('.tab').length"
 ```
 
-`window.__sertum` is exposed in dev builds only; `debugActiveSnapshot()`
-returns the focused terminal's scrollback, which is the only way to read
-terminal contents while the WebGL renderer is active.
+`window.__sertum` is exposed in dev builds only. It is the app object itself:
+`panes.get(activeId).snapshot()` returns the focused terminal's scrollback,
+which is the only way to read terminal contents while the WebGL renderer is
+active.
 
 ## Layout
 

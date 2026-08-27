@@ -17,14 +17,31 @@ const HOOK_EVENTS = [
 ] as const;
 
 /**
- * Settings blob passed to `claude --settings`. Registers one HTTP hook per
- * lifecycle event, all pointing at this session's own endpoint.
+ * Settings blob passed to `claude --settings`. Registers one hook per
+ * lifecycle event, all POSTing to this session's own endpoint.
+ *
+ * These are `command` hooks running curl, not the `http` hook type this
+ * endpoint was originally built for. As of Claude Code 2.1.247 an `http` hook
+ * is accepted in settings and then never fires; a `command` hook registered on
+ * the very same event does. Verified by putting both on one SessionStart and
+ * watching only the command arrive -- which is why plane 2 looked wired up
+ * (the settings were accepted, the endpoint was live) while no status ever
+ * moved.
+ *
+ * curl preserves the cross-platform property the http type was chosen for: it
+ * ships with macOS, with mainstream Linux, and with Windows 10 and later. The
+ * arguments are deliberately free of quotes and spaces-in-values so the single
+ * string is valid under both sh and cmd.exe. Claude hands the event payload to
+ * the command on stdin, which `--data-binary @-` forwards verbatim.
  */
 export function buildClaudeSettings(hookUrl: string): string {
+  const command =
+    'curl -s -m 2 --noproxy 127.0.0.1 -X POST ' +
+    `-H Content-Type:application/json --data-binary @- ${hookUrl}`;
   const hooks = Object.fromEntries(
     HOOK_EVENTS.map((event) => [
       event,
-      [{ hooks: [{ type: 'http', url: hookUrl }] }],
+      [{ hooks: [{ type: 'command', command }] }],
     ]),
   );
   return JSON.stringify({ hooks });

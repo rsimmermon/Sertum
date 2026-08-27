@@ -65,7 +65,7 @@ export class PtyManager extends EventEmitter {
       rows: DEFAULT_ROWS,
       cwd: resolved.cwd,
       env: {
-        ...(process.env as Record<string, string>),
+        ...agentSafeEnv(),
         TERM: 'xterm-256color',
         // Lets a session (and its hooks) know which pane it belongs to.
         SERTUM_SESSION_ID: id,
@@ -396,6 +396,33 @@ export class PtyManager extends EventEmitter {
     for (const id of this.sessions.keys()) this.kill(id);
     this.sessions.clear();
   }
+}
+
+/**
+ * The parent environment with the launching agent's own variables removed.
+ *
+ * Starting the app from a terminal that is itself inside Claude Code leaks
+ * that session's CLAUDE_CODE_* variables into every PTY we spawn. The child
+ * then sees CLAUDE_CODE_CHILD_SESSION and turns transcript saving off, which
+ * silently disables everything downstream that reads a transcript -- summaries,
+ * the context readout, session metadata -- and points the messaging socket and
+ * session id at the wrong agent entirely.
+ *
+ * A session started here is always a fresh top-level agent, so inheriting the
+ * launcher's agent identity is never correct.
+ */
+function agentSafeEnv(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env as Record<string, string>).filter(
+      ([key]) => !key.startsWith('CLAUDE_CODE_'),
+    ),
+  );
+}
+
+/** Auto-label for a session with no name: the folder it runs in. */
+function fallbackLabel(cwd: string): string {
+  const parts = cwd.replace(/[/\\]+$/, '').split(/[/\\]/);
+  return parts[parts.length - 1] || 'session';
 }
 
 function defaultShell(): string {

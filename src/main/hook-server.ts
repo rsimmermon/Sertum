@@ -48,9 +48,10 @@ export class HookServer extends EventEmitter {
       });
       req.on('end', () => {
         if (tooLarge) return;
-        // Always answer 200: a hook that errors can block the agent's turn.
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end('{}');
+        // Always answer 2xx: a hook that errors can block the agent's turn.
+        // 204 with no body also keeps the posting curl's stdout empty, so the
+        // hook contributes nothing to what the agent sees.
+        res.writeHead(204).end();
 
         let payload: Record<string, unknown> = {};
         try {
