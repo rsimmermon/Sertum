@@ -25,15 +25,21 @@ const AGENT_LABELS: Array<{ id: AgentKind; label: string }> = [
  * right cwd picks up that project's own CLAUDE.md / AGENTS.md, settings and
  * MCP config for free, which is why we never silently default to $HOME.
  */
-/**
- * `presetLabel` seeds the name field and counts as user-edited, so the
- * folder-derived suggestion does not overwrite it. The palette uses it to act
- * on "start a session named 'x'" without making the user retype the name.
- */
+export interface NewSessionOptions {
+  startCwd: string;
+  /**
+   * Seeds the name field and counts as user-edited, so the folder-derived
+   * suggestion does not overwrite it.
+   */
+  presetLabel?: string;
+  /** Opens with this isolation already chosen, as C9's New worktree does. */
+  presetIsolation?: Isolation;
+}
+
 export function openNewSessionDialog(
-  startCwd: string,
-  presetLabel?: string,
+  opts: NewSessionOptions,
 ): Promise<NewSessionResult | null> {
+  const { startCwd, presetLabel, presetIsolation } = opts;
   return new Promise((resolve) => {
     let agent: AgentKind =
       (localStorage.getItem(LAST_AGENT_KEY) as AgentKind | null) ?? 'claude';
@@ -120,7 +126,7 @@ export function openNewSessionDialog(
     // Defaults to the plain checkout. The wireframe draws New worktree
     // selected, but making every session create one silently changes what
     // "start a session here" means, so it is opt-in until asked for.
-    let isolation: Isolation = 'main';
+    let isolation: Isolation = presetIsolation ?? 'main';
     let branchEdited = false;
 
     const isoSeg = el('div', 'seg-group');

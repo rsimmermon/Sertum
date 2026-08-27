@@ -901,3 +901,9 @@ select.field {
   padding: 7px 9px; border-radius: 5px;
   border: 1px solid var(--line); background: var(--surface);
 }
+
+.wt-tag {
+  display: inline-block; padding: 1px 5px; border-radius: 3px;
+  background: var(--accent-soft); color: var(--accent);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.3px; vertical-align: 1px;
+}

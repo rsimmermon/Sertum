@@ -139,6 +139,11 @@ export interface WorktreeInfo {
   merged: boolean;
   /** Null where the size could not be measured. */
   sizeBytes: number | null;
+  /**
+   * Created and kept by Sertum's pool, as opposed to one made by hand. Pooled
+   * worktrees are the ones reuse and reclaim apply to.
+   */
+  managed: boolean;
   /** The session working in this worktree, when one is. */
   sessionId: string | null;
 }

@@ -10,15 +10,20 @@ export interface WorktreeDialogOptions {
   sessionLabel: (id: string) => string | undefined;
   /** Focus the session working in a worktree. */
   onOpenSession: (id: string) => void;
+  /**
+   * Hand off creation to C1 with the isolation preset. C9 deliberately does
+   * not create worktrees itself -- two ways to make one would diverge.
+   */
+  onNewWorktree: (root: string) => void;
 }
 
 /**
  * The worktree manager — wireframe C9.
  *
  * An inventory rather than a workshop: what exists on disk, what it costs, and
- * what is safe to reclaim. Creating worktrees belongs to C1's isolation
- * preset, so the New worktree button waits for that rather than growing a
- * second, divergent way to make one.
+ * what is safe to reclaim. Creating belongs to C1's isolation preset, so New
+ * worktree hands off there rather than growing a second, divergent way to make
+ * one.
  *
  * Deliberately agent-neutral. A worktree belongs to git, so the same view
  * serves every agent; the only agent-shaped question -- what to do with a
@@ -75,11 +80,13 @@ export async function openWorktreeDialog(
     );
     const headActions = document.createElement('div');
     headActions.className = 'wt-head-actions';
-    // Both route to screens that have not landed: E4 for the include-file
-    // editor, C1's isolation preset for creation.
+    // The include-file editor belongs to E4, which has not landed.
     headActions.append(
       disabledButton('Bootstrap settings', 'Settings → Worktrees (E4) is not built yet'),
-      disabledButton('New worktree', 'Create from New Session (C1) once isolation lands'),
+      button('New worktree', 'primary small', () => {
+        close();
+        opts.onNewWorktree(inv.root);
+      }),
     );
     head.append(headActions);
 
@@ -92,8 +99,16 @@ export async function openWorktreeDialog(
       const cells = document.createElement('div');
       cells.className = 'wt-row';
 
+      const nameCell = cell(w.name, 'wt-name', w.path);
+      if (w.managed) {
+        const tag = document.createElement('span');
+        tag.className = 'wt-tag';
+        tag.textContent = 'pooled';
+        tag.title = 'Created and kept by Sertum, and reused for this branch';
+        nameCell.append(' ', tag);
+      }
       cells.append(
-        cell(w.name, 'wt-name', w.path),
+        nameCell,
         cell(w.branch ?? 'detached', 'wt-branch'),
         cell(statusText(w), 'wt-status'),
       );

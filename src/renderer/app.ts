@@ -164,12 +164,20 @@ export class App {
    * Opens wireframe C1 so the working folder is always an explicit choice,
    * then starts the session the user described.
    */
-  async promptNewSession(presetLabel?: string): Promise<void> {
+  async promptNewSession(
+    presetLabel?: string,
+    preset?: { cwd?: string; isolation?: 'main' | 'new' | 'existing' },
+  ): Promise<void> {
     const startCwd =
+      preset?.cwd ??
       this.lastCwd ??
       (this.activeId ? this.sessions.get(this.activeId)?.cwd : undefined) ??
       (await api.defaultCwd());
-    const choice = await openNewSessionDialog(startCwd, presetLabel);
+    const choice = await openNewSessionDialog({
+      startCwd,
+      presetLabel,
+      presetIsolation: preset?.isolation,
+    });
     if (!choice) return;
     await this.newSession(choice.agent, choice.cwd, choice.label);
   }
@@ -750,6 +758,10 @@ export class App {
       cwd: from,
       sessionLabel: (id) => this.sessions.get(id)?.label,
       onOpenSession: (id) => this.focusSession(id),
+      // C9 does not grow its own creation path: it hands off to C1 with the
+      // isolation already chosen, so there is one way to make a worktree.
+      onNewWorktree: (root) =>
+        void this.promptNewSession(undefined, { cwd: root, isolation: 'new' }),
     });
   }
 

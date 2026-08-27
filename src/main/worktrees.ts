@@ -261,6 +261,7 @@ async function describe(
     detached: raw.detached,
     locked: raw.locked,
     isMain: path.resolve(root) === resolved,
+    managed: isManagedWorktree(raw.path),
     modified: dirty.modified,
     untracked: dirty.untracked,
     merged,
