@@ -49,6 +49,7 @@ export class App {
     root: qs('#root'),
     tabstrip: qs('.tabstrip'),
     sidebar: qs('.sidebar'),
+    titlebarText: qs('#titlebar-text'),
     splitter: qs('#splitter'),
     sidebarNew: qs('#sidebar-new'),
     openSettings: qs('#open-settings'),
@@ -101,7 +102,8 @@ export class App {
       this.activeId ? this.panes.get(this.activeId)?.refit() : undefined,
     );
 
-    if (api.platform !== 'darwin') this.el.tabstrip.classList.add('win');
+    // Only macOS hides its own title bar, so only macOS gets ours.
+    this.el.root.classList.toggle('mac', api.platform === 'darwin');
 
     // Adapter health is polled: it is a property of the app, not of a turn,
     // so it does not belong on the event stream.
@@ -316,6 +318,7 @@ export class App {
   }
 
   private render(): void {
+    this.renderTitlebar();
     this.renderTabs();
     this.renderSidebar();
     this.renderPane();
@@ -510,6 +513,13 @@ export class App {
     );
     wrap.append(h, p, row);
     return wrap;
+  }
+
+  private renderTitlebar(): void {
+    const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    this.el.titlebarText.textContent = active
+      ? `${active.label} — ${shortCwd(active.cwd)}`
+      : 'Sertum';
   }
 
   renderStatus(): void {

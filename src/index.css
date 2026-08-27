@@ -114,9 +114,8 @@ input {
   background: var(--surface-2);
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
-  padding-left: 78px; /* clears the macOS traffic lights */
 }
-.tabstrip.win { padding-left: 0; }
+
 
 .tab {
   display: flex;
@@ -604,3 +603,39 @@ input.field:focus { outline: none; border-color: var(--accent); }
 
 .check { display: inline-flex; align-items: center; gap: 6px; cursor: default; }
 .grow { flex: 1; }
+
+/* -------------------------------------------------------------- title bar */
+
+/*
+ * A slim always-present bar. It exists for two reasons that have nothing to do
+ * with tabs: it is the window's drag region, and on macOS it reserves the
+ * space the traffic lights occupy. Both used to live on the tab strip, which
+ * meant hiding the strip made the window undraggable and let the lights
+ * overlap the session list.
+ */
+.titlebar {
+  display: none;
+  flex: none;
+  height: 28px;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+  -webkit-app-region: drag;
+  cursor: default;
+  user-select: none;
+}
+
+/* Only macOS hides its own title bar, so only macOS needs ours. */
+#root.mac .titlebar {
+  display: flex;
+  padding-left: 78px;
+}
+
+.titlebar-text {
+  font-size: 0.85em;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

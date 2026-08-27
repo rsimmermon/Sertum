@@ -10,6 +10,13 @@
   </head>
   <body>
     <div id="root">
+      <!-- Always present: it owns the window drag region and reserves space
+           for the macOS traffic lights, neither of which should depend on an
+           optional tab strip being visible. -->
+      <div class="titlebar" id="titlebar">
+        <span class="titlebar-text" id="titlebar-text">Sertum</span>
+      </div>
+
       <div class="tabstrip"></div>
 
       <div class="body">
