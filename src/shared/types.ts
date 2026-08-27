@@ -109,6 +109,7 @@ export interface FocusOutcome {
 
 export interface AdapterStatus {
   claude: { connected: boolean; port: number; events: number };
+  codex: { connected: boolean; url: string; events: number };
 }
 
 /** What we can tell the user about a candidate working folder. */
@@ -163,8 +164,11 @@ export interface SertumApi {
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
   listSessions(): Promise<SessionSnapshot[]>;
   killSession(id: string): Promise<void>;
-  /** Kill and forget a session. */
-  removeSession(id: string): Promise<void>;
+  /**
+   * End a session and forget it. Resolves false if the process survived even
+   * SIGKILL, in which case the session is kept rather than stranded.
+   */
+  removeSession(id: string): Promise<boolean>;
   /** Native folder picker. Resolves null if the user cancels. */
   pickDirectory(startIn?: string): Promise<string | null>;
   /** Absolute path used when a session does not specify one. */

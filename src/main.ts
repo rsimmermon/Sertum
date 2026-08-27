@@ -257,6 +257,11 @@ ipcMain.handle('discovery:monitor', (_e, d: DiscoveredSession) =>
 
 ipcMain.handle('adapters:status', () => ({
   claude: { connected: hooks.port > 0, port: hooks.port, events: hooks.eventCount },
+  codex: {
+    connected: codex.connected,
+    url: codex.connected ? codex.remoteUrl : '',
+    events: codex.eventCount,
+  },
 }));
 ipcMain.handle('workspace:inspect', (_e, dir: string) => inspectDirectory(dir));
 ipcMain.handle('dialog:pick-directory', async (_e, startIn?: string) => {

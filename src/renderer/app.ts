@@ -2,6 +2,7 @@ import { TerminalPane } from './terminal-pane';
 import { openNewSessionDialog } from './new-session-dialog';
 import { openAdoptDialog } from './adopt-dialog';
 import { openSettingsDialog } from './settings-dialog';
+import { openConfirmDialog } from './confirm-dialog';
 import { effortChip, modelChip } from './chips';
 import {
   DEFAULT_SETTINGS,
@@ -94,7 +95,9 @@ export class App {
     menu.on('new-session', () => void this.promptNewSession());
     menu.on('settings', () => void this.promptSettings());
     menu.on('import-sessions', () => void this.promptAdopt());
-    menu.on('close-tab', () => this.activeId && this.closeTab(this.activeId));
+    menu.on('close-tab', () => {
+      if (this.activeId) void this.closeTab(this.activeId);
+    });
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
     menu.on('stop', () => this.activeId && void api.killSession(this.activeId));
 
@@ -204,14 +207,44 @@ export class App {
   }
 
   /** Closing a tab detaches the view; it never destroys work. */
-  private closeTab(id: string): void {
+  /**
+   * Ends a session and removes its row.
+   *
+   * Confirms first only when there is something to lose: a session still
+   * running is killed outright with no undo, while one that has already exited
+   * closes immediately. A monitored session is another terminal's process, so
+   * closing it only stops watching and never prompts.
+   */
+  private async closeTab(id: string): Promise<void> {
     const session = this.sessions.get(id);
-    const pane = this.panes.get(id);
-    pane?.dispose();
+    if (!session) return;
+
+    const stillRunning = session.origin === 'owned' && session.exitCode === null;
+    if (stillRunning) {
+      const ok = await openConfirmDialog({
+        title: `Close ${session.label}?`,
+        body:
+          `The ${session.agent} process is still running in ${shortCwd(session.cwd)}. ` +
+          'Closing ends it now; anything mid-turn is lost.',
+        warning:
+          'The worktree and transcript are untouched, but background processes ' +
+          'the agent detached from its terminal keep running.',
+        confirmLabel: 'Close session',
+      });
+      if (!ok) return;
+    }
+
+    const gone = await api.removeSession(id);
+    if (!gone) {
+      // The process outlived SIGKILL. Keep the row: dropping it would leave a
+      // live process with nothing in the UI to reclaim it.
+      this.notice = `${session.label} will not exit — its process is still running.`;
+      this.renderStatus();
+      return;
+    }
+
+    this.panes.get(id)?.dispose();
     this.panes.delete(id);
-    // A monitored session is someone else's process: forget it, never kill it.
-    void api.removeSession(id);
-    if (session?.origin === 'monitored') this.notice = null;
     this.sessions.delete(id);
     if (this.activeId === id) {
       this.activeId = [...this.sessions.keys()][0] ?? null;
@@ -345,7 +378,7 @@ export class App {
       tab.append(dot(s.status), stack);
       const close = iconButton('×', `Close ${s.label}`, (e) => {
         e.stopPropagation();
-        this.closeTab(s.id);
+        void this.closeTab(s.id);
       });
       close.classList.add('close');
       tab.append(close);
@@ -403,7 +436,7 @@ export class App {
         const verb = s.origin === 'monitored' ? 'Stop watching' : 'Close';
         const close = iconButton('×', `${verb} ${s.label}`, (e) => {
           e.stopPropagation();
-          this.closeTab(s.id);
+          void this.closeTab(s.id);
         });
         close.classList.add('sb-close');
         close.title = `${verb} ${s.label}`;
@@ -504,7 +537,7 @@ export class App {
     const row = div('row');
     row.append(
       button('Reveal its window', 'primary', () => void this.revealExternal(s)),
-      button('Stop tracking', 'ghost', () => this.closeTab(s.id)),
+      button('Stop tracking', 'ghost', () => void this.closeTab(s.id)),
     );
     wrap.append(row);
 
@@ -597,18 +630,30 @@ export class App {
       return;
     }
 
+    // App-level plumbing health, not a session's. It is shown with nothing
+    // open precisely because that is when you cannot tell from a session
+    // whether the adapters came up. Named by what is listening rather than by
+    // an event count, which reads as a failure when it is simply idle.
     const a = this.adapters;
-    const healthy = a?.claude.connected ?? false;
-    this.el.statusRight.append(
-      dot(healthy ? 'done' : 'attention'),
-      text(
-        'span',
-        healthy
-          ? `claude hooks · ${a?.claude.events ?? 0} events`
-          : 'hooks offline',
-        'mono',
-      ),
-    );
+    if (!a) return;
+
+    const down = [
+      a.claude.connected ? null : 'Claude hooks',
+      a.codex.connected ? null : 'Codex app server',
+    ].filter(Boolean) as string[];
+
+    const label = down.length === 0 ? 'agents ready' : `${down.join(' + ')} offline`;
+    const readout = text('span', label, 'mono');
+    const events = (n: number) => `${n} event${n === 1 ? '' : 's'}`;
+    readout.title =
+      `Claude hooks: ${a.claude.connected ? `listening on 127.0.0.1:${a.claude.port}` : 'offline'}` +
+      ` · ${events(a.claude.events)}\n` +
+      `Codex app server: ${a.codex.connected ? a.codex.url : 'offline'}` +
+      ` · ${events(a.codex.events)}\n` +
+      'These are the channels agents report status through. Counts are zero ' +
+      'until a session does something.';
+
+    this.el.statusRight.append(dot(down.length === 0 ? 'done' : 'attention'), readout);
   }
 }
 

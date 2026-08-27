@@ -667,3 +667,23 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .sb-close:focus-visible { visibility: visible; }
 .sb-close:hover { background: var(--err-soft); color: var(--err); }
 .sb-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ----------------------------------------------------------- confirmation */
+
+.confirm-dialog { width: 400px; font-size: var(--size-ui); }
+.confirm-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 0.9em;
+}
+.btn.danger {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.danger:hover { filter: brightness(1.08); }
+.btn.danger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

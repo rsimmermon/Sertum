@@ -36,6 +36,7 @@ export class CodexAppServer extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private stopping = false;
   private boundPort = 0;
+  private events = 0;
 
   constructor(private binary = resolveCodexBinary()) {
     super();
@@ -52,6 +53,11 @@ export class CodexAppServer extends EventEmitter {
 
   get connected(): boolean {
     return this.socket?.readyState === 1;
+  }
+
+  /** Notifications received since launch, for the health readout. */
+  get eventCount(): number {
+    return this.events;
   }
 
   async start(): Promise<boolean> {
@@ -172,6 +178,7 @@ export class CodexAppServer extends EventEmitter {
     // and answers them; Sertum only listens, so replying here would race
     // it. They are still worth surfacing — an approval prompt is exactly the
     // "needs you" signal the sidebar exists to show.
+    this.events++;
     this.emit('notification', { method, params } satisfies CodexNotification);
   }
 

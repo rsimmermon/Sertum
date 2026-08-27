@@ -309,9 +309,78 @@ export class PtyManager extends EventEmitter {
   }
 
   /** Kill the process and forget the session entirely. */
-  remove(id: string): void {
-    this.kill(id);
+  /**
+   * Resolves once the session's process has exited, or false if it has not
+   * done so within `ms`. Listens for the real exit event rather than polling,
+   * so a process that dies immediately is not made to wait.
+   */
+  private waitForExit(id: string, ms: number): Promise<boolean> {
+    const session = this.sessions.get(id);
+    if (!session || session.snapshot.exitCode !== null) return Promise.resolve(true);
+
+    return new Promise((resolve) => {
+      const done = (value: boolean) => {
+        clearTimeout(timer);
+        this.off('exit', onExit);
+        resolve(value);
+      };
+      const onExit = (e: { id: string }) => {
+        if (e.id === id) done(true);
+      };
+      const timer = setTimeout(() => done(false), ms);
+      this.on('exit', onExit);
+    });
+  }
+
+  /**
+   * Ends a session's process, escalating if it ignores the hangup.
+   *
+   * SIGHUP alone is not a guarantee: it is a request, and a process is free to
+   * trap or ignore it. Escalating to SIGKILL means "close" cannot silently
+   * leave a live agent behind. Resolves true once the process is confirmed
+   * gone.
+   */
+  async terminate(id: string, graceMs = 3000): Promise<boolean> {
+    const session = this.sessions.get(id);
+    // Nothing of ours to end: a monitored session belongs to another terminal,
+    // and an exited one is already done.
+    if (!session?.proc || session.snapshot.exitCode !== null) return true;
+
+    const exited = this.waitForExit(id, graceMs);
+    try {
+      session.proc.kill();
+    } catch {
+      return true; // Already gone.
+    }
+    if (await exited) return true;
+
+    const killed = this.waitForExit(id, 2000);
+    try {
+      session.proc.kill('SIGKILL');
+    } catch {
+      return true;
+    }
+    return killed;
+  }
+
+  /**
+   * Ends a session and forgets it. Returns false if the process outlived even
+   * SIGKILL, in which case the session is deliberately kept: dropping the row
+   * would strand a running process with nothing left in the UI to reclaim it.
+   */
+  async remove(id: string): Promise<boolean> {
+    const gone = await this.terminate(id);
+    if (!gone) {
+      const session = this.sessions.get(id);
+      if (session) {
+        session.snapshot.status = 'attention';
+        session.snapshot.activity = 'will not exit — still running';
+        this.emit('session-updated', { ...session.snapshot });
+      }
+      return false;
+    }
     this.sessions.delete(id);
+    return true;
   }
 
   list(): SessionSnapshot[] {
