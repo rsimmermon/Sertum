@@ -12,25 +12,42 @@ export interface ScannedProcess {
   startedAt: number | null;
 }
 
-/** Command names that identify an agent CLI, in `ps comm=` form. */
-const AGENT_COMMANDS: Array<{ agent: AgentKind; match: RegExp }> = [
+/**
+ * Command lines that identify an agent session.
+ *
+ * `match` tests argv[0]; `reject` rules out other invocations of that same
+ * binary which are not a session a user started.
+ */
+const AGENT_COMMANDS: Array<{
+  agent: AgentKind;
+  match: RegExp;
+  reject?: RegExp;
+}> = [
   { agent: 'claude', match: /(^|\/)claude$/ },
-  { agent: 'codex', match: /(^|\/)codex$/ },
+  // `codex app-server` is the JSON-RPC plumbing this app spawns for itself
+  // (see codex-app-server.ts), not a session anyone opened.
+  { agent: 'codex', match: /(^|\/)codex$/, reject: /^app-server(\s|$)/ },
 ];
 
 /**
- * Finds running agent processes by walking the process table.
+ * Finds running agent sessions by walking the process table.
  *
  * This is the agent-agnostic floor of discovery: it needs no vendor API, so it
  * works for Codex today and for any future CLI by adding one row above. Richer
  * per-agent sources layer on top when available.
+ *
+ * Reads `args=` rather than `comm=` on purpose. `comm` is only the binary
+ * path, which is byte-identical for a user's `codex` TUI and for the
+ * `codex app-server` this app spawns as its own plumbing -- so a comm-based
+ * scan discovers Sertum's own children, including ones orphaned by earlier
+ * runs, and offers them for import.
  */
 export async function scanAgentProcesses(): Promise<ScannedProcess[]> {
   if (process.platform === 'win32') return scanWindows();
 
   let stdout: string;
   try {
-    ({ stdout } = await run('ps', ['-axo', 'pid=,ppid=,tty=,comm='], {
+    ({ stdout } = await run('ps', ['-axo', 'pid=,ppid=,tty=,args='], {
       timeout: 5000,
       maxBuffer: 8_000_000,
     }));
@@ -42,17 +59,27 @@ export async function scanAgentProcesses(): Promise<ScannedProcess[]> {
   for (const line of stdout.split('\n')) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
     if (!m) continue;
-    const [, pidStr, , ttyRaw, comm] = m;
+    const [, pidStr, , ttyRaw, argv] = m;
 
-    const hit = AGENT_COMMANDS.find((a) => a.match.test(comm));
-    if (!hit) continue;
+    // Every row this scan yields is monitor-only, and the one thing a monitor
+    // row offers is raising the terminal that owns it -- which
+    // focusExternalSession does by matching the controlling tty. A process
+    // without one has no window to raise, so listing it is only noise.
+    if (ttyRaw === '??') continue;
+
+    const gap = argv.indexOf(' ');
+    const argv0 = gap === -1 ? argv : argv.slice(0, gap);
+    const rest = gap === -1 ? '' : argv.slice(gap + 1).trim();
+
+    const hit = AGENT_COMMANDS.find((a) => a.match.test(argv0));
+    if (!hit || hit.reject?.test(rest)) continue;
 
     const pid = Number(pidStr);
     found.push({
       pid,
       agent: hit.agent,
       cwd: null, // resolved lazily; lsof is slow and not always needed
-      tty: ttyRaw && ttyRaw !== '??' ? `/dev/${ttyRaw}` : null,
+      tty: `/dev/${ttyRaw}`,
       startedAt: null,
     });
   }
@@ -88,7 +115,7 @@ async function scanWindows(): Promise<ScannedProcess[]> {
       [
         '-NoProfile',
         '-Command',
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(claude|codex)(\\.exe)?$' } | Select-Object ProcessId,Name | ConvertTo-Json -Compress",
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(claude|codex)(\\.exe)?$' -and $_.CommandLine -notmatch '\\bapp-server\\b' } | Select-Object ProcessId,Name | ConvertTo-Json -Compress",
       ],
       { timeout: 8000 },
     );
