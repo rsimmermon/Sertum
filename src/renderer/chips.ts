@@ -3,8 +3,8 @@
  *
  * These are meant to be read by shape and colour first. A model's family sets
  * the colour, so a glance across the sidebar tells you which agent is which
- * without reading anything; the two-character mark only disambiguates tier and
- * version once you do look. Effort is a four-bar meter rather than a word,
+ * without reading anything; the short mark only disambiguates tier and version
+ * once you do look. Effort is a four-bar meter rather than a word,
  * because "medium" and "minimal" are indistinguishable at a glance while two
  * filled bars and one are not.
  *
