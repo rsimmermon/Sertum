@@ -208,18 +208,25 @@ export class App {
     for (const s of this.sessions.values()) {
       const tab = div('tab' + (s.id === this.activeId ? ' active' : ''));
       tab.append(dot(s.status), text('span', s.label));
-      const close = text('span', '×', 'close');
-      close.onclick = (e) => {
+      const close = iconButton('×', `Close ${s.label}`, (e) => {
         e.stopPropagation();
         this.closeTab(s.id);
-      };
+      });
+      close.classList.add('close');
       tab.append(close);
+      tab.tabIndex = 0;
       tab.onclick = () => this.select(s.id);
+      tab.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.select(s.id);
+        }
+      };
       strip.append(tab);
     }
-    const add = text('div', '＋', 'tab-new');
+    const add = iconButton('＋', 'New session', () => void this.promptNewSession());
+    add.classList.add('tab-new');
     add.title = 'New session…  (⌘N)';
-    add.onclick = () => void this.promptNewSession();
     strip.append(add);
   }
 
@@ -255,7 +262,14 @@ export class App {
           row.classList.add('is-external');
         }
         row.title = `${s.cwd}\n${s.activity ?? ''}`.trim();
+        row.tabIndex = 0;
         row.onclick = () => this.select(s.id);
+        row.onkeydown = (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this.select(s.id);
+          }
+        };
         list.append(row);
       }
     }
@@ -365,10 +379,29 @@ export class App {
       this.el.statusLeft.append(text('span', 'no session'));
     }
 
+    this.el.statusRight.append(text('span', `${this.sessions.size} session(s)`));
+
+    // Be explicit about where the dot's information comes from. A session
+    // with no adapter shows process lifecycle only, and saying so beats
+    // letting the user wonder why its status never changes.
+    if (active && active.origin === 'owned' && !active.adapterBound) {
+      this.el.statusRight.append(
+        dot('idle'),
+        text('span', `no status adapter for ${active.agent}`, 'mono'),
+      );
+      return;
+    }
+    if (active && active.origin === 'monitored') {
+      this.el.statusRight.append(
+        dot('idle'),
+        text('span', 'status polled · runs elsewhere', 'mono'),
+      );
+      return;
+    }
+
     const a = this.adapters;
     const healthy = a?.claude.connected ?? false;
     this.el.statusRight.append(
-      text('span', `${this.sessions.size} session(s)`),
       dot(healthy ? 'done' : 'attention'),
       text(
         'span',
@@ -401,6 +434,19 @@ function text(tag: string, content: string, cls = ''): HTMLElement {
 }
 function dot(status: SessionStatus): HTMLElement {
   return div(`dot ${status}`);
+}
+/** A compact icon control that is a real button, not a styled div. */
+function iconButton(
+  glyph: string,
+  label: string,
+  onClick: (e: MouseEvent) => void,
+): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = glyph;
+  b.setAttribute('aria-label', label);
+  b.onclick = onClick;
+  return b;
 }
 function button(label: string, cls: string, onClick: () => void): HTMLElement {
   const b = document.createElement('button');

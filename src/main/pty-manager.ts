@@ -17,10 +17,17 @@ import type {
 export type SpawnDecorator = (
   id: string,
   spec: SessionSpec,
-) => { args?: string[]; env?: Record<string, string> };
+) => {
+  args?: string[];
+  env?: Record<string, string>;
+  /** True when this spawn wires the session up to a status adapter. */
+  adapterBound?: boolean;
+};
 
 interface Session {
   snapshot: SessionSnapshot;
+  /** Set once the process has written anything: proof it really started. */
+  sawOutput?: boolean;
   /** Absent for monitored sessions: they run in someone else's terminal. */
   proc?: IPty;
 }
@@ -77,9 +84,13 @@ export class PtyManager extends EventEmitter {
       exitCode: null,
       activity: 'starting…',
       lastEventAt: null,
+      adapterBound: extra.adapterBound ?? false,
     };
 
-    proc.onData((data) => this.emit('data', { id, data }));
+    proc.onData((data) => {
+      this.emit('data', { id, data });
+      this.markStarted(id);
+    });
     proc.onExit(({ exitCode, signal }) => {
       const session = this.sessions.get(id);
       if (session) {
@@ -95,6 +106,32 @@ export class PtyManager extends EventEmitter {
 
     this.sessions.set(id, { snapshot, proc });
     return { ...snapshot };
+  }
+
+  /**
+   * First output proves the process is alive and past its own startup.
+   *
+   * This is a plane 1 fact -- bytes arrived -- not an inference about what the
+   * agent is doing. For a session with no adapter it is all we will ever know,
+   * so we settle it at idle rather than leaving a permanent "starting…".
+   */
+  private markStarted(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session || session.sawOutput) return;
+    session.sawOutput = true;
+
+    if (session.snapshot.adapterBound) {
+      // The adapter owns status from here; just clear the placeholder.
+      if (session.snapshot.activity === 'starting…') {
+        session.snapshot.activity = null;
+        this.emit('session-updated', { ...session.snapshot });
+      }
+      return;
+    }
+
+    session.snapshot.status = 'idle';
+    session.snapshot.activity = null;
+    this.emit('session-updated', { ...session.snapshot });
   }
 
   /**
@@ -130,6 +167,7 @@ export class PtyManager extends EventEmitter {
       exitCode: null,
       activity: 'running in another terminal',
       lastEventAt: Date.now(),
+      adapterBound: false,
     };
     this.sessions.set(snapshot.id, { snapshot });
     this.emit('session-updated', { ...snapshot });

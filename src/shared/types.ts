@@ -51,6 +51,12 @@ export interface SessionSnapshot extends SessionSpec {
   activity: string | null;
   /** When plane 2 last said anything about this session. */
   lastEventAt: number | null;
+  /**
+   * True when an adapter is feeding this session's status. False means the
+   * dot reflects process lifecycle only -- we do not know what the agent is
+   * doing, and the UI should not pretend otherwise.
+   */
+  adapterBound: boolean;
 }
 
 export interface PtyDataEvent {

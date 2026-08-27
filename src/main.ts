@@ -32,6 +32,7 @@ const ptys = new PtyManager((id, spec) => {
   if (spec.agent !== 'claude' || !hooks.port) return {};
   return {
     args: [...spec.args, '--settings', buildClaudeSettings(hooks.urlFor(id))],
+    adapterBound: true,
   };
 });
 

@@ -31,7 +31,7 @@ export class TerminalPane {
       fontFamily: getComputedStyle(document.body)
         .getPropertyValue('--font-mono')
         .trim(),
-      fontSize: 12,
+      fontSize: 14,
       lineHeight: 1.25,
       cursorBlink: true,
       scrollback: 10000,
