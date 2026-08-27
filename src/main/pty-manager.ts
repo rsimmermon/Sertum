@@ -125,6 +125,8 @@ export class PtyManager extends EventEmitter {
       contextTokens?: number | null;
       contextLimit?: number | null;
       transcriptPath?: string | null;
+      /** The agent-side id this pane is bound to (a Codex thread, say). */
+      externalId?: string | null;
     },
   ): void {
     const session = this.sessions.get(id);
@@ -137,6 +139,7 @@ export class PtyManager extends EventEmitter {
       'contextTokens',
       'contextLimit',
       'transcriptPath',
+      'externalId',
     ] as const) {
       const next = meta[key];
       if (next !== undefined && next !== null && next !== snap[key]) {

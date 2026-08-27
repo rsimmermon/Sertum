@@ -5,6 +5,14 @@ import { PtyManager } from './main/pty-manager';
 import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
 import { buildClaudeSettings, mapClaudeHook } from './main/adapters/claude';
+import { CodexAppServer } from './main/adapters/codex-app-server';
+import {
+  isUserThread,
+  mapCodexStatus,
+  threadSummary,
+  type CodexThread,
+  type CodexThreadStatus,
+} from './main/adapters/codex';
 import { discoverSessions } from './main/adapters/discovery';
 import {
   readConfiguredModel,
@@ -39,13 +47,81 @@ const hooks = new HookServer();
  * at its own endpoint, so status comes from the agent telling us rather than
  * from watching its output.
  */
+const codex = new CodexAppServer();
+
+/**
+ * Codex sessions awaiting their thread, oldest first.
+ *
+ * A spawned TUI does not know its thread id, and the thread announces itself
+ * moments later over the app server. One spawn produces exactly one user
+ * thread (the throwaway title thread is filtered out), so consuming this queue
+ * in order binds correctly without matching on cwd, which several sessions can
+ * share.
+ */
+const awaitingThread: Array<{ id: string; cwd: string }> = [];
+
 const ptys = new PtyManager((id, spec) => {
-  if (spec.agent !== 'claude' || !hooks.port) return {};
-  return {
-    args: [...spec.args, '--settings', buildClaudeSettings(hooks.urlFor(id))],
-    adapterBound: true,
-  };
+  if (spec.agent === 'claude' && hooks.port) {
+    return {
+      args: [...spec.args, '--settings', buildClaudeSettings(hooks.urlFor(id))],
+      adapterBound: true,
+    };
+  }
+
+  // `-C` rather than the PTY's cwd: with `--remote` the thread's working
+  // directory comes from the app server's process, not the terminal's, so
+  // without this every session would silently run in AgentStation's folder.
+  if (spec.agent === 'codex' && codex.connected) {
+    awaitingThread.push({ id, cwd: spec.cwd });
+    return {
+      args: [...spec.args, '--remote', codex.remoteUrl, '-C', spec.cwd],
+      adapterBound: true,
+    };
+  }
+
+  return {};
 });
+
+/** Thread id -> session id, for routing later status changes. */
+const threadToSession = new Map<string, string>();
+
+codex.on('notification', ({ method, params }) => {
+  if (method === 'thread/started') {
+    const thread = (params.thread ?? {}) as CodexThread;
+    if (!thread.id || !isUserThread(thread)) return;
+
+    // Prefer a pending session in the same folder; fall back to the oldest,
+    // which covers a thread whose cwd was rewritten (a `/cd`, say).
+    const match = awaitingThread.findIndex((w) => w.cwd === thread.cwd);
+    const waiting =
+      match >= 0 ? awaitingThread.splice(match, 1)[0] : awaitingThread.shift();
+    if (!waiting) return;
+
+    threadToSession.set(thread.id, waiting.id);
+    ptys.applyMeta(waiting.id, { externalId: thread.id });
+    ptys.applyUpdate(waiting.id, mapCodexStatus(thread.status));
+    return;
+  }
+
+  const threadId = typeof params.threadId === 'string' ? params.threadId : null;
+  const sessionId = threadId ? threadToSession.get(threadId) : undefined;
+  if (!sessionId) return;
+
+  if (method === 'thread/status/changed') {
+    const update = mapCodexStatus(params.status as CodexThreadStatus | undefined);
+    if (update.status || update.activity) ptys.applyUpdate(sessionId, update);
+    return;
+  }
+
+  // Codex titles a thread itself once the first turn lands; it reads better in
+  // the session list than the raw prompt does.
+  if (method === 'thread/name/updated') {
+    const name = threadSummary({ id: threadId!, name: params.threadName as string });
+    if (name) ptys.applyUpdate(sessionId, { activity: name });
+  }
+});
+
+codex.on('log', (line: string) => console.warn('[codex]', line));
 
 hooks.on('hook', ({ sessionId, event, payload }) => {
   const update = mapClaudeHook(event, payload);
@@ -208,6 +284,20 @@ app.on('ready', async () => {
     // lifecycle only, which is worth saying out loud rather than hiding.
     console.error('[agentstation] hook server failed to start:', err);
   }
+
+  // Codex is optional: a machine with only Claude installed should still get a
+  // working app, so a failure here degrades that agent rather than the window.
+  try {
+    const up = await codex.start();
+    console.log(
+      up
+        ? `[agentstation] codex app server on ${codex.remoteUrl}`
+        : '[agentstation] codex not available; codex sessions run unmonitored',
+    );
+  } catch (err) {
+    console.error('[agentstation] codex app server failed to start:', err);
+  }
+
   buildMenu();
   startMonitorPolling();
   startMetaPolling();
@@ -245,6 +335,7 @@ app.on('before-quit', () => {
   if (metaTimer) clearInterval(metaTimer);
   ptys.disposeAll();
   void hooks.stop();
+  codex.stop();
 });
 
 app.on('activate', () => {
