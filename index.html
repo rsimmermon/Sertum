@@ -21,9 +21,34 @@
 
       <div class="body">
         <aside class="sidebar">
-          <div class="sidebar-head">
-            <span>Sessions</span>
-            <span id="sidebar-count">0</span>
+          <div class="sidebar-head" id="sidebar-head">
+            <span class="sb-title">Sessions</span>
+            <span id="sidebar-count" class="sb-count">0</span>
+            <button
+              class="sb-find"
+              id="sidebar-find"
+              type="button"
+              aria-label="Filter sessions"
+              title="Filter sessions"
+            >⌕</button>
+            <span class="sb-search" id="sidebar-search" hidden>
+              <span class="sb-search-icon" aria-hidden="true">⌕</span>
+              <input
+                id="sidebar-filter"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label="Filter sessions by name or folder"
+                placeholder="Filter sessions"
+              />
+              <button
+                class="sb-clear"
+                id="sidebar-clear"
+                type="button"
+                aria-label="Clear filter"
+                title="Clear filter"
+              >×</button>
+            </span>
           </div>
           <div id="sidebar-list"></div>
           <button class="sidebar-new" id="sidebar-new" type="button">

@@ -4,6 +4,7 @@ import { openAdoptDialog } from './adopt-dialog';
 import { openSettingsDialog } from './settings-dialog';
 import { openConfirmDialog } from './confirm-dialog';
 import { effortChip, modelChip } from './chips';
+import { openSessionMenu, SEPARATOR } from './session-menu';
 import {
   DEFAULT_SETTINGS,
   type AgentKind,
@@ -56,6 +57,11 @@ export class App {
     openSettings: qs('#open-settings'),
     sidebarList: qs('#sidebar-list'),
     sidebarCount: qs('#sidebar-count'),
+    sidebarHead: qs('#sidebar-head'),
+    sidebarFind: qs('#sidebar-find'),
+    sidebarSearch: qs('#sidebar-search'),
+    sidebarFilter: qs('#sidebar-filter') as HTMLInputElement,
+    sidebarClear: qs('#sidebar-clear'),
     paneHost: qs('#pane-host'),
     paneHead: qs('#pane-head'),
     paneTitle: qs('#pane-title'),
@@ -74,7 +80,12 @@ export class App {
     this.applySettings(this.settings);
     this.installSplitter();
 
+    // Row ages are derived from startedAt, so a sidebar that nothing else is
+    // updating still has to be repainted for them to stay true.
+    setInterval(() => this.renderSidebar(), 30_000);
+
     this.el.sidebarNew.onclick = () => void this.promptNewSession();
+    this.installFilter();
     this.el.openSettings.onclick = () => void this.promptSettings();
 
     api.onData(({ id, data }) => this.panes.get(id)?.write(data));
@@ -100,6 +111,12 @@ export class App {
     });
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
     menu.on('stop', () => this.activeId && void api.killSession(this.activeId));
+    menu.on('rename', () => this.activeId && this.beginRename(this.activeId));
+    menu.on('next-session', () => this.stepSession(1));
+    menu.on('prev-session', () => this.stepSession(-1));
+    for (let n = 1; n <= 9; n += 1) {
+      menu.on(`goto-session-${n}`, () => this.gotoSession(n));
+    }
 
     window.addEventListener('resize', () =>
       this.activeId ? this.panes.get(this.activeId)?.refit() : undefined,
@@ -398,9 +415,62 @@ export class App {
     strip.append(add);
   }
 
+  /**
+   * Turns the sidebar header into a filter — wireframe B10.
+   *
+   * Matching runs over the session name and its folder path. The wireframe
+   * also names the branch, which no snapshot carries yet; for a worktree the
+   * path holds the branch-derived folder name, so that case is covered in
+   * practice while a plain checkout is not.
+   */
+  private installFilter(): void {
+    this.el.sidebarFind.onclick = () => this.setFiltering(true);
+    this.el.sidebarClear.onclick = () => this.setFiltering(false);
+    this.el.sidebarFilter.oninput = () => {
+      this.filter = this.el.sidebarFilter.value.trim();
+      this.renderSidebar();
+    };
+    this.el.sidebarFilter.onkeydown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.setFiltering(false);
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      // Enter on a result focuses that tab, so the filter is a way to reach a
+      // session rather than only a way to look at one.
+      e.preventDefault();
+      const first = this.visibleSessions()[0];
+      if (first) {
+        this.select(first.id);
+        this.panes.get(first.id)?.focus();
+      }
+    };
+  }
+
+  private setFiltering(on: boolean): void {
+    this.filter = '';
+    this.el.sidebarFilter.value = '';
+    this.el.sidebarHead.classList.toggle('searching', on);
+    this.el.sidebarSearch.hidden = !on;
+    if (on) this.el.sidebarFilter.focus();
+    this.renderSidebar();
+  }
+
+  /** Sessions passing the current filter, in the order they were created. */
+  private visibleSessions(): SessionSnapshot[] {
+    const all = [...this.sessions.values()];
+    const needle = this.filter.toLowerCase();
+    if (!needle) return all;
+    return all.filter((s) =>
+      `${s.label} ${s.cwd}`.toLowerCase().includes(needle),
+    );
+  }
+
   private renderSidebar(): void {
     const list = this.el.sidebarList;
     list.replaceChildren();
+    const visible = this.visibleSessions();
     this.el.sidebarCount.textContent = String(this.sessions.size);
 
     if (this.sessions.size === 0) {
@@ -411,20 +481,49 @@ export class App {
       return;
     }
 
-    for (const group of GROUP_ORDER) {
-      const rows = [...this.sessions.values()].filter(
-        (s) => s.status === group.key,
+    if (visible.length === 0) {
+      const none = div('sb-empty');
+      none.append(
+        text('span', `No sessions match “${this.filter}”. `),
+        (() => {
+          const clear = text('button', 'Clear filter', 'linkish');
+          (clear as HTMLButtonElement).type = 'button';
+          clear.onclick = () => this.setFiltering(false);
+          return clear;
+        })(),
       );
+      list.append(none);
+      return;
+    }
+
+    for (const group of GROUP_ORDER) {
+      const rows = visible.filter((s) => s.status === group.key);
+      // A group with nothing in it collapses out rather than showing an
+      // empty heading, which is what B10 asks for while filtering.
       if (rows.length === 0) continue;
-      list.append(text('div', `${group.label}  ${rows.length}`, 'sb-group'));
+      const groupHead = div('sb-group');
+      groupHead.append(
+        text('span', group.label, 'sb-group-label'),
+        text('span', String(rows.length), `sb-count ${group.key}`),
+      );
+      list.append(groupHead);
       for (const s of rows) {
         const selected = s.id === this.activeId;
         const row = div('sb-row' + (selected ? ' active' : ''));
 
         const top = div('sb-top');
-        top.append(dot(s.status), text('span', s.label, 'name'));
+        top.append(dot(s.status));
+        if (this.renaming === s.id) {
+          top.append(this.renameField(s));
+        } else {
+          top.append(text('span', s.label, 'name'));
+        }
         const badges = this.chipsFor(s);
         if (badges) top.append(badges);
+        top.append(
+          text('span', repoMark(s.cwd), 'sb-mark'),
+          text('span', sessionAge(s.startedAt), 'sb-age'),
+        );
         if (s.origin === 'monitored') {
           top.append(text('span', '↗', 'external-mark'));
           row.classList.add('is-external');
@@ -461,12 +560,18 @@ export class App {
         // signal of which session is showing.
         row.setAttribute('role', 'option');
         row.setAttribute('aria-selected', String(selected));
+        row.dataset.session = s.id;
         row.onclick = () => this.select(s.id);
+        row.ondblclick = () => this.beginRename(s.id);
         row.onkeydown = (e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             this.select(s.id);
           }
+        };
+        row.oncontextmenu = (e) => {
+          e.preventDefault();
+          this.openRowMenu(s, e.clientX, e.clientY);
         };
         list.append(row);
       }
@@ -474,6 +579,161 @@ export class App {
   }
 
   /** Model and effort badges, or null when there is nothing to show. */
+  /**
+   * The context menu for one sidebar row — wireframe C5.
+   *
+   * Items belonging to phases that have not landed are listed without a
+   * handler, which renders them disabled. That is the same choice the
+   * application menu makes: the shape of the app is legible from the first
+   * run rather than the menu quietly growing over several releases.
+   */
+  private openRowMenu(s: SessionSnapshot, x: number, y: number): void {
+    const running = s.origin === 'owned' && s.exitCode === null;
+    openSessionMenu(x, y, s.label, [
+      { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
+      { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
+      { label: 'Open in focused pane' },
+      { label: 'Open in new pane' },
+      { label: 'Mirror in new pane', accel: '⌘⌥M' },
+      { label: 'Open in new window' },
+      SEPARATOR,
+      {
+        // The agent's own id when we know it, ours otherwise -- either way
+        // this identifies the session, whatever is running in it.
+        label: 'Copy session id',
+        onSelect: () => void api.copyText(s.externalId ?? s.id),
+      },
+      {
+        label: 'Copy working directory',
+        onSelect: () => void api.copyText(s.cwd),
+      },
+      SEPARATOR,
+      { label: 'Review changes…', accel: '⌘⇧D' },
+      { label: 'Commit & push…' },
+      { label: 'Open pull request…' },
+      { label: 'Worktree manager…' },
+      { label: 'Remove worktree…', destructive: true },
+      SEPARATOR,
+      {
+        // Ends the process but keeps the row, which is wireframe C7.
+        label: 'Stop session',
+        onSelect: running ? () => void api.killSession(s.id) : undefined,
+      },
+      {
+        label: 'Delete session',
+        destructive: true,
+        onSelect: () => void this.closeTab(s.id),
+      },
+    ]);
+  }
+
+  private filter = '';
+  private renaming: string | null = null;
+
+  /**
+   * Sessions in the order the sidebar draws them, which is what ⌘1–9 counts.
+   *
+   * Counting the visible order rather than creation order means the number
+   * you press matches the row you can see. The trade is that the mapping
+   * moves when a session changes group, which is the same bargain any
+   * status-grouped list makes.
+   */
+  private orderedSessions(): SessionSnapshot[] {
+    const visible = this.visibleSessions();
+    const grouped = GROUP_ORDER.flatMap((g) =>
+      visible.filter((s) => s.status === g.key),
+    );
+    // Anything with a status the sidebar does not group still has to be
+    // reachable, or a keyboard user could not get to it at all.
+    const rest = visible.filter((s) => !grouped.includes(s));
+    return [...grouped, ...rest];
+  }
+
+  /** Moves the selection by one, wrapping. Nothing here is agent-specific. */
+  private stepSession(delta: number): void {
+    const list = this.orderedSessions();
+    if (list.length === 0) return;
+    const at = list.findIndex((s) => s.id === this.activeId);
+    const next = at === -1 ? 0 : (at + delta + list.length) % list.length;
+    this.focusSession(list[next].id);
+  }
+
+  private gotoSession(position: number): void {
+    const target = this.orderedSessions()[position - 1];
+    if (target) this.focusSession(target.id);
+  }
+
+  private focusSession(id: string): void {
+    this.select(id);
+    this.panes.get(id)?.focus();
+  }
+
+  /** Starts the inline rename from wireframe C3. */
+  private beginRename(id: string): void {
+    if (!this.sessions.has(id)) return;
+    this.renaming = id;
+    this.renderSidebar();
+  }
+
+  private async commitRename(id: string, value: string): Promise<void> {
+    this.renaming = null;
+    const session = this.sessions.get(id);
+    // An unchanged name needs no round trip; the re-render restores the row.
+    if (!session || value === session.label) {
+      this.renderSidebar();
+      return;
+    }
+    const stored = await api.renameSession(id, value);
+    if (stored) session.label = stored;
+    this.renderSidebar();
+    this.renderTabs();
+    this.renderStatus();
+  }
+
+  private cancelRename(): void {
+    this.renaming = null;
+    this.renderSidebar();
+  }
+
+
+  /**
+   * The inline name field — wireframe C3.
+   *
+   * Rendered as part of the row rather than layered over it, so a session
+   * update repainting the sidebar mid-edit cannot destroy what is being
+   * typed.
+   */
+  private renameField(s: SessionSnapshot): HTMLInputElement {
+    const input = document.createElement('input');
+    input.className = 'sb-rename';
+    input.value = s.label;
+    input.spellcheck = false;
+    input.setAttribute('aria-label', `Rename ${s.label}`);
+    // The row itself selects on click; editing must not re-trigger that.
+    input.onclick = (e) => e.stopPropagation();
+    input.ondblclick = (e) => e.stopPropagation();
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void this.commitRename(s.id, input.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        this.cancelRename();
+      }
+    };
+    // Clicking away commits, which is what a field embedded in a list should
+    // do -- losing the edit would be the surprising outcome.
+    input.onblur = () => {
+      if (this.renaming === s.id) void this.commitRename(s.id, input.value);
+    };
+    queueMicrotask(() => {
+      input.focus();
+      input.select();
+    });
+    return input;
+  }
+
   private chipsFor(s: SessionSnapshot): HTMLElement | null {
     if (!this.settings.showChips) return null;
     if (!s.model && !s.effort) return null;
@@ -802,6 +1062,35 @@ function basename(p: string): string {
   const parts = p.replace(/[/\\]+$/, '').split(/[/\\]/);
   return parts[parts.length - 1] ?? '';
 }
+/**
+ * Two-letter mark for the repository a session lives in, as B3 shows it.
+ *
+ * Splitting on separators and camelCase humps is what makes "CodeBuilder"
+ * read CB and "WISEintelligence" read WI, rather than the first two letters
+ * of each.
+ */
+function repoMark(cwd: string): string {
+  const name = basename(cwd);
+  if (!name) return '';
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
+/** How long a session has been alive, in the wireframe's compact form. */
+function sessionAge(startedAt: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 function shortCwd(cwd: string): string {
   const parts = cwd.split('/').filter(Boolean);
   return parts.length ? parts[parts.length - 1].slice(0, 14) : cwd;
