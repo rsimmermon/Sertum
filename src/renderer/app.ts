@@ -6,6 +6,10 @@ import { openConfirmDialog } from './confirm-dialog';
 import { effortChip, modelChip } from './chips';
 import { openSessionMenu, SEPARATOR } from './session-menu';
 import {
+  openCommandPalette,
+  type PaletteAction,
+} from './command-palette';
+import {
   DEFAULT_SETTINGS,
   type AgentKind,
   type SessionSnapshot,
@@ -24,6 +28,15 @@ const GROUP_ORDER: Array<{ key: SessionStatus; label: string }> = [
   { key: 'done', label: 'DONE' },
   { key: 'idle', label: 'IDLE' },
 ];
+
+/** One glyph per status, standing in for the sidebar's coloured dot (C13). */
+const STATUS_GLYPH: Record<SessionStatus, string> = {
+  'needs-input': '◑',
+  working: '◐',
+  attention: '◭',
+  done: '●',
+  idle: '○',
+};
 
 const AGENTS: Record<AgentKind, { command: string; args: string[] }> = {
   claude: { command: 'claude', args: [] },
@@ -111,6 +124,7 @@ export class App {
     });
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
     menu.on('stop', () => this.activeId && void api.killSession(this.activeId));
+    menu.on('palette', () => this.openPalette());
     menu.on('rename', () => this.activeId && this.beginRename(this.activeId));
     menu.on('next-session', () => this.stepSession(1));
     menu.on('prev-session', () => this.stepSession(-1));
@@ -149,12 +163,12 @@ export class App {
    * Opens wireframe C1 so the working folder is always an explicit choice,
    * then starts the session the user described.
    */
-  async promptNewSession(): Promise<void> {
+  async promptNewSession(presetLabel?: string): Promise<void> {
     const startCwd =
       this.lastCwd ??
       (this.activeId ? this.sessions.get(this.activeId)?.cwd : undefined) ??
       (await api.defaultCwd());
-    const choice = await openNewSessionDialog(startCwd);
+    const choice = await openNewSessionDialog(startCwd, presetLabel);
     if (!choice) return;
     await this.newSession(choice.agent, choice.cwd, choice.label);
   }
@@ -666,6 +680,52 @@ export class App {
   private focusSession(id: string): void {
     this.select(id);
     this.panes.get(id)?.focus();
+  }
+
+  /**
+   * Opens the command palette — wireframe C13.
+   *
+   * Sessions and actions are flattened to plain rows before they get here, so
+   * the palette needs no knowledge of which agent a session runs. Actions
+   * whose feature has not landed are listed without a handler and render
+   * disabled, matching the application menu and the C5 row menu.
+   */
+  private openPalette(): void {
+    const actions: PaletteAction[] = [
+      {
+        glyph: '＋',
+        label: 'New session…',
+        accel: '⌘N',
+        run: () => void this.promptNewSession(),
+      },
+      {
+        glyph: '⇱',
+        label: 'Import running sessions…',
+        run: () => void this.promptAdopt(),
+      },
+      { glyph: '⑂', label: 'New session from PR #…' },
+      { glyph: '⌥', label: 'Worktree manager…' },
+      {
+        glyph: '⚙',
+        label: 'Settings…',
+        accel: '⌘,',
+        run: () => void this.promptSettings(),
+      },
+    ];
+
+    openCommandPalette({
+      sessions: this.orderedSessions().map((s) => ({
+        id: s.id,
+        label: s.label,
+        detail: `${basename(s.cwd) || s.cwd} · ${s.activity ?? s.status}`,
+        glyph: STATUS_GLYPH[s.status] ?? '◌',
+        haystack: s.cwd,
+      })),
+      actions,
+      onPickSession: (id) => this.focusSession(id),
+      onCreateNamed: (label) => void this.promptNewSession(label),
+      onClose: () => this.activeId && this.panes.get(this.activeId)?.focus(),
+    });
   }
 
   /** Starts the inline rename from wireframe C3. */

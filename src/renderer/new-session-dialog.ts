@@ -23,15 +23,21 @@ const AGENT_LABELS: Array<{ id: AgentKind; label: string }> = [
  * right cwd picks up that project's own CLAUDE.md / AGENTS.md, settings and
  * MCP config for free, which is why we never silently default to $HOME.
  */
+/**
+ * `presetLabel` seeds the name field and counts as user-edited, so the
+ * folder-derived suggestion does not overwrite it. The palette uses it to act
+ * on "start a session named 'x'" without making the user retype the name.
+ */
 export function openNewSessionDialog(
   startCwd: string,
+  presetLabel?: string,
 ): Promise<NewSessionResult | null> {
   return new Promise((resolve) => {
     let agent: AgentKind =
       (localStorage.getItem(LAST_AGENT_KEY) as AgentKind | null) ?? 'claude';
     let cwd = startCwd;
     let info: DirectoryInfo | null = null;
-    let labelEdited = false;
+    let labelEdited = Boolean(presetLabel);
 
     const overlay = el('div', 'overlay');
     const dlg = el('div', 'dialog');
@@ -100,6 +106,7 @@ export function openNewSessionDialog(
 
     // --- label -------------------------------------------------------------
     const labelInput = document.createElement('input');
+    if (presetLabel) labelInput.value = presetLabel;
     labelInput.type = 'text';
     labelInput.className = 'field';
     labelInput.spellcheck = false;

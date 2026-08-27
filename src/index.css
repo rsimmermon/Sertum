@@ -760,6 +760,8 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .sidebar-head.searching .sb-count,
 .sidebar-head.searching .sb-find { display: none; }
 .sb-search { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+/* A display rule outranks the UA [hidden] rule, so restore it explicitly. */
+.sb-search[hidden] { display: none; }
 .sb-search-icon { color: var(--accent); font-size: 13px; flex: none; }
 .sb-search input {
   flex: 1; min-width: 0;
@@ -794,3 +796,52 @@ input.field:focus { outline: none; border-color: var(--accent); }
   font-family: inherit; font-size: inherit; font-weight: inherit;
   outline: none;
 }
+
+/* ---------- command palette (wireframe C13) ---------- */
+.palette-overlay { align-items: flex-start; justify-content: center; }
+.palette {
+  width: 560px; max-width: calc(100vw - 48px); margin-top: 12vh;
+  display: flex; flex-direction: column; gap: 14px; padding: 18px;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 24px 60px #00000047;
+}
+.palette-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-radius: 6px; background: var(--surface);
+}
+.palette-hint {
+  font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+  flex: none;
+}
+.palette-search input {
+  flex: 1; min-width: 0;
+  border: none; background: transparent; outline: none;
+  font-family: inherit; font-size: 14px; color: var(--ink);
+  caret-color: var(--accent);
+}
+.palette-search input::placeholder { color: var(--muted); }
+
+.palette-results { display: flex; flex-direction: column; gap: 14px; max-height: 52vh; overflow-y: auto; }
+.palette-group {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px; color: var(--muted);
+  padding: 0 12px 1px;
+}
+.palette-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-radius: 5px; cursor: default;
+}
+.palette-row.on { background: var(--accent-soft); }
+.palette-row.disabled { opacity: 0.45; }
+.palette-glyph { flex: none; width: 15px; font-size: 12px; color: var(--muted); text-align: center; }
+.palette-col { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.palette-title {
+  font-size: 12px; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.palette-detail {
+  font-size: 10px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.palette-accel { flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.palette-empty { font-size: 12px; color: var(--muted); padding: 4px 12px; line-height: 1.5; }

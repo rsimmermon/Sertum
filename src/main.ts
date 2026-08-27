@@ -562,6 +562,12 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
+        {
+          label: 'Command Palette…',
+          accelerator: 'CmdOrCtrl+K',
+          click: send('menu:palette'),
+        },
+        { type: 'separator' },
         { label: 'Layout: Single', type: 'radio', checked: true },
         { label: 'Layout: Columns', type: 'radio', enabled: false },
         { label: 'Layout: Rows', type: 'radio', enabled: false },
