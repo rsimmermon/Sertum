@@ -642,7 +642,9 @@ export class App {
       a.codex.connected ? null : 'Codex app server',
     ].filter(Boolean) as string[];
 
-    const label = down.length === 0 ? 'agents ready' : `${down.join(' + ')} offline`;
+    // "adapters" is the vocabulary the designs use throughout (E2, C14), so
+    // the status bar matches rather than inventing a second word for it.
+    const label = down.length === 0 ? 'adapters ok' : `${down.join(' + ')} offline`;
     const readout = text('span', label, 'mono');
     const events = (n: number) => `${n} event${n === 1 ? '' : 's'}`;
     readout.title =
