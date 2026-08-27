@@ -1,9 +1,9 @@
 import type { DiscoveredSession } from '../shared/types';
 
-const api = window.agentStation;
+const api = window.sertum;
 
 /**
- * Wireframe C18. Lists agent sessions running outside AgentStation and lets
+ * Wireframe C18. Lists agent sessions running outside Sertum and lets
  * you adopt them.
  *
  * Two outcomes, and the dialog is explicit about which you get, because the
@@ -22,7 +22,7 @@ export function openAdoptDialog(): Promise<DiscoveredSession[] | null> {
     const title = el('h3', '');
     title.textContent = 'Import running sessions';
     const sub = el('p', 'dialog-sub');
-    sub.textContent = 'Scanning for agents running outside AgentStation…';
+    sub.textContent = 'Scanning for agents running outside Sertum…';
 
     const list = el('div', 'adopt-list');
     const importBtn = btn('Import', 'primary', () => finish(false));
@@ -56,7 +56,8 @@ export function openAdoptDialog(): Promise<DiscoveredSession[] | null> {
         box.type = 'checkbox';
         box.checked = chosen.has(d.sessionId);
         box.onchange = () => {
-          box.checked ? chosen.add(d.sessionId) : chosen.delete(d.sessionId);
+          if (box.checked) chosen.add(d.sessionId);
+          else chosen.delete(d.sessionId);
           updateImportLabel();
         };
 

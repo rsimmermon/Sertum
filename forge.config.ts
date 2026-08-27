@@ -3,18 +3,50 @@ import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
+import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+/**
+ * Modules that must ship as real files rather than bundled code.
+ *
+ * The Vite build marks node-pty external because it is a native module, so the
+ * built main.js require()s it at runtime. The Vite plugin's default packaging
+ * rule keeps only `/.vite` and drops node_modules entirely, which leaves that
+ * require unsatisfiable — the packaged app then dies the moment a session
+ * spawns, while `npm start` works fine because it resolves from the source
+ * tree. Supplying our own `ignore` opts out of that default (the plugin skips
+ * its own when one is already set).
+ */
+const RUNTIME_MODULES = ['node-pty', 'node-addon-api'];
+
+function shipInPackage(file: string): boolean {
+  // Packager paths always start with '/'; '' is the root being walked.
+  if (!file) return true;
+  if (file.startsWith('/.vite')) return true;
+  if (file === '/package.json') return true;
+  // Keep the directory itself, or packager never descends into it.
+  if (file === '/node_modules') return true;
+  return RUNTIME_MODULES.some(
+    (m) => file === `/node_modules/${m}` || file.startsWith(`/node_modules/${m}/`),
+  );
+}
+
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true,
-    name: 'AgentStation',
-    executableName: 'AgentStation',
-    appBundleId: 'ai.wisecode.agentstation',
+    // node-pty also ships plain executables it exec()s — spawn-helper on
+    // macOS/Linux, OpenConsole/winpty-agent on Windows — and a binary inside
+    // an asar cannot be exec'd (posix_spawnp fails). The auto-unpack plugin
+    // only covers *.node, so the whole module is unpacked; the plugin unions
+    // its pattern with this one rather than replacing it.
+    asar: { unpack: '**/node_modules/node-pty/**/*' },
+    name: 'Sertum',
+    executableName: 'Sertum',
+    appBundleId: 'dev.sertum.app',
     // Extension-less: packager picks .icns on macOS and .ico on Windows.
     icon: 'assets/icon',
+    ignore: (file) => !shipInPackage(file),
   },
   rebuildConfig: {},
   makers: [
@@ -24,6 +56,10 @@ const config: ForgeConfig = {
     new MakerDeb({ options: { icon: 'assets/icon.png' } }),
   ],
   plugins: [
+    // node-pty ships a .node binary, and native modules cannot be loaded from
+    // inside an asar. Without this the packaged app throws the moment a
+    // session spawns, while `npm start` works fine.
+    new AutoUnpackNativesPlugin({}),
     new VitePlugin({
       // `build` can specify multiple entry builds, which can be Main process, Preload scripts, Worker process, etc.
       // If you are familiar with Vite configuration, it will look really familiar.

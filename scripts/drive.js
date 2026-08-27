@@ -1,15 +1,15 @@
 /**
- * Evaluate JavaScript inside the running AgentStation renderer.
+ * Evaluate JavaScript inside the running Sertum renderer.
  *
- * Requires the app to be started with AGENTSTATION_DEBUG_PORT set:
- *   AGENTSTATION_DEBUG_PORT=9222 npm start
+ * Requires the app to be started with SERTUM_DEBUG_PORT set:
+ *   SERTUM_DEBUG_PORT=9222 npm start
  *
  *   node scripts/drive.js "document.querySelectorAll('.tab').length"
  *
  * Used for headless verification on machines where screen capture is not
  * available, and as the basis for cross-platform smoke checks.
  */
-const PORT = process.env.AGENTSTATION_DEBUG_PORT || '9222';
+const PORT = process.env.SERTUM_DEBUG_PORT || '9222';
 
 async function main() {
   const expr = process.argv.slice(2).join(' ');

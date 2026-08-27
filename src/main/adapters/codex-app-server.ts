@@ -16,7 +16,7 @@ export interface CodexNotification {
  *
  * Codex has no HTTP hook type, so the Claude approach does not port. What it
  * has instead is better: an app server speaking JSON-RPC, which reports thread
- * and turn lifecycle as structured events. AgentStation runs its own instance
+ * and turn lifecycle as structured events. Sertum runs its own instance
  * and spawns every Codex TUI with `--remote` pointing at it, so the terminal
  * still renders the real TUI (plane 1) while status arrives out-of-band.
  *
@@ -25,7 +25,7 @@ export interface CodexNotification {
  * exposes /readyz so startup is observable instead of timed.
  *
  * Deliberately a private instance, not the shared `codex app-server daemon`:
- * AgentStation owns its lifetime, and a crash here cannot disturb whatever the
+ * Sertum owns its lifetime, and a crash here cannot disturb whatever the
  * user is running in their own terminals.
  */
 export class CodexAppServer extends EventEmitter {
@@ -125,7 +125,7 @@ export class CodexAppServer extends EventEmitter {
     if (!opened) return false;
 
     await this.request('initialize', {
-      clientInfo: { name: 'AgentStation', version: '1.0.0' },
+      clientInfo: { name: 'Sertum', version: '1.0.0' },
     });
     this.notify('initialized', {});
     this.emit('connected');
@@ -169,7 +169,7 @@ export class CodexAppServer extends EventEmitter {
     const params = (message.params ?? {}) as Record<string, unknown>;
 
     // Server *requests* carry an id and expect a reply. The TUI owns the thread
-    // and answers them; AgentStation only listens, so replying here would race
+    // and answers them; Sertum only listens, so replying here would race
     // it. They are still worth surfacing — an approval prompt is exactly the
     // "needs you" signal the sidebar exists to show.
     this.emit('notification', { method, params } satisfies CodexNotification);

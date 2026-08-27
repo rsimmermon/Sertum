@@ -80,7 +80,7 @@ export interface PtyExitEvent {
 }
 
 /**
- * An agent session running outside AgentStation.
+ * An agent session running outside Sertum.
  *
  * `adoptMode` reflects an OS constraint, not a preference: only a
  * daemon-hosted session can have a terminal opened onto it here.
@@ -128,7 +128,7 @@ export interface PtySize {
 }
 
 /** The surface exposed to the renderer through the preload bridge. */
-export interface AgentStationApi {
+export interface SertumApi {
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
   listSessions(): Promise<SessionSnapshot[]>;
   killSession(id: string): Promise<void>;

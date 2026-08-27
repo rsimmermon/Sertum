@@ -2,7 +2,7 @@ import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import { EventEmitter } from 'node:events';
 
-/** A hook payload, keyed to the AgentStation session that produced it. */
+/** A hook payload, keyed to the Sertum session that produced it. */
 export interface HookEvent {
   sessionId: string;
   event: string;

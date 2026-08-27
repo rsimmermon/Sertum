@@ -21,7 +21,7 @@ if (process.platform !== 'darwin') {
   process.exit(0);
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agentstation-ico-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sertum-ico-'));
 const images = SIZES.map((px) => {
   const out = path.join(tmp, `${px}.png`);
   execFileSync('sips', ['-z', String(px), String(px), src, '--out', out], { stdio: 'ignore' });

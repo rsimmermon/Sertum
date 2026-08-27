@@ -1,8 +1,8 @@
 import type { AgentKind, DirectoryInfo } from '../shared/types';
 
-const api = window.agentStation;
-const RECENTS_KEY = 'agentstation.recentFolders';
-const LAST_AGENT_KEY = 'agentstation.lastAgent';
+const api = window.sertum;
+const RECENTS_KEY = 'sertum.recentFolders';
+const LAST_AGENT_KEY = 'sertum.lastAgent';
 
 export interface NewSessionResult {
   agent: AgentKind;

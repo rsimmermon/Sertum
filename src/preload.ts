@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  AgentStationApi,
+  SertumApi,
   PtyDataEvent,
   PtyExitEvent,
   PtySize,
@@ -15,7 +15,7 @@ function on<T>(channel: string, cb: (payload: T) => void): () => void {
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
-const api: AgentStationApi = {
+const api: SertumApi = {
   createSession: (spec: Partial<SessionSpec>) =>
     ipcRenderer.invoke('session:create', spec),
   listSessions: () => ipcRenderer.invoke('session:list'),
@@ -40,9 +40,9 @@ const api: AgentStationApi = {
   platform: process.platform,
 };
 
-contextBridge.exposeInMainWorld('agentStation', api);
+contextBridge.exposeInMainWorld('sertum', api);
 
 /** Menu commands arrive as fire-and-forget signals. */
-contextBridge.exposeInMainWorld('agentStationMenu', {
+contextBridge.exposeInMainWorld('sertumMenu', {
   on: (channel: string, cb: () => void) => on(`menu:${channel}`, cb),
 });

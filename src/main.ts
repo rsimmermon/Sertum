@@ -27,16 +27,16 @@ import type { PtySize, SessionSpec } from './shared/types';
 // On macOS this does NOT drive the menu-bar/Dock title: those come from the
 // running bundle's Info.plist, which scripts/dev-app-name.js patches for dev
 // and Forge writes correctly for packaged builds.
-app.setName('AgentStation');
+app.setName('Sertum');
 
 if (started) app.quit();
 
 // Opt-in remote debugging, so the app can be driven and verified headlessly
 // (CI, cross-platform smoke checks) without shipping a debug build.
-if (process.env.AGENTSTATION_DEBUG_PORT) {
+if (process.env.SERTUM_DEBUG_PORT) {
   app.commandLine.appendSwitch(
     'remote-debugging-port',
-    process.env.AGENTSTATION_DEBUG_PORT,
+    process.env.SERTUM_DEBUG_PORT,
   );
 }
 
@@ -70,7 +70,7 @@ const ptys = new PtyManager((id, spec) => {
 
   // `-C` rather than the PTY's cwd: with `--remote` the thread's working
   // directory comes from the app server's process, not the terminal's, so
-  // without this every session would silently run in AgentStation's folder.
+  // without this every session would silently run in Sertum's folder.
   if (spec.agent === 'codex' && codex.connected) {
     awaitingThread.push({ id, cwd: spec.cwd });
     return {
@@ -272,17 +272,17 @@ ipcMain.on('pty:resize', (_e, { id, ...size }: { id: string } & PtySize) =>
 
 app.on('ready', async () => {
   app.setAboutPanelOptions({
-    applicationName: 'AgentStation',
+    applicationName: 'Sertum',
     applicationVersion: app.getVersion(),
     credits: 'One window for every coding agent you have running.',
   });
   try {
     const port = await hooks.start();
-    console.log(`[agentstation] hook endpoint on 127.0.0.1:${port}`);
+    console.log(`[sertum] hook endpoint on 127.0.0.1:${port}`);
   } catch (err) {
     // Without hooks the app still runs; status falls back to process
     // lifecycle only, which is worth saying out loud rather than hiding.
-    console.error('[agentstation] hook server failed to start:', err);
+    console.error('[sertum] hook server failed to start:', err);
   }
 
   // Codex is optional: a machine with only Claude installed should still get a
@@ -291,11 +291,11 @@ app.on('ready', async () => {
     const up = await codex.start();
     console.log(
       up
-        ? `[agentstation] codex app server on ${codex.remoteUrl}`
-        : '[agentstation] codex not available; codex sessions run unmonitored',
+        ? `[sertum] codex app server on ${codex.remoteUrl}`
+        : '[sertum] codex not available; codex sessions run unmonitored',
     );
   } catch (err) {
-    console.error('[agentstation] codex app server failed to start:', err);
+    console.error('[sertum] codex app server failed to start:', err);
   }
 
   buildMenu();
@@ -352,19 +352,19 @@ function buildMenu() {
   const send = (channel: string) => () => broadcast(channel, null);
 
   const appMenu: Electron.MenuItemConstructorOptions = {
-    label: 'AgentStation',
+    label: 'Sertum',
     submenu: [
-      { role: 'about', label: 'About AgentStation' },
+      { role: 'about', label: 'About Sertum' },
       { type: 'separator' },
       { label: 'Settings…', accelerator: 'CmdOrCtrl+,', enabled: false },
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },
-      { role: 'hide', label: 'Hide AgentStation' },
+      { role: 'hide', label: 'Hide Sertum' },
       { role: 'hideOthers' },
       { role: 'unhide' },
       { type: 'separator' },
-      { role: 'quit', label: 'Quit AgentStation' },
+      { role: 'quit', label: 'Quit Sertum' },
     ],
   };
 

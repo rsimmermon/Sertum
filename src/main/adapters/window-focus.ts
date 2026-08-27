@@ -99,7 +99,7 @@ export async function focusExternalSession(
       return {
         ok: false,
         app,
-        reason: `${app} refused the request. Grant Automation permission to AgentStation in System Settings › Privacy & Security.`,
+        reason: `${app} refused the request. Grant Automation permission to Sertum in System Settings › Privacy & Security.`,
       };
     }
   }

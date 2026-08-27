@@ -68,7 +68,7 @@ export class PtyManager extends EventEmitter {
         ...(process.env as Record<string, string>),
         TERM: 'xterm-256color',
         // Lets a session (and its hooks) know which pane it belongs to.
-        AGENTSTATION_SESSION_ID: id,
+        SERTUM_SESSION_ID: id,
         ...(extra.env ?? {}),
       },
     });

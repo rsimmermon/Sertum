@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 swift scripts/make-icon.swift assets/icon.png
 
-ICONSET="$(mktemp -d)/AgentStation.iconset"
+ICONSET="$(mktemp -d)/Sertum.iconset"
 mkdir -p "$ICONSET"
 for spec in "16:16x16" "32:16x16@2x" "32:32x32" "64:32x32@2x" \
             "128:128x128" "256:128x128@2x" "256:256x256" "512:256x256@2x" \

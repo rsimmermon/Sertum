@@ -67,7 +67,7 @@ app.whenReady().then(async () => {
     if (/\x1b\[/.test(out)) pass('output contains ANSI escapes (TUI is drawing)');
     else fail('no ANSI escapes — TUI may not be rendering');
   } else {
-    const marker = 'AGENTSTATION_OK';
+    const marker = 'SERTUM_OK';
     proc.write(`echo ${marker}\r`);
     await sleep(900);
     if (out.includes(marker)) pass('round-trip write → read works');

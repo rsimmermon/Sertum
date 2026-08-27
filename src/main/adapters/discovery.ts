@@ -21,7 +21,7 @@ export interface AgentDiscoverer {
 }
 
 /**
- * Finds agent sessions running outside AgentStation.
+ * Finds agent sessions running outside Sertum.
  *
  * Two adoption modes, and the difference is an OS constraint rather than a
  * policy choice. A PTY's master fd belongs to whoever spawned it, so a session

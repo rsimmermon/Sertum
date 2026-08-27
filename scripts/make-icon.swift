@@ -1,11 +1,22 @@
-// Renders the AgentStation placeholder app icon to a 1024x1024 PNG.
-// Placeholder art: a dark slate squircle with a cyan ">_" prompt, chosen to
-// read clearly at 16pt and to be obviously distinct from Electron's atom.
-// Replace assets/icon.png (or this script) once real artwork exists.
+// Renders the Sertum app icon to a 1024x1024 PNG.
+//
+// Sertum is Latin for a garland — a bound chain of separate elements — so the
+// mark is a hexagon built from six unconnected segments: distinct agent
+// sessions aligned into one boundary. A single gold segment stands for the
+// session that currently holds focus.
+//
+// Drawn as straight strokes rather than a typeface or freehand path, so it
+// stays exact at every size. Segment weight and gap size are deliberate: the
+// finer constellation-of-dots alternative collapsed into a smudge at 16pt,
+// which is the size that matters most in a Dock and a tab strip.
 import AppKit
 
 let side = 1024
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "assets/icon.png"
+
+func rgb(_ r: Int, _ g: Int, _ b: Int) -> CGColor {
+    CGColor(red: CGFloat(r)/255, green: CGFloat(g)/255, blue: CGFloat(b)/255, alpha: 1)
+}
 
 guard let ctx = CGContext(
     data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
@@ -13,21 +24,16 @@ guard let ctx = CGContext(
     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
 ) else { fatalError("could not create bitmap context") }
 
-func rgb(_ r: Int, _ g: Int, _ b: Int) -> CGColor {
-    CGColor(red: CGFloat(r)/255, green: CGFloat(g)/255, blue: CGFloat(b)/255, alpha: 1)
-}
-
 // macOS icons sit inside a transparent margin rather than filling the canvas.
 let inset: CGFloat = 88
 let tile = CGRect(x: inset, y: inset, width: CGFloat(side) - inset*2, height: CGFloat(side) - inset*2)
-let squircle = CGPath(roundedRect: tile, cornerWidth: 208, cornerHeight: 208, transform: nil)
 
 ctx.saveGState()
-ctx.addPath(squircle)
+ctx.addPath(CGPath(roundedRect: tile, cornerWidth: 208, cornerHeight: 208, transform: nil))
 ctx.clip()
 let gradient = CGGradient(
     colorsSpace: CGColorSpaceCreateDeviceRGB(),
-    colors: [rgb(0x33, 0x41, 0x55), rgb(0x0F, 0x17, 0x2A)] as CFArray,
+    colors: [rgb(0x24, 0x28, 0x2F), rgb(0x0B, 0x0D, 0x10)] as CFArray,
     locations: [0, 1]
 )!
 ctx.drawLinearGradient(gradient,
@@ -36,22 +42,31 @@ ctx.drawLinearGradient(gradient,
                        options: [])
 ctx.restoreGState()
 
-// ">_" prompt, drawn as strokes so it needs no font.
-ctx.setStrokeColor(rgb(0x22, 0xD3, 0xEE))
-ctx.setLineWidth(82)
-ctx.setLineCap(.round)
-ctx.setLineJoin(.round)
-ctx.beginPath()
-ctx.move(to: CGPoint(x: 352, y: 648))
-ctx.addLine(to: CGPoint(x: 500, y: 512))
-ctx.addLine(to: CGPoint(x: 352, y: 376))
-ctx.strokePath()
+let centre = CGFloat(side) / 2
+let radius: CGFloat = 300
+let gap: CGFloat = 0.11          // fraction trimmed from each end of a segment
+let ink = rgb(0xF2, 0xF4, 0xF7)
+let gold = rgb(0xE3, 0xB3, 0x41)
 
-ctx.setStrokeColor(rgb(0xE2, 0xE8, 0xF0))
-ctx.beginPath()
-ctx.move(to: CGPoint(x: 556, y: 386))
-ctx.addLine(to: CGPoint(x: 680, y: 386))
-ctx.strokePath()
+var corners: [CGPoint] = []
+for i in 0..<6 {
+    let angle = (.pi / 2) + CGFloat(i) / 6 * 2 * .pi
+    corners.append(CGPoint(x: centre + cos(angle) * radius, y: centre + sin(angle) * radius))
+}
+
+ctx.setLineWidth(38)
+ctx.setLineCap(.butt)            // square ends keep the gaps crisp when scaled
+for i in 0..<6 {
+    let from = corners[i]
+    let to = corners[(i + 1) % 6]
+    let start = CGPoint(x: from.x + (to.x - from.x) * gap, y: from.y + (to.y - from.y) * gap)
+    let end = CGPoint(x: from.x + (to.x - from.x) * (1 - gap), y: from.y + (to.y - from.y) * (1 - gap))
+    ctx.setStrokeColor(i == 0 ? gold : ink)
+    ctx.beginPath()
+    ctx.move(to: start)
+    ctx.addLine(to: end)
+    ctx.strokePath()
+}
 
 guard let image = ctx.makeImage() else { fatalError("could not render image") }
 let rep = NSBitmapImageRep(cgImage: image)

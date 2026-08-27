@@ -7,8 +7,8 @@ import type {
   SessionStatus,
 } from '../shared/types';
 
-const api = window.agentStation;
-const menu = window.agentStationMenu;
+const api = window.sertum;
+const menu = window.sertumMenu;
 
 /** Order the sidebar by what needs you most, exactly as in wireframe B3. */
 const GROUP_ORDER: Array<{ key: SessionStatus; label: string }> = [

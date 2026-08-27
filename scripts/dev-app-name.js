@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Make `electron-forge start` present as "AgentStation" instead of "Electron".
+ * Make `electron-forge start` present as "Sertum" instead of "Electron".
  *
  * In development the running bundle is node_modules/electron/dist/Electron.app,
  * and macOS reads its identity straight off that bundle before any of our JS
@@ -29,8 +29,8 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const APP_NAME = 'AgentStation';
-const BUNDLE_ID = 'ai.wisecode.agentstation';
+const APP_NAME = 'Sertum';
+const BUNDLE_ID = 'dev.sertum.app';
 
 if (process.platform !== 'darwin') process.exit(0);
 
@@ -39,10 +39,18 @@ const distDir = path.join(root, 'node_modules', 'electron', 'dist');
 const pristineApp = path.join(distDir, 'Electron.app');
 const appDir = path.join(distDir, `${APP_NAME}.app`);
 
-// A reinstall restores Electron.app; any previously renamed copy is now stale.
 if (fs.existsSync(pristineApp)) {
+  // A reinstall restores Electron.app; any previously renamed copy is stale.
   if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true, force: true });
   fs.renameSync(pristineApp, appDir);
+} else if (!fs.existsSync(appDir)) {
+  // Neither the pristine name nor the current one: the app was renamed since
+  // this bundle was branded. Adopt whatever single .app is in dist rather than
+  // stranding the previous name, so a rename needs no manual cleanup.
+  const strays = fs
+    .readdirSync(distDir)
+    .filter((entry) => entry.endsWith('.app'));
+  if (strays.length === 1) fs.renameSync(path.join(distDir, strays[0]), appDir);
 }
 const plist = path.join(appDir, 'Contents', 'Info.plist');
 const macOsDir = path.join(appDir, 'Contents', 'MacOS');
@@ -92,6 +100,14 @@ if (fs.existsSync(pristine)) {
   if (fs.existsSync(renamed)) fs.rmSync(renamed);
   fs.renameSync(pristine, renamed);
   changed.push('executable');
+} else if (!fs.existsSync(renamed)) {
+  // Renamed under a previous app name; adopt it rather than leaving the plist
+  // pointing at an executable that no longer exists under that name.
+  const strays = fs.readdirSync(macOsDir);
+  if (strays.length === 1) {
+    fs.renameSync(path.join(macOsDir, strays[0]), renamed);
+    changed.push('executable');
+  }
 }
 if (get('CFBundleExecutable') !== APP_NAME) set('CFBundleExecutable', APP_NAME);
 

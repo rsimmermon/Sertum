@@ -4,7 +4,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import type { SessionSnapshot } from '../shared/types';
 
-const api = window.agentStation;
+const api = window.sertum;
 
 /**
  * One xterm instance bound to one PTY.

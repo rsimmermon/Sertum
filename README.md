@@ -1,4 +1,4 @@
-# AgentStation
+# Sertum
 
 One window for every coding agent you have running.
 
@@ -110,7 +110,7 @@ registered ahead of the process scan; nothing downstream changes.
 
 ```sh
 npm start                                  # dev
-AGENTSTATION_DEBUG_PORT=9222 npm start     # dev + remote debugging
+SERTUM_DEBUG_PORT=9222 npm start     # dev + remote debugging
 ```
 
 Main-process changes require a full restart; Vite only hot-reloads the renderer.
@@ -125,11 +125,11 @@ headlessly.
 npx electron scripts/smoke-pty.js          # default shell
 npx electron scripts/smoke-pty.js claude   # a real agent TUI
 
-# Drive the running app (needs AGENTSTATION_DEBUG_PORT)
+# Drive the running app (needs SERTUM_DEBUG_PORT)
 node scripts/drive.js "document.querySelectorAll('.tab').length"
 ```
 
-`window.__agentStation` is exposed in dev builds only; `debugActiveSnapshot()`
+`window.__sertum` is exposed in dev builds only; `debugActiveSnapshot()`
 returns the focused terminal's scrollback, which is the only way to read
 terminal contents while the WebGL renderer is active.
 
