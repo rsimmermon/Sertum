@@ -207,7 +207,11 @@ export class App {
     strip.replaceChildren();
     for (const s of this.sessions.values()) {
       const tab = div('tab' + (s.id === this.activeId ? ' active' : ''));
-      tab.append(dot(s.status), text('span', s.label));
+      const stack = div('tab-stack');
+      stack.append(text('span', s.label, 'tab-label'));
+      const meta = metaLine(s);
+      if (meta) stack.append(meta);
+      tab.append(dot(s.status), stack);
       const close = iconButton('×', `Close ${s.label}`, (e) => {
         e.stopPropagation();
         this.closeTab(s.id);
@@ -368,6 +372,22 @@ export class App {
       if (active.activity) {
         this.el.statusLeft.append(text('span', active.activity));
       }
+
+      const ctx = contextInfo(active);
+      if (ctx) {
+        const used = active.contextTokens ?? 0;
+        const limit = active.contextLimit;
+        const left = limit ? Math.max(0, limit - used) : null;
+        this.el.statusLeft.append(
+          text(
+            'span',
+            left !== null
+              ? `context ${compactTokens(used)} used · ${compactTokens(left)} left · ${ctx.label}`
+              : `context ${compactTokens(used)} used`,
+            `mono ctx-readout ${ctx.band}`,
+          ),
+        );
+      }
       this.el.statusRight.append(
         text(
           'span',
@@ -432,6 +452,104 @@ function text(tag: string, content: string, cls = ''): HTMLElement {
   if (cls) e.className = cls;
   return e;
 }
+/**
+ * The line under a tab label: which model, at what thinking level, and how
+ * full the context window is. Context is the one that changes behaviour --
+ * it turns amber then red as a compact approaches.
+ */
+function metaLine(s: SessionSnapshot): HTMLElement | null {
+  const parts: HTMLElement[] = [];
+
+  if (s.model) parts.push(text('span', shortModel(s.model), 'tm-model'));
+  if (s.effort) parts.push(text('span', s.effort, 'tm-effort'));
+
+  const ctxInfo = contextInfo(s);
+  if (!ctxInfo && s.agent === 'claude' && s.origin === 'owned') {
+    const unknown = text('span', 'ctx —', 'tm-ctx unknown');
+    unknown.title =
+      'Claude Code does not report context usage while a session is live. ' +
+      'It appears once the transcript is written.';
+    parts.push(unknown);
+  }
+  if (ctxInfo) {
+    // Labelled "ctx" and expressed as *used*, so there is no ambiguity about
+    // whether the number counts up toward a compact or down away from one.
+    const ctx = text('span', `ctx ${ctxInfo.label}`, `tm-ctx ${ctxInfo.band}`);
+    ctx.title = ctxInfo.detail;
+    parts.push(ctx);
+  }
+
+  if (parts.length === 0) return null;
+
+  const line = div('tab-meta');
+  parts.forEach((p, i) => {
+    if (i > 0) line.append(text('span', '·', 'tm-sep'));
+    line.append(p);
+  });
+  return line;
+}
+
+/**
+ * Context pressure, always expressed as consumption rather than headroom.
+ * `used` counts up toward a compact; `left` is what remains.
+ */
+export function contextInfo(s: SessionSnapshot): {
+  label: string;
+  detail: string;
+  band: string;
+  usedPct: number | null;
+} | null {
+  if (s.contextTokens === null) return null;
+  const used = s.contextTokens;
+  const limit = s.contextLimit ?? null;
+
+  if (!limit || limit <= 0) {
+    return {
+      label: compactTokens(used),
+      detail: `${used.toLocaleString()} context tokens used (window size unknown)`,
+      band: '',
+      usedPct: null,
+    };
+  }
+
+  const usedPct = Math.min(100, Math.round((used / limit) * 100));
+  const left = Math.max(0, limit - used);
+  return {
+    label: `${usedPct}%`,
+    detail:
+      `${used.toLocaleString()} used · ${left.toLocaleString()} left ` +
+      `· ${usedPct}% of ${compactTokens(limit)}`,
+    band: pressure(usedPct),
+    usedPct,
+  };
+}
+
+/** 970490 -> "970k", 1000000 -> "1M". */
+function compactTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${m % 1 === 0 ? m : m.toFixed(1)}M`;
+  }
+  if (n >= 1000) return `${Math.round(n / 1000)}k`;
+  return String(n);
+}
+
+/** Compact enough for a tab: drop the vendor prefix and date suffix. */
+function shortModel(model: string): string {
+  return model
+    .replace(/^(claude|anthropic|openai)[-/]/, '')
+    .replace(/-\d{8}$/, '')
+    .replace(/-latest$/, '');
+}
+
+/** Context pressure bands: the point at which you should think about /compact. */
+function pressure(pct: number | null): string {
+  if (pct === null) return '';
+  if (pct >= 85) return 'crit';
+  if (pct >= 65) return 'warn';
+  return 'ok';
+}
+
 function dot(status: SessionStatus): HTMLElement {
   return div(`dot ${status}`);
 }

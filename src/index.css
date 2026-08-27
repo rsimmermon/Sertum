@@ -93,7 +93,7 @@ input {
 .tabstrip {
   display: flex;
   align-items: stretch;
-  height: 40px;
+  height: 48px;
   flex: none;
   background: var(--surface-2);
   border-bottom: 1px solid var(--line);
@@ -354,3 +354,26 @@ input.field:focus { outline: none; border-color: var(--accent); }
 }
 .external-mark { font-size: 12px; color: var(--muted); flex: none; }
 .sb-row.is-external .name { font-style: italic; }
+
+/* ---------- per-tab model / effort / context indicator ---------- */
+.tab-stack { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-meta {
+  display: flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: 10px; line-height: 1.2;
+  color: var(--muted); white-space: nowrap;
+}
+.tm-sep { opacity: 0.5; }
+.tm-model { color: var(--ink-2); }
+.tm-effort { color: var(--muted); }
+.tm-ctx { font-weight: 700; padding: 0 3px; border-radius: 3px; }
+.tm-ctx.ok { color: var(--muted); }
+.tm-ctx.warn { color: var(--warn); background: var(--warn-soft); }
+.tm-ctx.crit { color: var(--err); background: var(--err-soft); }
+.tab { align-items: center; }
+
+/* Context readout in the status bar: same pressure bands as the tab chip. */
+.ctx-readout { padding: 1px 6px; border-radius: 3px; }
+.ctx-readout.warn { color: var(--warn); background: var(--warn-soft); }
+.ctx-readout.crit { color: var(--err); background: var(--err-soft); font-weight: 700; }
+.tm-ctx.unknown { color: var(--muted); opacity: 0.65; font-weight: 400; }

@@ -111,7 +111,28 @@ function findClaudeTranscript(
   sessionId: string | null,
   cwd: string | null,
 ): string | null {
-  if (!sessionId) return null;
+  // No session id: fall back to the newest transcript recorded for this cwd.
+  if (!sessionId) {
+    if (!cwd) return null;
+    const dir = path.join(
+      os.homedir(),
+      '.claude',
+      'projects',
+      cwd.replace(/[/\\:]/g, '-'),
+    );
+    const newest = safeReaddir(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => path.join(dir, f))
+      .map((f) => {
+        try {
+          return { f, m: fs.statSync(f).mtimeMs };
+        } catch {
+          return { f, m: 0 };
+        }
+      })
+      .sort((a, b) => b.m - a.m)[0];
+    return newest?.f ?? null;
+  }
   const root = path.join(os.homedir(), '.claude', 'projects');
   if (cwd) {
     const guess = path.join(root, cwd.replace(/[/\\:]/g, '-'), `${sessionId}.jsonl`);
@@ -231,4 +252,35 @@ function safeReaddirEnt(p: string): fs.Dirent[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Locates a transcript when the agent never told us where it is.
+ *
+ * Codex spawns no hooks, so the only link back to its rollout file is the
+ * working directory it recorded. Claude sessions normally arrive with an
+ * explicit path and skip this.
+ */
+export function findTranscriptForCwd(
+  agent: AgentKind,
+  cwd: string,
+  startedAt?: number,
+): string | null {
+  if (!cwd) return null;
+  const file =
+    agent === 'codex'
+      ? findCodexTranscript(null, cwd)
+      : findClaudeTranscript(null, cwd);
+  if (!file) return null;
+
+  // A transcript last written before this session began belongs to a previous
+  // run in the same folder, not to us.
+  if (startedAt) {
+    try {
+      if (fs.statSync(file).mtimeMs < startedAt) return null;
+    } catch {
+      return null;
+    }
+  }
+  return file;
 }

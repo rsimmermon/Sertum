@@ -9,6 +9,8 @@ const HOOK_EVENTS = [
   'PostToolUseFailure',
   'Notification',
   'PermissionRequest',
+  'PreCompact',
+  'PostCompact',
   'Stop',
   'StopFailure',
   'SessionEnd',
@@ -67,6 +69,14 @@ export function mapClaudeHook(
 
     case 'Notification':
       return mapNotification(payload);
+
+    // Compaction is the event the context indicator exists to warn about, so
+    // when it actually happens we say so outright.
+    case 'PreCompact':
+      return { status: 'working', activity: 'compacting context…' };
+
+    case 'PostCompact':
+      return { status: 'working', activity: 'context compacted' };
 
     case 'Stop':
       return { status: 'idle', activity: 'turn finished' };

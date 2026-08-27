@@ -6,9 +6,17 @@ import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
 import { buildClaudeSettings, mapClaudeHook } from './main/adapters/claude';
 import { discoverSessions } from './main/adapters/discovery';
+import {
+  readConfiguredModel,
+  readSessionMeta,
+} from './main/adapters/session-meta';
+import { findTranscriptForCwd } from './main/adapters/transcript';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type { DiscoveredSession, SessionStatus } from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
+
+// Must run before `ready` or the menu and dock fall back to "Electron".
+app.setName('AgentStation');
 
 if (started) app.quit();
 
@@ -39,7 +47,47 @@ const ptys = new PtyManager((id, spec) => {
 hooks.on('hook', ({ sessionId, event, payload }) => {
   const update = mapClaudeHook(event, payload);
   if (update.status || update.activity) ptys.applyUpdate(sessionId, update);
+
+  // Hooks report effort but not the model or token counts. Remember where the
+  // transcript lives; the poller below reads the rest, because the transcript
+  // is not always flushed by the time the hook fires.
+  const transcript = payload.transcript_path;
+  const effort = (payload.effort as { level?: string } | undefined)?.level;
+  if (typeof transcript === 'string' || effort) {
+    ptys.applyMeta(sessionId, {
+      transcriptPath: typeof transcript === 'string' ? transcript : undefined,
+      effort: effort ?? undefined,
+    });
+  }
 });
+
+/**
+ * Model, effort and context pressure are read from each session's transcript
+ * on a slow poll rather than on hook arrival: the transcript lags the hook,
+ * and context usage keeps climbing between events anyway.
+ */
+let metaTimer: NodeJS.Timeout | null = null;
+function startMetaPolling() {
+  if (metaTimer) return;
+  metaTimer = setInterval(() => {
+    for (const s of ptys.list()) {
+      if (s.origin === 'monitored' || s.pid === null) continue;
+
+      // Claude tells us its exact transcript through the hook payload. Never
+      // guess one by cwd: several sessions share a folder, and showing another
+      // session's context is worse than showing none.
+      const transcript =
+        s.transcriptPath ??
+        (s.agent === 'claude'
+          ? null
+          : findTranscriptForCwd(s.agent, s.cwd, s.startedAt));
+      if (!transcript) continue;
+
+      const meta = readSessionMeta(s.agent, transcript);
+      ptys.applyMeta(s.id, { ...meta, transcriptPath: transcript });
+    }
+  }, 4000);
+}
 let mainWindow: BrowserWindow | null = null;
 
 const createWindow = () => {
@@ -81,9 +129,14 @@ ptys.on('data', (e) => broadcast('pty:data', e));
 ptys.on('exit', (e) => broadcast('pty:exit', e));
 ptys.on('session-updated', (s) => broadcast('session:updated', s));
 
-ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) =>
-  ptys.create(spec),
-);
+ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
+  const snapshot = ptys.create(spec);
+  // Claude never reports its model on a live session, so record what its
+  // configuration says it will use.
+  const model = readConfiguredModel(snapshot.agent);
+  if (model) ptys.applyMeta(snapshot.id, { model });
+  return { ...snapshot, model: model ?? snapshot.model };
+});
 ipcMain.handle('session:list', () => ptys.list());
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
 ipcMain.handle('session:remove', (_e, id: string) => ptys.remove(id));
@@ -139,6 +192,11 @@ ipcMain.on('pty:resize', (_e, { id, ...size }: { id: string } & PtySize) =>
 );
 
 app.on('ready', async () => {
+  app.setAboutPanelOptions({
+    applicationName: 'AgentStation',
+    applicationVersion: app.getVersion(),
+    credits: 'One window for every coding agent you have running.',
+  });
   try {
     const port = await hooks.start();
     console.log(`[agentstation] hook endpoint on 127.0.0.1:${port}`);
@@ -149,6 +207,7 @@ app.on('ready', async () => {
   }
   buildMenu();
   startMonitorPolling();
+  startMetaPolling();
   createWindow();
 });
 
@@ -180,6 +239,7 @@ function startMonitorPolling() {
 
 app.on('before-quit', () => {
   if (monitorTimer) clearInterval(monitorTimer);
+  if (metaTimer) clearInterval(metaTimer);
   ptys.disposeAll();
   void hooks.stop();
 });
@@ -197,10 +257,25 @@ function buildMenu() {
   const isMac = process.platform === 'darwin';
   const send = (channel: string) => () => broadcast(channel, null);
 
+  const appMenu: Electron.MenuItemConstructorOptions = {
+    label: 'AgentStation',
+    submenu: [
+      { role: 'about', label: 'About AgentStation' },
+      { type: 'separator' },
+      { label: 'Settings…', accelerator: 'CmdOrCtrl+,', enabled: false },
+      { type: 'separator' },
+      { role: 'services' },
+      { type: 'separator' },
+      { role: 'hide', label: 'Hide AgentStation' },
+      { role: 'hideOthers' },
+      { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit', label: 'Quit AgentStation' },
+    ],
+  };
+
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac
-      ? ([{ role: 'appMenu' }] as Electron.MenuItemConstructorOptions[])
-      : []),
+    ...(isMac ? [appMenu] : []),
     {
       label: 'File',
       submenu: [

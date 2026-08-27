@@ -57,6 +57,15 @@ export interface SessionSnapshot extends SessionSpec {
    * doing, and the UI should not pretend otherwise.
    */
   adapterBound: boolean;
+  /** Model slug in use, when known. */
+  model: string | null;
+  /** Reasoning effort / thinking level, when the agent reports one. */
+  effort: string | null;
+  /** Tokens occupying the context window on the latest request. */
+  contextTokens: number | null;
+  contextLimit: number | null;
+  /** Where this session's transcript lives, once known. */
+  transcriptPath: string | null;
 }
 
 export interface PtyDataEvent {

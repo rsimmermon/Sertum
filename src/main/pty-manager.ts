@@ -85,6 +85,11 @@ export class PtyManager extends EventEmitter {
       activity: 'starting…',
       lastEventAt: null,
       adapterBound: extra.adapterBound ?? false,
+      model: null,
+      effort: null,
+      contextTokens: null,
+      contextLimit: null,
+      transcriptPath: null,
     };
 
     proc.onData((data) => {
@@ -106,6 +111,40 @@ export class PtyManager extends EventEmitter {
 
     this.sessions.set(id, { snapshot, proc });
     return { ...snapshot };
+  }
+
+  /**
+   * Applies model / effort / context figures read from a transcript. Emits
+   * only on a real change, so a poll does not churn the UI.
+   */
+  applyMeta(
+    id: string,
+    meta: {
+      model?: string | null;
+      effort?: string | null;
+      contextTokens?: number | null;
+      contextLimit?: number | null;
+      transcriptPath?: string | null;
+    },
+  ): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const snap = session.snapshot;
+    let changed = false;
+    for (const key of [
+      'model',
+      'effort',
+      'contextTokens',
+      'contextLimit',
+      'transcriptPath',
+    ] as const) {
+      const next = meta[key];
+      if (next !== undefined && next !== null && next !== snap[key]) {
+        (snap[key] as unknown) = next;
+        changed = true;
+      }
+    }
+    if (changed) this.emit('session-updated', { ...snap });
   }
 
   /**
@@ -168,6 +207,11 @@ export class PtyManager extends EventEmitter {
       activity: 'running in another terminal',
       lastEventAt: Date.now(),
       adapterBound: false,
+      model: null,
+      effort: null,
+      contextTokens: null,
+      contextLimit: null,
+      transcriptPath: null,
     };
     this.sessions.set(snapshot.id, { snapshot });
     this.emit('session-updated', { ...snapshot });
