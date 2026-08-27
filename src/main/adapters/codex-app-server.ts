@@ -1,9 +1,12 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { execFile, spawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
 
 /** A JSON-RPC notification from the app server, already parsed. */
 export interface CodexNotification {
@@ -44,6 +47,11 @@ export class CodexAppServer extends EventEmitter {
 
   get port(): number {
     return this.boundPort;
+  }
+
+  /** Pid of the spawned server, so its owner can record it for cleanup. */
+  get childPid(): number | null {
+    return this.child?.pid ?? null;
   }
 
   /** The value to pass to a session's `--remote` flag. */
@@ -205,6 +213,20 @@ export class CodexAppServer extends EventEmitter {
     this.socket?.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
   }
 
+  /**
+   * Ends the spawned server, best effort.
+   *
+   * Deliberately does not try to confirm the death. This runs while the
+   * process is tearing down, and the server is our own direct child: once it
+   * exits it stays a zombie until Node reaps it, which cannot happen if we
+   * block the event loop waiting. `kill(pid, 0)` cannot tell a zombie from a
+   * live process, so any synchronous confirmation here would be a guess.
+   *
+   * The record written at startup is what makes this safe: whatever survives
+   * is identified and killed by reapStrayAppServers on the next launch, which
+   * runs with a working event loop and against a process that is no longer
+   * our child.
+   */
   stop(): void {
     this.stopping = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -214,6 +236,157 @@ export class CodexAppServer extends EventEmitter {
     this.child?.kill();
     this.child = null;
   }
+}
+
+/**
+ * A codex app server this app spawned, remembered across runs.
+ *
+ * `ownerPid` is the Sertum process that owns it. A record whose owner is still
+ * alive belongs to a second instance running right now and must be left alone;
+ * only records whose owner has gone describe a stray.
+ */
+export interface AppServerRecord {
+  ownerPid: number;
+  serverPid: number;
+  port: number;
+}
+
+function readRecords(file: string): AppServerRecord[] {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (r): r is AppServerRecord =>
+        !!r &&
+        typeof r === 'object' &&
+        typeof (r as AppServerRecord).ownerPid === 'number' &&
+        typeof (r as AppServerRecord).serverPid === 'number' &&
+        typeof (r as AppServerRecord).port === 'number',
+    );
+  } catch {
+    // Missing or corrupt: nothing is known to reap, which is the safe answer.
+    return [];
+  }
+}
+
+function writeRecords(file: string, records: AppServerRecord[]): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(records));
+  } catch {
+    // Losing the record costs one stray, which the process scan already
+    // declines to list. Not worth failing startup over.
+  }
+}
+
+/** Whether a pid exists. EPERM means it does, but belongs to someone else. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+export function recordAppServer(file: string, record: AppServerRecord): void {
+  const others = readRecords(file).filter(
+    (r) => r.ownerPid !== record.ownerPid,
+  );
+  writeRecords(file, [...others, record]);
+}
+
+/**
+ * Kills app servers left behind by runs that never got to clean up.
+ *
+ * The quit path and the signal handlers cover every exit the process can
+ * observe, but SIGKILL and a hard crash cannot be trapped -- so the survivor
+ * is collected on the next launch instead. Without this, one server is
+ * orphaned to init per abnormal exit and they accumulate silently, each
+ * holding its port for the life of the machine.
+ *
+ * The recorded pid is verified against the live command line before anything
+ * is signalled: pids are recycled, and a stale record must never be able to
+ * kill an unrelated process.
+ */
+export async function reapStrayAppServers(file: string): Promise<number> {
+  const records = readRecords(file);
+  if (records.length === 0) return 0;
+
+  const kept: AppServerRecord[] = [];
+  let reaped = 0;
+
+  for (const record of records) {
+    if (pidAlive(record.ownerPid)) {
+      // Another instance is running and this is its server, not a stray.
+      kept.push(record);
+      continue;
+    }
+    if (!(await isOurAppServer(record.serverPid, record.port))) continue;
+    if (await killAndConfirm(record.serverPid)) reaped += 1;
+  }
+
+  writeRecords(file, kept);
+  return reaped;
+}
+
+/**
+ * Ends a stray, escalating if it ignores the request.
+ *
+ * Unlike the shutdown path this can wait properly: the stray belongs to init,
+ * not to us, so there is no zombie to confuse `kill(pid, 0)` and the event
+ * loop is running normally.
+ */
+async function killAndConfirm(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return false; // Already gone; nothing was reaped.
+  }
+  for (let waited = 0; waited < 2000; waited += 100) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (!pidAlive(pid)) return true;
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    return true;
+  }
+  return true;
+}
+
+/** Confirms a pid is still the server we recorded, not a recycled one. */
+async function isOurAppServer(pid: number, port: number): Promise<boolean> {
+  let cmd: string;
+  try {
+    if (process.platform === 'win32') {
+      const { stdout } = await run(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+        ],
+        { timeout: 8000 },
+      );
+      cmd = stdout.trim();
+    } else {
+      const { stdout } = await run('ps', ['-p', String(pid), '-o', 'args='], {
+        timeout: 4000,
+      });
+      cmd = stdout.trim();
+    }
+  } catch {
+    // No such process, or ps/powershell unavailable: decline to kill.
+    return false;
+  }
+  // The ephemeral port makes this signature specific to the exact server we
+  // spawned, not merely to some codex app server.
+  return (
+    /codex/.test(cmd) &&
+    /\bapp-server\b/.test(cmd) &&
+    cmd.includes(`ws://127.0.0.1:${port}`)
+  );
 }
 
 /**

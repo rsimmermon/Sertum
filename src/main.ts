@@ -1,11 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { PtyManager } from './main/pty-manager';
 import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
 import { buildClaudeSettings, mapClaudeHook } from './main/adapters/claude';
-import { CodexAppServer } from './main/adapters/codex-app-server';
+import {
+  CodexAppServer,
+  reapStrayAppServers,
+  recordAppServer,
+} from './main/adapters/codex-app-server';
 import { getSettings, setSettings } from './main/settings';
 import {
   isUserThread,
@@ -298,12 +302,23 @@ app.on('ready', async () => {
   // Codex is optional: a machine with only Claude installed should still get a
   // working app, so a failure here degrades that agent rather than the window.
   try {
+    const reaped = await reapStrayAppServers(appServerRecordFile());
+    if (reaped) {
+      console.log(`[sertum] reaped ${reaped} orphaned codex app server(s)`);
+    }
     const up = await codex.start();
     console.log(
       up
         ? `[sertum] codex app server on ${codex.remoteUrl}`
         : '[sertum] codex not available; codex sessions run unmonitored',
     );
+    if (up && codex.childPid !== null) {
+      recordAppServer(appServerRecordFile(), {
+        ownerPid: process.pid,
+        serverPid: codex.childPid,
+        port: codex.port,
+      });
+    }
   } catch (err) {
     console.error('[sertum] codex app server failed to start:', err);
   }
@@ -340,13 +355,45 @@ function startMonitorPolling() {
   }, 3000);
 }
 
-app.on('before-quit', () => {
+/** Where the spawned codex app server is remembered between runs. */
+function appServerRecordFile(): string {
+  return path.join(app.getPath('userData'), 'codex-app-server.json');
+}
+
+/**
+ * Everything that must happen before the process goes away, exactly once.
+ *
+ * `before-quit` covers the exits Electron knows about, but it does not fire
+ * when the process is signalled -- which in development is the common case,
+ * since Ctrl-C on `npm start` reaches Electron as SIGINT. Without a handler
+ * the default disposition kills us outright and the codex app server we
+ * spawned is reparented to init, one stray per abnormal exit.
+ *
+ * SIGKILL and a hard crash still cannot be trapped. Those are what the
+ * startup reap covers.
+ */
+let shuttingDown = false;
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   if (monitorTimer) clearInterval(monitorTimer);
   if (metaTimer) clearInterval(metaTimer);
   ptys.disposeAll();
   void hooks.stop();
+  // The record is deliberately left in place. Confirming the kill is not
+  // possible from inside a dying process, so the next launch verifies and
+  // reaps whatever actually survived -- and drops the record when nothing did.
   codex.stop();
-});
+}
+
+app.on('before-quit', shutdown);
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    shutdown();
+    process.exit(0);
+  });
+}
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
