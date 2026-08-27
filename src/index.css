@@ -23,6 +23,22 @@
   --term-fg: #c8d6d8;
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Type sizes and list width, driven by the settings dialog. Defaults here
+     must match DEFAULT_SETTINGS so the first paint matches the stored value. */
+  --size-tab: 13px;
+  --size-list: 13px;
+  --size-ui: 13px;
+  --sidebar-w: 280px;
+
+  /* Model families. Colour is the primary channel on a chip: it should be
+     recognisable before the two-character mark is read. */
+  --m-opus: #8b5cf6;
+  --m-sonnet: #0ea5e9;
+  --m-haiku: #14b8a6;
+  --m-gpt: #10b981;
+  --m-gemini: #f59e0b;
+  --m-other: #8b949e;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -377,3 +393,214 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .ctx-readout.warn { color: var(--warn); background: var(--warn-soft); }
 .ctx-readout.crit { color: var(--err); background: var(--err-soft); font-weight: 700; }
 .tm-ctx.unknown { color: var(--muted); opacity: 0.65; font-weight: 400; }
+
+/* ------------------------------------------------------------------ chips */
+
+/* Model and effort badges. Sized in em so they track whichever type scale
+   their container uses, rather than needing a variant per placement. */
+.chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.35em;
+  padding: 0 0.4em;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.chip.model { color: #fff; }
+.chip.model.opus { background: var(--m-opus); }
+.chip.model.sonnet { background: var(--m-sonnet); }
+.chip.model.haiku { background: var(--m-haiku); }
+.chip.model.gpt { background: var(--m-gpt); }
+.chip.model.gemini { background: var(--m-gemini); }
+.chip.model.other { background: var(--m-other); }
+
+/* Effort reads as a level, so it is a meter rather than a word. */
+.chip.effort {
+  gap: 0;
+  padding: 0 0.3em;
+  background: var(--surface-2);
+  border-color: var(--line-soft);
+}
+.chip.effort .meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 0.85em;
+}
+.chip.effort .bar {
+  width: 2px;
+  background: var(--line);
+  border-radius: 1px;
+}
+/* Rising bars, so the shape alone conveys the level. */
+.chip.effort .bar:nth-child(1) { height: 32%; }
+.chip.effort .bar:nth-child(2) { height: 49%; }
+.chip.effort .bar:nth-child(3) { height: 66%; }
+.chip.effort .bar:nth-child(4) { height: 83%; }
+.chip.effort .bar:nth-child(5) { height: 100%; }
+
+.chip.effort .bar.on { background: var(--ink-2); }
+.chip.effort.lv-high .bar.on,
+.chip.effort.lv-max .bar.on { background: var(--warn); }
+.chip.effort.unknown { opacity: 0.55; }
+
+#root.no-chips .chips { display: none; }
+
+/* --------------------------------------------------------------- splitter */
+
+.splitter {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: var(--line-soft);
+  border: 0;
+  padding: 0;
+  transition: background 120ms ease;
+}
+.splitter:hover,
+.splitter.dragging { background: var(--accent); }
+.splitter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+/* A drag must not select text or hand the pointer to the terminal. */
+.splitter.dragging { user-select: none; }
+
+/* ------------------------------------------------------- tab placement */
+
+.sidebar { width: var(--sidebar-w); flex: none; }
+#root.tabs-top:not(.tabs-side) .sidebar,
+#root.tabs-top:not(.tabs-side) .splitter { display: none; }
+#root:not(.tabs-top) .tabstrip { display: none; }
+
+/* ------------------------------------------------------ sidebar rows */
+
+#sidebar-list { font-size: var(--size-list); }
+.tabstrip { font-size: var(--size-tab); }
+
+.sb-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: stretch;
+}
+.sb-top, .sb-bottom { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sb-bottom { padding-left: 14px; }
+.sb-top .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-bottom .activity {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.88em;
+}
+
+/* The selected session must be unmistakable: a tinted fill alone reads as
+   hover, so it also carries an accent edge and a weight change. */
+.sb-row.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.sb-row.active .activity { color: var(--ink-2); }
+
+.sidebar-new {
+  margin: 8px;
+  padding: 7px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--size-list);
+  cursor: default;
+  text-align: left;
+}
+.sidebar-new:hover { border-color: var(--accent); color: var(--accent); }
+.sidebar-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.tab-head { display: flex; align-items: center; gap: 6px; }
+
+/* -------------------------------------------------------- settings dialog */
+
+.settings-dialog { width: 460px; font-size: var(--size-ui); }
+.setting-section {
+  margin: 14px 0 6px;
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.setting-label { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.setting-name { color: var(--ink); }
+.setting-hint { color: var(--muted); font-size: 0.85em; }
+
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-btn {
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: default;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--line); }
+.seg-btn.on { background: var(--accent); color: #fff; font-weight: 600; }
+.seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.stepper { display: inline-flex; align-items: center; gap: 2px; }
+.stepper-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1;
+  cursor: default;
+}
+.stepper-btn:hover { border-color: var(--accent); color: var(--accent); }
+.stepper-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.stepper-value {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--ink-2);
+}
+
+.check { display: inline-flex; align-items: center; gap: 6px; cursor: default; }
+.grow { flex: 1; }

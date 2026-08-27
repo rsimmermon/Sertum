@@ -19,7 +19,19 @@
             <span id="sidebar-count">0</span>
           </div>
           <div id="sidebar-list"></div>
+          <button class="sidebar-new" id="sidebar-new" type="button">
+            <span aria-hidden="true">＋</span> New session
+          </button>
         </aside>
+
+        <div
+          class="splitter"
+          id="splitter"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize session list"
+          tabindex="0"
+        ></div>
 
         <section class="pane">
           <header class="pane-head" id="pane-head" style="display: none">
@@ -28,6 +40,9 @@
               <button class="btn ghost" disabled>Info</button>
               <button class="btn ghost" disabled>Diff</button>
               <button class="btn ghost" disabled>Stop</button>
+              <button class="btn ghost" id="open-settings" type="button">
+                Settings…
+              </button>
             </div>
           </header>
           <div id="pane-host" style="flex: 1; display: flex; min-height: 0"></div>

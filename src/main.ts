@@ -6,6 +6,7 @@ import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
 import { buildClaudeSettings, mapClaudeHook } from './main/adapters/claude';
 import { CodexAppServer } from './main/adapters/codex-app-server';
+import { getSettings, setSettings } from './main/settings';
 import {
   isUserThread,
   mapCodexStatus,
@@ -20,7 +21,7 @@ import {
 } from './main/adapters/session-meta';
 import { findTranscriptForCwd } from './main/adapters/transcript';
 import { focusExternalSession } from './main/adapters/window-focus';
-import type { DiscoveredSession, SessionStatus } from './shared/types';
+import type { DiscoveredSession, SessionStatus, Settings } from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
 
 // Sets the userData dir and the name Electron reports to the app itself.
@@ -220,6 +221,10 @@ ipcMain.handle('session:list', () => ptys.list());
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
 ipcMain.handle('session:remove', (_e, id: string) => ptys.remove(id));
 ipcMain.handle('workspace:default-cwd', () => defaultCwd());
+ipcMain.handle('settings:get', () => getSettings());
+ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) =>
+  setSettings(patch),
+);
 ipcMain.handle('discovery:list', () => discoverSessions(ptys.ownedPids()));
 ipcMain.handle('discovery:focus', (_e, pid: number) =>
   focusExternalSession(pid),
@@ -356,7 +361,11 @@ function buildMenu() {
     submenu: [
       { role: 'about', label: 'About Sertum' },
       { type: 'separator' },
-      { label: 'Settings…', accelerator: 'CmdOrCtrl+,', enabled: false },
+      {
+        label: 'Settings…',
+        accelerator: 'CmdOrCtrl+,',
+        click: send('settings'),
+      },
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },

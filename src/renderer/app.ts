@@ -1,10 +1,14 @@
 import { TerminalPane } from './terminal-pane';
 import { openNewSessionDialog } from './new-session-dialog';
 import { openAdoptDialog } from './adopt-dialog';
-import type {
-  AgentKind,
-  SessionSnapshot,
-  SessionStatus,
+import { openSettingsDialog } from './settings-dialog';
+import { effortChip, modelChip } from './chips';
+import {
+  DEFAULT_SETTINGS,
+  type AgentKind,
+  type SessionSnapshot,
+  type SessionStatus,
+  type Settings,
 } from '../shared/types';
 
 const api = window.sertum;
@@ -25,6 +29,13 @@ const AGENTS: Record<AgentKind, { command: string; args: string[] }> = {
   shell: { command: '', args: [] },
 };
 
+/** CSS custom properties the settings dialog drives. */
+const FONT_VARS: Array<[keyof Settings, string]> = [
+  ['tabFontSize', '--size-tab'],
+  ['listFontSize', '--size-list'],
+  ['uiFontSize', '--size-ui'],
+];
+
 export class App {
   private sessions = new Map<string, SessionSnapshot>();
   private panes = new Map<string, TerminalPane>();
@@ -32,9 +43,15 @@ export class App {
   private lastCwd: string | null = null;
   private notice: string | null = null;
   private adapters: import('../shared/types').AdapterStatus | null = null;
+  private settings: Settings = { ...DEFAULT_SETTINGS };
 
   private el = {
+    root: qs('#root'),
     tabstrip: qs('.tabstrip'),
+    sidebar: qs('.sidebar'),
+    splitter: qs('#splitter'),
+    sidebarNew: qs('#sidebar-new'),
+    openSettings: qs('#open-settings'),
     sidebarList: qs('#sidebar-list'),
     sidebarCount: qs('#sidebar-count'),
     paneHost: qs('#pane-host'),
@@ -45,6 +62,19 @@ export class App {
   };
 
   async start(): Promise<void> {
+    // Settings first: they decide the shell's shape, and applying them after
+    // the first render would show the default layout then visibly reflow.
+    try {
+      this.settings = await api.getSettings();
+    } catch {
+      this.settings = { ...DEFAULT_SETTINGS };
+    }
+    this.applySettings(this.settings);
+    this.installSplitter();
+
+    this.el.sidebarNew.onclick = () => void this.promptNewSession();
+    this.el.openSettings.onclick = () => void this.promptSettings();
+
     api.onData(({ id, data }) => this.panes.get(id)?.write(data));
 
     api.onExit(({ id, exitCode }) => {
@@ -61,6 +91,7 @@ export class App {
     });
 
     menu.on('new-session', () => void this.promptNewSession());
+    menu.on('settings', () => void this.promptSettings());
     menu.on('import-sessions', () => void this.promptAdopt());
     menu.on('close-tab', () => this.activeId && this.closeTab(this.activeId));
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
@@ -123,7 +154,10 @@ export class App {
       args: preset.args,
     });
     this.sessions.set(snapshot.id, snapshot);
-    this.panes.set(snapshot.id, new TerminalPane(snapshot));
+    this.panes.set(
+      snapshot.id,
+      new TerminalPane(snapshot, this.settings.terminalFontSize),
+    );
     this.activeId = snapshot.id;
     this.render();
   }
@@ -195,6 +229,92 @@ export class App {
 
   // ---------------------------------------------------------------- render
 
+  /**
+   * Pushes settings into the DOM. Type sizes travel as CSS custom properties
+   * so a change is one style recalculation rather than a re-render, and the
+   * terminals are told separately because xterm measures its own cell grid.
+   */
+  private applySettings(next: Settings): void {
+    this.settings = next;
+    const root = this.el.root;
+
+    for (const [key, cssVar] of FONT_VARS) {
+      root.style.setProperty(cssVar, `${next[key] as number}px`);
+    }
+    root.style.setProperty('--sidebar-w', `${next.sidebarWidth}px`);
+
+    root.classList.toggle('tabs-top', next.tabPlacement !== 'side');
+    root.classList.toggle('tabs-side', next.tabPlacement !== 'top');
+    root.classList.toggle('no-chips', !next.showChips);
+
+    for (const pane of this.panes.values()) pane.setFontSize(next.terminalFontSize);
+    this.render();
+  }
+
+  private async promptSettings(): Promise<void> {
+    const before = this.settings;
+    const chosen = await openSettingsDialog(before, (preview) =>
+      this.applySettings(preview),
+    );
+    if (!chosen) return;
+    try {
+      this.applySettings(await api.setSettings(chosen));
+    } catch {
+      this.notice = 'Could not save settings.';
+      this.renderStatus();
+    }
+  }
+
+  /**
+   * Drag-to-resize for the session list.
+   *
+   * Pointer capture keeps the drag alive when the cursor crosses the terminal,
+   * which would otherwise swallow the events. The width is committed once on
+   * release rather than on every move, so a drag is one settings write.
+   */
+  private installSplitter(): void {
+    const bar = this.el.splitter;
+    const MIN = 180;
+    const MAX = 560;
+
+    const widthFrom = (clientX: number) =>
+      Math.min(MAX, Math.max(MIN, Math.round(clientX - this.el.sidebar.getBoundingClientRect().left)));
+
+    bar.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      bar.setPointerCapture(e.pointerId);
+      bar.classList.add('dragging');
+
+      const move = (ev: PointerEvent) => {
+        this.el.root.style.setProperty('--sidebar-w', `${widthFrom(ev.clientX)}px`);
+        if (this.activeId) this.panes.get(this.activeId)?.refit();
+      };
+      const up = (ev: PointerEvent) => {
+        bar.releasePointerCapture(ev.pointerId);
+        bar.classList.remove('dragging');
+        bar.removeEventListener('pointermove', move);
+        bar.removeEventListener('pointerup', up);
+        const width = widthFrom(ev.clientX);
+        this.settings = { ...this.settings, sidebarWidth: width };
+        void api.setSettings({ sidebarWidth: width }).catch(() => undefined);
+      };
+      bar.addEventListener('pointermove', move);
+      bar.addEventListener('pointerup', up);
+    });
+
+    // Keyboard resizing, so the splitter is not mouse-only.
+    bar.addEventListener('keydown', (e) => {
+      const step = e.key === 'ArrowLeft' ? -16 : e.key === 'ArrowRight' ? 16 : 0;
+      if (!step) return;
+      e.preventDefault();
+      const width = Math.min(MAX, Math.max(MIN, this.settings.sidebarWidth + step));
+      this.el.root.style.setProperty('--sidebar-w', `${width}px`);
+      this.settings = { ...this.settings, sidebarWidth: width };
+      if (this.activeId) this.panes.get(this.activeId)?.refit();
+      void api.setSettings({ sidebarWidth: width }).catch(() => undefined);
+    });
+  }
+
   private render(): void {
     this.renderTabs();
     this.renderSidebar();
@@ -205,10 +325,18 @@ export class App {
   private renderTabs(): void {
     const strip = this.el.tabstrip;
     strip.replaceChildren();
+    // The sidebar is the primary list; the strip only exists when asked for.
+    if (this.settings.tabPlacement === 'side') return;
     for (const s of this.sessions.values()) {
-      const tab = div('tab' + (s.id === this.activeId ? ' active' : ''));
+      const selected = s.id === this.activeId;
+      const tab = div('tab' + (selected ? ' active' : ''));
+      tab.setAttribute('aria-selected', String(selected));
       const stack = div('tab-stack');
-      stack.append(text('span', s.label, 'tab-label'));
+      const head = div('tab-head');
+      head.append(text('span', s.label, 'tab-label'));
+      const badges = this.chipsFor(s);
+      if (badges) head.append(badges);
+      stack.append(head);
       const meta = metaLine(s);
       if (meta) stack.append(meta);
       tab.append(dot(s.status), stack);
@@ -254,19 +382,34 @@ export class App {
       if (rows.length === 0) continue;
       list.append(text('div', `${group.label}  ${rows.length}`, 'sb-group'));
       for (const s of rows) {
-        const row = div('sb-row' + (s.id === this.activeId ? ' active' : ''));
-        const stack = div('sb-stack');
-        stack.append(text('span', s.label, 'name'));
-        stack.append(
-          text('span', s.activity ?? shortCwd(s.cwd), 'activity'),
-        );
-        row.append(dot(s.status), stack);
+        const selected = s.id === this.activeId;
+        const row = div('sb-row' + (selected ? ' active' : ''));
+
+        const top = div('sb-top');
+        top.append(dot(s.status), text('span', s.label, 'name'));
+        const badges = this.chipsFor(s);
+        if (badges) top.append(badges);
         if (s.origin === 'monitored') {
-          row.append(text('span', '↗', 'external-mark'));
+          top.append(text('span', '↗', 'external-mark'));
           row.classList.add('is-external');
         }
+
+        const bottom = div('sb-bottom');
+        bottom.append(text('span', s.activity ?? shortCwd(s.cwd), 'activity'));
+        const ctx = contextInfo(s);
+        if (ctx) {
+          const badge = text('span', `ctx ${ctx.label}`, `tm-ctx ${ctx.band}`);
+          badge.title = ctx.detail;
+          bottom.append(badge);
+        }
+
+        row.append(top, bottom);
         row.title = `${s.cwd}\n${s.activity ?? ''}`.trim();
         row.tabIndex = 0;
+        // Announced as a selectable option so the highlight is not the only
+        // signal of which session is showing.
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', String(selected));
         row.onclick = () => this.select(s.id);
         row.onkeydown = (e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -277,6 +420,16 @@ export class App {
         list.append(row);
       }
     }
+  }
+
+  /** Model and effort badges, or null when there is nothing to show. */
+  private chipsFor(s: SessionSnapshot): HTMLElement | null {
+    if (!this.settings.showChips) return null;
+    if (!s.model && !s.effort) return null;
+    const wrap = div('chips');
+    if (s.model) wrap.append(modelChip(s.model));
+    if (s.effort) wrap.append(effortChip(s.effort));
+    return wrap;
   }
 
   private renderPane(): void {
@@ -305,7 +458,7 @@ export class App {
 
     let pane = this.panes.get(active.id);
     if (!pane) {
-      pane = new TerminalPane(active);
+      pane = new TerminalPane(active, this.settings.terminalFontSize);
       this.panes.set(active.id, pane);
     }
     host.replaceChildren();

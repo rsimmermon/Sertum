@@ -23,7 +23,10 @@ export class TerminalPane {
   private resizeObserver: ResizeObserver;
   private attached = false;
 
-  constructor(readonly session: SessionSnapshot) {
+  constructor(
+    readonly session: SessionSnapshot,
+    fontSize = 14,
+  ) {
     this.element = document.createElement('div');
     this.element.className = 'term-host';
 
@@ -31,7 +34,7 @@ export class TerminalPane {
       fontFamily: getComputedStyle(document.body)
         .getPropertyValue('--font-mono')
         .trim(),
-      fontSize: 14,
+      fontSize,
       lineHeight: 1.25,
       cursorBlink: true,
       scrollback: 10000,
@@ -98,6 +101,17 @@ export class TerminalPane {
   /** Scrollback as text, for restoring a pane later. */
   snapshot(): string {
     return this.serialize.serialize();
+  }
+
+  /**
+   * Applies a new type size and re-fits. Changing the size changes how many
+   * cells fit, so the PTY must be told the new geometry or the agent's TUI
+   * keeps drawing against the old one.
+   */
+  setFontSize(size: number): void {
+    if (this.term.options.fontSize === size) return;
+    this.term.options.fontSize = size;
+    this.refit();
   }
 
   refit(): void {

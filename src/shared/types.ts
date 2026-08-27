@@ -127,6 +127,37 @@ export interface PtySize {
   rows: number;
 }
 
+/** Where the session tabs live. The sidebar alone is the default. */
+export type TabPlacement = 'side' | 'top' | 'both';
+
+/**
+ * User preferences. Everything here is a display choice — nothing about a
+ * session's behaviour lives in settings, so a corrupt or missing file can
+ * always fall back to DEFAULT_SETTINGS without losing work.
+ */
+export interface Settings {
+  tabPlacement: TabPlacement;
+  /** Point sizes. The terminal is separate: it is read far more closely. */
+  terminalFontSize: number;
+  tabFontSize: number;
+  listFontSize: number;
+  uiFontSize: number;
+  /** Sidebar width in px, dragged by the splitter. */
+  sidebarWidth: number;
+  /** Model and effort badges on tabs and rows. */
+  showChips: boolean;
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  tabPlacement: 'side',
+  terminalFontSize: 14,
+  tabFontSize: 13,
+  listFontSize: 13,
+  uiFontSize: 13,
+  sidebarWidth: 280,
+  showChips: true,
+};
+
 /** The surface exposed to the renderer through the preload bridge. */
 export interface SertumApi {
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
@@ -155,5 +186,9 @@ export interface SertumApi {
   onData(cb: (e: PtyDataEvent) => void): () => void;
   onExit(cb: (e: PtyExitEvent) => void): () => void;
   onSessionUpdated(cb: (s: SessionSnapshot) => void): () => void;
+  /** Persisted display preferences. */
+  getSettings(): Promise<Settings>;
+  /** Merges a patch and returns the settings as stored. */
+  setSettings(patch: Partial<Settings>): Promise<Settings>;
   platform: NodeJS.Platform;
 }
