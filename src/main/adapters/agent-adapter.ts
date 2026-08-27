@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { AgentKind } from '../../shared/types';
-import type { CodexAppServer } from './codex-app-server';
+import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 
 /** The part of a session an adapter needs in order to act on it. */
 export interface AgentSessionRef {
@@ -29,6 +32,19 @@ export interface AgentAdapter {
   readonly agent: AgentKind;
 
   /**
+   * Where this agent's executable actually lives.
+   *
+   * A GUI app launched from Finder or the Dock inherits the bare launchd
+   * PATH -- /usr/bin:/bin:/usr/sbin:/sbin -- not the one from the user's shell
+   * profile. A plain `claude` therefore resolves during `npm start`, where the
+   * launching terminal's PATH is inherited, and then fails in the packaged
+   * build with the agent exiting immediately. Each agent knows its own install
+   * locations, so each answers for itself; PATH remains the last resort, which
+   * is the correct answer when the app was started from a shell.
+   */
+  resolveBinary(): string;
+
+  /**
    * Mirror a session's new name into the agent's own records.
    *
    * Sertum has already renamed the session locally by the time this runs, so
@@ -47,9 +63,31 @@ export interface AgentAdapter {
 class InertAgentAdapter implements AgentAdapter {
   constructor(readonly agent: AgentKind) {}
 
+  /** A shell is already an absolute path in the environment we inherited. */
+  resolveBinary(): string {
+    if (process.platform === 'win32') return 'powershell.exe';
+    return process.env.SHELL ?? '/bin/bash';
+  }
+
   async renameRemote(): Promise<boolean> {
     return false;
   }
+}
+
+/**
+ * First existing executable among the candidates, else the bare name so PATH
+ * still gets its chance.
+ */
+function firstExecutable(candidates: string[], fallback: string): string {
+  for (const candidate of candidates) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Try the next.
+    }
+  }
+  return fallback;
 }
 
 /**
@@ -60,6 +98,12 @@ class CodexAdapter implements AgentAdapter {
   readonly agent: AgentKind = 'codex';
 
   constructor(private server: CodexAppServer) {}
+
+  // The app server already had to solve this to start at all; one list of
+  // install locations serves both it and the TUI we spawn for the user.
+  resolveBinary(): string {
+    return resolveCodexBinary();
+  }
 
   async renameRemote(
     session: AgentSessionRef,
@@ -87,6 +131,24 @@ class CodexAdapter implements AgentAdapter {
 class ClaudeAdapter extends InertAgentAdapter {
   constructor() {
     super('claude');
+  }
+
+  resolveBinary(): string {
+    const home = os.homedir();
+    if (process.platform === 'win32') return 'claude.exe';
+    return firstExecutable(
+      [
+        // The official installer's location shadows the others on PATH, so it
+        // is checked first for the same reason Codex checks its standalone
+        // build first.
+        path.join(home, '.local', 'bin', 'claude'),
+        path.join(home, '.claude', 'local', 'claude'),
+        '/opt/homebrew/bin/claude',
+        '/usr/local/bin/claude',
+        path.join(home, '.volta', 'bin', 'claude'),
+      ],
+      'claude',
+    );
   }
 }
 

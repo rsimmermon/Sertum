@@ -17,7 +17,13 @@ const run = promisify(execFile);
  */
 export interface AgentDiscoverer {
   agent: AgentKind;
-  discover(): Promise<DiscoveredSession[]>;
+  /**
+   * `resolveBinary` answers where an agent's CLI lives, since PATH cannot be
+   * relied on in a packaged app. Discoverers that shell out must use it.
+   */
+  discover(
+    resolveBinary: (agent: AgentKind) => string | undefined,
+  ): Promise<DiscoveredSession[]>;
 }
 
 /**
@@ -33,10 +39,11 @@ export interface AgentDiscoverer {
  */
 export async function discoverSessions(
   ownedPids: ReadonlySet<number>,
+  resolveBinary: (agent: AgentKind) => string | undefined = () => undefined,
 ): Promise<DiscoveredSession[]> {
   const results = await Promise.all(
     DISCOVERERS.map((d) =>
-      d.discover().catch(() => [] as DiscoveredSession[]),
+      d.discover(resolveBinary).catch(() => [] as DiscoveredSession[]),
     ),
   );
 
@@ -66,10 +73,10 @@ export async function discoverSessions(
  */
 const claudeDiscoverer: AgentDiscoverer = {
   agent: 'claude',
-  async discover() {
+  async discover(resolveBinary) {
     let raw: string;
     try {
-      ({ stdout: raw } = await run('claude', ['agents', '--json'], {
+      ({ stdout: raw } = await run(resolveBinary('claude') ?? 'claude', ['agents', '--json'], {
         timeout: 6000,
         maxBuffer: 4_000_000,
       }));

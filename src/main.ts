@@ -43,6 +43,7 @@ import {
 } from './main/adapters/transcript';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
+  AgentKind,
   DiscoveredSession,
   SessionSnapshot,
   SessionStatus,
@@ -271,7 +272,13 @@ ptys.on('exit', (e) => broadcast('pty:exit', e));
 ptys.on('session-updated', (s) => broadcast('session:updated', s));
 
 ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
-  const snapshot = ptys.create(spec);
+  // Resolve the agent's binary here rather than trusting PATH: a packaged app
+  // launched from Finder has only the bare launchd PATH, and a bare `claude`
+  // would exit immediately.
+  const snapshot = ptys.create({
+    ...spec,
+    command: resolvedCommand(spec.agent, spec.command),
+  });
   // Claude never reports its model on a live session, so record what its
   // configuration says it will use.
   const model = readConfiguredModel(snapshot.agent);
@@ -329,7 +336,9 @@ ipcMain.handle('settings:get', () => getSettings());
 ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) =>
   setSettings(patch),
 );
-ipcMain.handle('discovery:list', () => discoverSessions(ptys.ownedPids()));
+ipcMain.handle('discovery:list', () =>
+  discoverSessions(ptys.ownedPids(), resolvedCommand),
+);
 ipcMain.handle('discovery:focus', (_e, pid: number) =>
   focusExternalSession(pid),
 );
@@ -343,7 +352,7 @@ ipcMain.handle('discovery:attach', (_e, d: DiscoveredSession) =>
     label: d.name,
     agent: d.agent,
     cwd: d.cwd || defaultCwd(),
-    command: 'claude',
+    command: resolvedCommand('claude'),
     args: ['attach', d.sessionId],
   }),
 );
@@ -445,7 +454,7 @@ function startMonitorPolling() {
       .list()
       .filter((s) => s.origin === 'monitored' && s.externalId);
     if (monitored.length === 0) return;
-    const found = await discoverSessions(new Set());
+    const found = await discoverSessions(new Set(), resolvedCommand);
     ptys.syncMonitored(
       found.map((f: { sessionId: string; status: SessionStatus }) => ({
         externalId: f.sessionId,
@@ -453,6 +462,22 @@ function startMonitorPolling() {
       })),
     );
   }, 3000);
+}
+
+/**
+ * The executable to spawn for an agent, asking that agent's adapter.
+ *
+ * An explicit command from the caller always wins -- someone naming a binary
+ * means it -- and a shell with no command falls through to the adapter too, so
+ * every session resolves the same way.
+ */
+function resolvedCommand(
+  agent: AgentKind | undefined,
+  explicit?: string,
+): string | undefined {
+  if (explicit) return explicit;
+  if (!agent) return undefined;
+  return agentAdapters.get(agent)?.resolveBinary();
 }
 
 /** Where the spawned codex app server is remembered between runs. */

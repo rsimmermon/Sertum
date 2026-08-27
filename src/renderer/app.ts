@@ -39,10 +39,16 @@ const STATUS_GLYPH: Record<SessionStatus, string> = {
   idle: '○',
 };
 
-const AGENTS: Record<AgentKind, { command: string; args: string[] }> = {
-  claude: { command: 'claude', args: [] },
-  codex: { command: 'codex', args: [] },
-  shell: { command: '', args: [] },
+/**
+ * Launch arguments per agent. Deliberately no command: which executable an
+ * agent is lives with that agent's adapter in the main process, because the
+ * renderer cannot look at the filesystem and a bare name resolves only when
+ * the app happens to have been started from a shell.
+ */
+const AGENTS: Record<AgentKind, { args: string[] }> = {
+  claude: { args: [] },
+  codex: { args: [] },
+  shell: { args: [] },
 };
 
 /** CSS custom properties the settings dialog drives. */
@@ -195,7 +201,6 @@ export class App {
       agent,
       label: label ?? `${agent}`,
       cwd: resolvedCwd,
-      command: preset.command || undefined,
       args: preset.args,
     });
     this.sessions.set(snapshot.id, snapshot);
