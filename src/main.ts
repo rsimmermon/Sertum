@@ -15,7 +15,10 @@ import { focusExternalSession } from './main/adapters/window-focus';
 import type { DiscoveredSession, SessionStatus } from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
 
-// Must run before `ready` or the menu and dock fall back to "Electron".
+// Sets the userData dir and the name Electron reports to the app itself.
+// On macOS this does NOT drive the menu-bar/Dock title: those come from the
+// running bundle's Info.plist, which scripts/dev-app-name.js patches for dev
+// and Forge writes correctly for packaged builds.
 app.setName('AgentStation');
 
 if (started) app.quit();

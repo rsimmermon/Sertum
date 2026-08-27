@@ -13,13 +13,15 @@ const config: ForgeConfig = {
     name: 'AgentStation',
     executableName: 'AgentStation',
     appBundleId: 'ai.wisecode.agentstation',
+    // Extension-less: packager picks .icns on macOS and .ico on Windows.
+    icon: 'assets/icon',
   },
   rebuildConfig: {},
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({ setupIcon: 'assets/icon.ico' }),
     new MakerZIP({}, ['darwin']),
-    new MakerRpm({}),
-    new MakerDeb({}),
+    new MakerRpm({ options: { icon: 'assets/icon.png' } }),
+    new MakerDeb({ options: { icon: 'assets/icon.png' } }),
   ],
   plugins: [
     new VitePlugin({
