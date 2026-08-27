@@ -172,19 +172,54 @@ function findCodexTranscript(
 
 /** Reads the leading `session_meta` / `turn_context` to learn a rollout's cwd. */
 function recordedCwd(file: string): string | null {
-  try {
-    const head = fs.readFileSync(file, 'utf8').slice(0, 8192).split('\n');
-    for (const line of head) {
-      if (!line.startsWith('{')) continue;
-      const rec = JSON.parse(line) as Record<string, unknown>;
-      const payload = rec.payload as Record<string, unknown> | undefined;
-      const c = payload?.cwd;
-      if (typeof c === 'string') return c;
+  for (const line of headLines(file)) {
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      // One unparseable record must not abandon the file: the cwd may well be
+      // on the next line.
+      continue;
     }
-  } catch {
-    // Unreadable or truncated file: treat as no match.
+    const payload = rec.payload as Record<string, unknown> | undefined;
+    const c = payload?.cwd;
+    if (typeof c === 'string') return c;
   }
   return null;
+}
+
+/**
+ * Complete JSONL records from the head of a file.
+ *
+ * The window is generous because Codex embeds its full base instructions in
+ * the opening `session_meta` record, which routinely runs past 20KB. Reading
+ * a smaller head yields exactly one truncated line and nothing parseable --
+ * which silently broke matching a Codex rollout to its folder, and with it
+ * every model, effort and context readout for Codex sessions.
+ *
+ * Only the head is read, never the whole file: transcripts reach megabytes.
+ */
+function headLines(file: string, maxBytes = 256 * 1024): string[] {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(maxBytes);
+    const read = fs.readSync(fd, buf, 0, maxBytes, 0);
+    const lines = buf.toString('utf8', 0, read).split('\n');
+    // A slice that filled the buffer almost certainly ends mid-record.
+    if (read === maxBytes) lines.pop();
+    return lines.filter((line) => line.startsWith('{'));
+  } catch {
+    return [];
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Already closed.
+      }
+    }
+  }
 }
 
 /** Newest-first, bounded so a large history cannot stall discovery. */
@@ -261,6 +296,28 @@ function safeReaddirEnt(p: string): fs.Dirent[] {
  * working directory it recorded. Claude sessions normally arrive with an
  * explicit path and skip this.
  */
+/**
+ * The transcript for a session this app did not start.
+ *
+ * Deliberately carries no freshness guard, unlike findTranscriptForCwd. A
+ * monitored session began before we ever saw it, and its `startedAt` records
+ * the moment we adopted it -- so the guard that stops an owned session from
+ * inheriting a previous run's transcript would reject every monitored one,
+ * including the transcript that genuinely belongs to it.
+ *
+ * When discovery supplies a real agent session id the match is exact; the cwd
+ * is only a fallback for the discoverers that cannot.
+ */
+export function findTranscriptForSession(
+  agent: AgentKind,
+  sessionId: string | null,
+  cwd: string | null,
+): string | null {
+  return agent === 'codex'
+    ? findCodexTranscript(sessionId, cwd)
+    : findClaudeTranscript(sessionId, cwd);
+}
+
 export function findTranscriptForCwd(
   agent: AgentKind,
   cwd: string,

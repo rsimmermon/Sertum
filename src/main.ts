@@ -23,9 +23,17 @@ import {
   readConfiguredModel,
   readSessionMeta,
 } from './main/adapters/session-meta';
-import { findTranscriptForCwd } from './main/adapters/transcript';
+import {
+  findTranscriptForCwd,
+  findTranscriptForSession,
+} from './main/adapters/transcript';
 import { focusExternalSession } from './main/adapters/window-focus';
-import type { DiscoveredSession, SessionStatus, Settings } from './shared/types';
+import type {
+  DiscoveredSession,
+  SessionSnapshot,
+  SessionStatus,
+  Settings,
+} from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
 
 // Sets the userData dir and the name Electron reports to the app itself.
@@ -155,16 +163,9 @@ function startMetaPolling() {
   if (metaTimer) return;
   metaTimer = setInterval(() => {
     for (const s of ptys.list()) {
-      if (s.origin === 'monitored' || s.pid === null) continue;
+      if (s.pid === null) continue;
 
-      // Claude tells us its exact transcript through the hook payload. Never
-      // guess one by cwd: several sessions share a folder, and showing another
-      // session's context is worse than showing none.
-      const transcript =
-        s.transcriptPath ??
-        (s.agent === 'claude'
-          ? null
-          : findTranscriptForCwd(s.agent, s.cwd, s.startedAt));
+      const transcript = transcriptFor(s);
       if (!transcript) continue;
 
       const meta = readSessionMeta(s.agent, transcript);
@@ -172,6 +173,42 @@ function startMetaPolling() {
     }
   }, 4000);
 }
+/**
+ * Which transcript belongs to a session, or null when nothing can be matched
+ * without guessing.
+ *
+ * Monitored sessions are included: the transcript is on disk whoever owns the
+ * process, which is the same property that lets discovery summarise them, so
+ * there is no reason an adopted row should go without a model or a context
+ * readout. They resolve by their discovered session id rather than by cwd.
+ */
+function transcriptFor(s: SessionSnapshot): string | null {
+  if (s.transcriptPath) return s.transcriptPath;
+
+  if (s.origin === 'monitored') {
+    const sessionId = discoveredSessionId(s.externalId);
+    // Falling back to cwd is fine for Codex but not for Claude, per the note
+    // below -- a Claude row we cannot identify exactly gets nothing.
+    if (s.agent === 'claude' && !sessionId) return null;
+    return findTranscriptForSession(s.agent, sessionId, s.cwd);
+  }
+
+  // Claude tells us its exact transcript through the hook payload. Never
+  // guess one by cwd: several sessions share a folder, and showing another
+  // session's context is worse than showing none.
+  if (s.agent === 'claude') return null;
+  return findTranscriptForCwd(s.agent, s.cwd, s.startedAt);
+}
+
+/**
+ * A discovered id is either the agent's own session id or a `pid:N` stand-in
+ * from the process scan, which identifies nothing on disk.
+ */
+function discoveredSessionId(externalId: string | null): string | null {
+  if (!externalId || externalId.startsWith('pid:')) return null;
+  return externalId;
+}
+
 let mainWindow: BrowserWindow | null = null;
 
 const createWindow = () => {
