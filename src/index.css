@@ -639,3 +639,31 @@ input.field:focus { outline: none; border-color: var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Row close control. Hidden until the row is hovered or focused, so the list
+   stays quiet — except on a finished session, where removing it is the next
+   thing you are likely to want. */
+.sb-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: default;
+  visibility: hidden;
+  transition: background-color 90ms ease, color 90ms ease;
+}
+.sb-row:hover .sb-close,
+.sb-row:focus-within .sb-close,
+.sb-close.always,
+.sb-close:focus-visible { visibility: visible; }
+.sb-close:hover { background: var(--err-soft); color: var(--err); }
+.sb-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

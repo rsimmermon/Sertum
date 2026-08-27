@@ -34,20 +34,28 @@ export function modelFamily(model: string): ModelFamily {
   return 'other';
 }
 
-/** "claude-opus-5" -> "O5", "gpt-5.6-sol" -> "G5". Two chars, always. */
+/**
+ * "claude-opus-5" -> "Op5", "gpt-5.6-sol" -> "Gp5".
+ *
+ * Two letters rather than one, and mixed case rather than upper: a lone
+ * capital O next to a digit reads as a zero in a monospace face, so "O5" was
+ * being seen as "05". "Op5" cannot be mistaken for a number.
+ */
 export function modelMark(model: string): string {
   const family = modelFamily(model);
   const initial: Record<ModelFamily, string> = {
-    opus: 'O',
-    sonnet: 'S',
-    haiku: 'H',
-    gpt: 'G',
-    gemini: 'M',
-    other: '·',
+    opus: 'Op',
+    sonnet: 'So',
+    haiku: 'Ha',
+    gpt: 'Gp',
+    gemini: 'Gm',
+    other: '··',
   };
-  // First standalone number in the name is the generation.
-  const version = /(?:^|[^a-z0-9])(\d+)(?:\.\d+)?/i.exec(model)?.[1] ?? '';
-  return (initial[family] + version).slice(0, 3);
+  // Bracketed annotations carry context-window sizes, not versions: without
+  // dropping them "opus[1m]" reads its 1 as a generation and renders "Op1".
+  const cleaned = model.replace(/\[[^\]]*\]/g, '');
+  const version = /(?:^|[^a-z0-9])(\d+)(?:\.\d+)?/i.exec(cleaned)?.[1] ?? '';
+  return (initial[family] + version).slice(0, 4);
 }
 
 export function effortLevel(effort: string): EffortLevel | null {

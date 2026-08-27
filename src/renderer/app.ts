@@ -397,6 +397,21 @@ export class App {
           row.classList.add('is-external');
         }
 
+        // The only close affordance used to live on the top tab strip, which
+        // is now hidden by default. A finished session needs it most, so it
+        // stays visible there rather than waiting for a hover.
+        const verb = s.origin === 'monitored' ? 'Stop watching' : 'Close';
+        const close = iconButton('×', `${verb} ${s.label}`, (e) => {
+          e.stopPropagation();
+          this.closeTab(s.id);
+        });
+        close.classList.add('sb-close');
+        close.title = `${verb} ${s.label}`;
+        if (s.status === 'done' || s.exitCode !== null) {
+          close.classList.add('always');
+        }
+        top.append(close);
+
         const bottom = div('sb-bottom');
         bottom.append(text('span', s.activity ?? shortCwd(s.cwd), 'activity'));
         const ctx = contextInfo(s);
