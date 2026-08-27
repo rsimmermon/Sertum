@@ -1,4 +1,12 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Menu,
+  shell,
+} from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { PtyManager } from './main/pty-manager';
@@ -11,6 +19,7 @@ import {
   recordAppServer,
 } from './main/adapters/codex-app-server';
 import { createAgentAdapters } from './main/adapters/agent-adapter';
+import { readWorktrees, removeWorktree } from './main/worktrees';
 import { getSettings, setSettings } from './main/settings';
 import {
   isUserThread,
@@ -268,6 +277,20 @@ ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
 ipcMain.handle('session:list', () => ptys.list());
 ipcMain.handle('clipboard:write', (_e, text: string) => {
   clipboard.writeText(text);
+});
+ipcMain.handle('worktree:list', (_e, cwd: string) => {
+  // Sessions are passed as a map so the inventory can say which worktree is
+  // occupied without the worktree layer knowing anything about sessions.
+  const byId = new Map(ptys.list().map((s) => [s.id, s.cwd]));
+  return readWorktrees(cwd, byId);
+});
+ipcMain.handle(
+  'worktree:remove',
+  (_e, { root, path: target, force }: { root: string; path: string; force: boolean }) =>
+    removeWorktree(root, target, force),
+);
+ipcMain.handle('shell:reveal', (_e, target: string) => {
+  shell.showItemInFolder(target);
 });
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
 ipcMain.handle(

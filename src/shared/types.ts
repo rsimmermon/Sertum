@@ -123,6 +123,34 @@ export interface DirectoryInfo {
   isWorktree: boolean;
 }
 
+/** One git worktree in the C9 inventory. */
+export interface WorktreeInfo {
+  path: string;
+  name: string;
+  /** Null when the worktree is on a detached HEAD. */
+  branch: string | null;
+  detached: boolean;
+  locked: boolean;
+  /** The repository's own checkout, which can never be removed. */
+  isMain: boolean;
+  modified: number;
+  untracked: number;
+  /** Already contained in the default branch, so safe to reclaim. */
+  merged: boolean;
+  /** Null where the size could not be measured. */
+  sizeBytes: number | null;
+  /** The session working in this worktree, when one is. */
+  sessionId: string | null;
+}
+
+export interface WorktreeInventory {
+  repo: string;
+  root: string;
+  worktrees: WorktreeInfo[];
+  /** Untracked files copied into every new worktree, when configured. */
+  includeFile: { path: string; entries: string[] } | null;
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -184,6 +212,16 @@ export interface SertumApi {
    * not, so the browser API would work in development and fail once shipped.
    */
   copyText(text: string): Promise<void>;
+  /** Git worktrees for the repository containing `cwd` (wireframe C9). */
+  listWorktrees(cwd: string): Promise<WorktreeInventory | null>;
+  /** Remove a worktree. `force` discards uncommitted work in it. */
+  removeWorktree(
+    root: string,
+    worktreePath: string,
+    force: boolean,
+  ): Promise<{ ok: boolean; reason?: string }>;
+  /** Show a folder in the OS file manager. */
+  revealPath(target: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */
   pickDirectory(startIn?: string): Promise<string | null>;
   /** Absolute path used when a session does not specify one. */

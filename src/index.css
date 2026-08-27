@@ -845,3 +845,44 @@ input.field:focus { outline: none; border-color: var(--accent); }
 }
 .palette-accel { flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
 .palette-empty { font-size: 12px; color: var(--muted); padding: 4px 12px; line-height: 1.5; }
+
+/* ---------- worktree manager (wireframe C9) ---------- */
+.btn.ghost { background: transparent; }
+.btn.small { font-size: 12px; padding: 4px 10px; }
+.wt-dialog { width: 720px; max-width: calc(100vw - 48px); display: flex; flex-direction: column; gap: 16px; }
+.wt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.wt-head-actions { display: flex; gap: 8px; flex: none; }
+.wt-title h2 { margin: 0 0 4px; font-size: 16px; letter-spacing: -0.2px; }
+.wt-title p { margin: 0; font-size: 12px; color: var(--muted); }
+
+.wt-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.wt-thead, .wt-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1.4fr 1fr 0.9fr 0.6fr auto;
+  align-items: center; gap: 10px; padding: 7px 12px;
+}
+.wt-thead {
+  background: var(--surface);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px; color: var(--muted);
+}
+.wt-row { border-top: 1px solid var(--line-soft); font-size: 12px; }
+.wt-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-name { font-weight: 600; color: var(--ink); }
+.wt-branch, .wt-status { color: var(--ink-2); }
+.wt-size { font-family: var(--font-mono); font-size: 11px; color: var(--muted); text-align: right; }
+.wt-action { display: flex; justify-content: flex-end; }
+.wt-chip {
+  display: inline-block; max-width: 100%;
+  padding: 2px 6px; border-radius: 3px;
+  background: var(--surface-2); color: var(--muted);
+  font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wt-chip.on { background: var(--run-soft); color: var(--run); font-weight: 600; }
+
+.wt-strip {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 10px; border-radius: 5px; font-size: 12px; line-height: 1.45;
+}
+.wt-strip.ok { background: var(--ok-soft); color: var(--ok); }
+.wt-strip.warn { background: var(--warn-soft); color: var(--warn); }
+.wt-strip-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; margin-top: 5px; }

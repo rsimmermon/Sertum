@@ -9,6 +9,7 @@ import {
   openCommandPalette,
   type PaletteAction,
 } from './command-palette';
+import { openWorktreeDialog } from './worktree-dialog';
 import {
   DEFAULT_SETTINGS,
   type AgentKind,
@@ -625,7 +626,7 @@ export class App {
       { label: 'Review changes…', accel: '⌘⇧D' },
       { label: 'Commit & push…' },
       { label: 'Open pull request…' },
-      { label: 'Worktree manager…' },
+      { label: 'Worktree manager…', onSelect: () => void this.promptWorktrees(s.cwd) },
       { label: 'Remove worktree…', destructive: true },
       SEPARATOR,
       {
@@ -704,7 +705,11 @@ export class App {
         run: () => void this.promptAdopt(),
       },
       { glyph: '⑂', label: 'New session from PR #…' },
-      { glyph: '⌥', label: 'Worktree manager…' },
+      {
+        glyph: '⌥',
+        label: 'Worktree manager…',
+        run: () => void this.promptWorktrees(),
+      },
       {
         glyph: '⚙',
         label: 'Settings…',
@@ -725,6 +730,26 @@ export class App {
       onPickSession: (id) => this.focusSession(id),
       onCreateNamed: (label) => void this.promptNewSession(label),
       onClose: () => this.activeId && this.panes.get(this.activeId)?.focus(),
+    });
+  }
+
+  /**
+   * Opens the worktree inventory — wireframe C9.
+   *
+   * Which repository it shows follows the session you asked from, falling
+   * back to the active one, so the manager is always about the code in front
+   * of you rather than some remembered default.
+   */
+  private async promptWorktrees(cwd?: string): Promise<void> {
+    const from =
+      cwd ??
+      (this.activeId ? this.sessions.get(this.activeId)?.cwd : undefined) ??
+      this.lastCwd ??
+      (await api.defaultCwd());
+    await openWorktreeDialog({
+      cwd: from,
+      sessionLabel: (id) => this.sessions.get(id)?.label,
+      onOpenSession: (id) => this.focusSession(id),
     });
   }
 

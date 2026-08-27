@@ -20,6 +20,10 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:create', spec),
   listSessions: () => ipcRenderer.invoke('session:list'),
   copyText: (text: string) => ipcRenderer.invoke('clipboard:write', text),
+  listWorktrees: (cwd: string) => ipcRenderer.invoke('worktree:list', cwd),
+  removeWorktree: (root: string, path: string, force: boolean) =>
+    ipcRenderer.invoke('worktree:remove', { root, path, force }),
+  revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
