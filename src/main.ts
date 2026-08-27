@@ -19,7 +19,11 @@ import {
   recordAppServer,
 } from './main/adapters/codex-app-server';
 import { createAgentAdapters } from './main/adapters/agent-adapter';
-import { readWorktrees, removeWorktree } from './main/worktrees';
+import {
+  provisionWorktree,
+  readWorktrees,
+  removeWorktree,
+} from './main/worktrees';
 import { getSettings, setSettings } from './main/settings';
 import {
   isUserThread,
@@ -288,6 +292,13 @@ ipcMain.handle(
   'worktree:remove',
   (_e, { root, path: target, force }: { root: string; path: string; force: boolean }) =>
     removeWorktree(root, target, force),
+);
+ipcMain.handle(
+  'worktree:provision',
+  (
+    _e,
+    { cwd, branch, copyIncludes }: { cwd: string; branch: string; copyIncludes: boolean },
+  ) => provisionWorktree(cwd, branch, copyIncludes),
 );
 ipcMain.handle('shell:reveal', (_e, target: string) => {
   shell.showItemInFolder(target);

@@ -151,6 +151,17 @@ export interface WorktreeInventory {
   includeFile: { path: string; entries: string[] } | null;
 }
 
+/** Outcome of asking for a worktree to work in (wireframe C1 isolation). */
+export interface WorktreeProvisionResult {
+  ok: boolean;
+  path?: string;
+  /** An existing managed worktree was handed back rather than created. */
+  reused?: boolean;
+  /** Untracked files copied in from .worktreeinclude. */
+  copied?: string[];
+  reason?: string;
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -220,6 +231,15 @@ export interface SertumApi {
     worktreePath: string,
     force: boolean,
   ): Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * Get a worktree for a branch, creating it or reusing a managed one.
+   * Agent-neutral: a worktree is git's, so every agent takes the same path.
+   */
+  provisionWorktree(
+    cwd: string,
+    branch: string,
+    copyIncludes: boolean,
+  ): Promise<WorktreeProvisionResult>;
   /** Show a folder in the OS file manager. */
   revealPath(target: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */

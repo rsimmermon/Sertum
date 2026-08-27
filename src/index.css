@@ -886,3 +886,18 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .wt-strip.ok { background: var(--ok-soft); color: var(--ok); }
 .wt-strip.warn { background: var(--warn-soft); color: var(--warn); }
 .wt-strip-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; margin-top: 5px; }
+
+/* Isolation rows in New Session (wireframe C1). */
+.iso-row { display: flex; flex-direction: column; gap: 4px; }
+.iso-row[hidden] { display: none; }
+.iso-check {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--ink-2); cursor: default;
+}
+.iso-check[hidden] { display: none; }
+.iso-check input { accent-color: var(--accent); }
+select.field {
+  font-family: inherit; font-size: 13px; color: var(--ink);
+  padding: 7px 9px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--surface);
+}

@@ -23,6 +23,8 @@ const api: SertumApi = {
   listWorktrees: (cwd: string) => ipcRenderer.invoke('worktree:list', cwd),
   removeWorktree: (root: string, path: string, force: boolean) =>
     ipcRenderer.invoke('worktree:remove', { root, path, force }),
+  provisionWorktree: (cwd: string, branch: string, copyIncludes: boolean) =>
+    ipcRenderer.invoke('worktree:provision', { cwd, branch, copyIncludes }),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   renameSession: (id: string, label: string) =>

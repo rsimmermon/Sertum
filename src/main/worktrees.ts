@@ -1,8 +1,13 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { WorktreeInfo, WorktreeInventory } from '../shared/types';
+import type {
+  WorktreeInfo,
+  WorktreeInventory,
+  WorktreeProvisionResult,
+} from '../shared/types';
 
 const run = promisify(execFile);
 
@@ -61,6 +66,122 @@ export async function removeWorktree(
   } catch (err) {
     return { ok: false, reason: gitMessage(err) };
   }
+}
+
+/**
+ * Where managed worktrees live.
+ *
+ * Kept outside the repository on purpose. A worktree created inside the repo
+ * shows up as untracked clutter in the checkout it came from, and one created
+ * beside it litters whatever folder the user keeps projects in. A single
+ * managed root also makes "is this ours?" a prefix test rather than a guess,
+ * which is what lets the pool reclaim safely.
+ */
+export function managedRoot(): string {
+  return path.join(os.homedir(), '.sertum', 'worktrees');
+}
+
+export function isManagedWorktree(target: string): boolean {
+  const rel = path.relative(managedRoot(), path.resolve(target));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** Filesystem-safe form of a branch name, which may contain slashes. */
+function slug(branch: string): string {
+  return branch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'work';
+}
+
+/**
+ * Provides a worktree for a branch, reusing one when we already have it.
+ *
+ * This is the pool: a managed worktree is kept when its session ends rather
+ * than deleted, so coming back to the same branch skips the expensive part.
+ * What makes a fresh worktree costly is not git -- it is everything git does
+ * not carry across, since only tracked files come with a checkout. Reuse is by
+ * branch identity rather than by swapping branches inside a spare directory,
+ * which would invalidate exactly the installed dependencies and build caches
+ * the pool exists to preserve.
+ */
+export async function provisionWorktree(
+  cwd: string,
+  branch: string,
+  copyIncludes: boolean,
+): Promise<WorktreeProvisionResult> {
+  const root = await mainRepoRoot(cwd);
+  if (!root) return { ok: false, reason: 'Not inside a git repository.' };
+
+  const target = path.join(managedRoot(), path.basename(root), slug(branch));
+
+  const existing = await listWorktrees(root);
+  const hit = existing.find(
+    (w) => path.resolve(w.path) === path.resolve(target),
+  );
+  if (hit) {
+    // Already ours and on the right branch: hand it straight back.
+    if (hit.branch === branch) return { ok: true, path: target, reused: true };
+    return {
+      ok: false,
+      reason: `${target} already exists on branch ${hit.branch ?? 'a detached HEAD'}.`,
+    };
+  }
+
+  const inUse = existing.find((w) => w.branch === branch);
+  if (inUse) {
+    // Git enforces one branch per worktree; say so before it does, because
+    // its own message points at a path the user has no context for.
+    return {
+      ok: false,
+      reason: `Branch ${branch} is already checked out at ${inUse.path}.`,
+    };
+  }
+
+  try {
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    const known = await branchExists(root, branch);
+    const args = known
+      ? ['-C', root, 'worktree', 'add', target, branch]
+      : ['-C', root, 'worktree', 'add', '-b', branch, target];
+    await run('git', args, { timeout: 60_000 });
+  } catch (err) {
+    return { ok: false, reason: gitMessage(err) };
+  }
+
+  const copied = copyIncludes ? await copyIncludes_(root, target) : [];
+  return { ok: true, path: target, reused: false, copied };
+}
+
+async function branchExists(root: string, branch: string): Promise<boolean> {
+  try {
+    await run('git', ['-C', root, 'rev-parse', '--verify', `refs/heads/${branch}`], {
+      timeout: 8_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copies the untracked files a checkout needs to be usable. Failures are
+ * reported by omission rather than aborting: a missing .env is worth knowing
+ * about, but it is not a reason to throw away a worktree that was created.
+ */
+async function copyIncludes_(root: string, target: string): Promise<string[]> {
+  const include = includeFileFor(root);
+  if (!include) return [];
+  const done: string[] = [];
+  for (const entry of include.entries) {
+    const from = path.join(root, entry);
+    const to = path.join(target, entry);
+    try {
+      await fs.promises.mkdir(path.dirname(to), { recursive: true });
+      await fs.promises.cp(from, to, { recursive: true, errorOnExist: false });
+      done.push(entry);
+    } catch {
+      // Not present in the source checkout, or unreadable.
+    }
+  }
+  return done;
 }
 
 // ------------------------------------------------------------------ details
