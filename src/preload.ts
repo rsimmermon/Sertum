@@ -19,7 +19,10 @@ const api: SertumApi = {
   createSession: (spec: Partial<SessionSpec>) =>
     ipcRenderer.invoke('session:create', spec),
   listSessions: () => ipcRenderer.invoke('session:list'),
+  copyText: (text: string) => ipcRenderer.invoke('clipboard:write', text),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
+  renameSession: (id: string, label: string) =>
+    ipcRenderer.invoke('session:rename', { id, label }),
   removeSession: (id: string) => ipcRenderer.invoke('session:remove', id),
   pickDirectory: (startIn?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', startIn),

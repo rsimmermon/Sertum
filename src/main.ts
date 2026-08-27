@@ -10,6 +10,7 @@ import {
   reapStrayAppServers,
   recordAppServer,
 } from './main/adapters/codex-app-server';
+import { createAgentAdapters } from './main/adapters/agent-adapter';
 import { getSettings, setSettings } from './main/settings';
 import {
   isUserThread,
@@ -61,6 +62,12 @@ const hooks = new HookServer();
  * from watching its output.
  */
 const codex = new CodexAppServer();
+
+/**
+ * One implementation per agent of everything the UI can ask of a session.
+ * Callers below look an agent up here rather than switching on its kind.
+ */
+const agentAdapters = createAgentAdapters({ codex });
 
 /**
  * Codex sessions awaiting their thread, oldest first.
@@ -259,7 +266,29 @@ ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
   return { ...snapshot, model: model ?? snapshot.model };
 });
 ipcMain.handle('session:list', () => ptys.list());
+ipcMain.handle('clipboard:write', (_e, text: string) => {
+  clipboard.writeText(text);
+});
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
+ipcMain.handle(
+  'session:rename',
+  (_e, { id, label }: { id: string; label: string }) => {
+    const stored = ptys.rename(id, label);
+    if (stored === null) return null;
+    const session = ptys.get(id);
+    if (session) {
+      // Not awaited: the local name is authoritative and already applied, so
+      // the rename must not wait on an agent that may be slow or gone.
+      void agentAdapters
+        .get(session.agent)
+        ?.renameRemote(
+          { externalId: session.externalId, cwd: session.cwd },
+          stored,
+        );
+    }
+    return stored;
+  },
+);
 ipcMain.handle('session:remove', (_e, id: string) => ptys.remove(id));
 ipcMain.handle('workspace:default-cwd', () => defaultCwd());
 ipcMain.handle('settings:get', () => getSettings());
@@ -494,7 +523,10 @@ function buildMenu() {
     {
       label: 'Session',
       submenu: [
-        { label: 'Rename…', enabled: false },
+        // No accelerator: D2 draws this as Enter, but that is Enter on a
+        // focused sidebar row, and a menu accelerator would swallow every
+        // Enter in the app -- including keystrokes meant for the terminal.
+        { label: 'Rename…', click: send('menu:rename') },
         { type: 'separator' },
         {
           label: 'Interrupt Turn',
@@ -502,6 +534,27 @@ function buildMenu() {
           click: send('menu:interrupt'),
         },
         { label: 'Stop Session', click: send('menu:stop') },
+        { type: 'separator' },
+        // Moving between sessions is a property of the list, not of any
+        // agent, so these behave identically for Claude, Codex and a shell.
+        {
+          label: 'Next Session',
+          accelerator: 'CmdOrCtrl+Shift+]',
+          click: send('menu:next-session'),
+        },
+        {
+          label: 'Previous Session',
+          accelerator: 'CmdOrCtrl+Shift+[',
+          click: send('menu:prev-session'),
+        },
+        {
+          label: 'Go to Session',
+          submenu: Array.from({ length: 9 }, (_, i) => ({
+            label: `Session ${i + 1}`,
+            accelerator: `CmdOrCtrl+${i + 1}`,
+            click: send(`menu:goto-session-${i + 1}`),
+          })),
+        },
         { type: 'separator' },
         { label: 'Session Info', accelerator: 'CmdOrCtrl+I', enabled: false },
       ],

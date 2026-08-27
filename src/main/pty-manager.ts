@@ -383,6 +383,25 @@ export class PtyManager extends EventEmitter {
     return true;
   }
 
+  /**
+   * Renames a session, falling back to the folder when the name is blank.
+   *
+   * Deliberately agent-neutral: the label belongs to Sertum, not to the
+   * agent, so a shell renames exactly like Claude or Codex does. Wireframe C3
+   * also wants the new name pushed to agents that can hold one, which is a
+   * per-agent capability and stays out of here.
+   */
+  rename(id: string, label: string): string | null {
+    const session = this.sessions.get(id);
+    if (!session) return null;
+    const trimmed = label.trim().slice(0, 120);
+    const next = trimmed || fallbackLabel(session.snapshot.cwd);
+    if (next === session.snapshot.label) return next;
+    session.snapshot.label = next;
+    this.emit('session-updated', { ...session.snapshot });
+    return next;
+  }
+
   list(): SessionSnapshot[] {
     return [...this.sessions.values()].map((s) => ({ ...s.snapshot }));
   }

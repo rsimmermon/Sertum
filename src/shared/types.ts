@@ -165,10 +165,25 @@ export interface SertumApi {
   listSessions(): Promise<SessionSnapshot[]>;
   killSession(id: string): Promise<void>;
   /**
+   * Rename a session. The label is Sertum's own, so this works for every
+   * agent -- including a plain shell, which has no notion of a session name.
+   * Resolves the stored label, which may differ from the request when an
+   * empty name falls back to the folder.
+   */
+  renameSession(id: string, label: string): Promise<string | null>;
+  /**
    * End a session and forget it. Resolves false if the process survived even
    * SIGKILL, in which case the session is kept rather than stranded.
    */
   removeSession(id: string): Promise<boolean>;
+  /**
+   * Put text on the system clipboard.
+   *
+   * Goes through the main process on purpose: navigator.clipboard needs a
+   * secure context, which the dev server is and a packaged file:// build is
+   * not, so the browser API would work in development and fail once shipped.
+   */
+  copyText(text: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */
   pickDirectory(startIn?: string): Promise<string | null>;
   /** Absolute path used when a session does not specify one. */
