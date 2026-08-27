@@ -48,7 +48,17 @@ const config: ForgeConfig = {
     icon: 'assets/icon',
     ignore: (file) => !shipInPackage(file),
   },
-  rebuildConfig: {},
+  rebuildConfig: {
+    // node-pty ships its own prebuilt N-API binaries (fetched by its own
+    // `install` script — see node_modules/node-pty/scripts/prebuild.js) and
+    // N-API is ABI-stable across Node/Electron, so no per-Electron-version
+    // rebuild is actually needed. Forge's rebuild step doesn't know about
+    // that bespoke prebuild convention, so left alone it always falls
+    // through to a from-source `node-gyp rebuild` — dragging in a full
+    // native toolchain (MSVC/Xcode/build-essential) just to reproduce a
+    // binary node-pty already ships. Skip it and use that binary as-is.
+    ignoreModules: ['node-pty'],
+  },
   makers: [
     new MakerSquirrel({ setupIcon: 'assets/icon.ico' }),
     new MakerZIP({}, ['darwin']),

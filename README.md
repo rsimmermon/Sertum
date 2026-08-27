@@ -141,6 +141,83 @@ node scripts/drive.js "document.querySelectorAll('.tab').length"
 which is the only way to read terminal contents while the WebGL renderer is
 active.
 
+## Windows notes
+
+Development so far has mostly happened on macOS. Running on Windows 11
+surfaced a handful of differences, some already handled in code and some
+fixed along the way:
+
+- **Forge's rebuild step wants a full native toolchain it doesn't need.**
+  `node-pty` ships its own prebuilt N-API binaries per platform/arch
+  (`node_modules/node-pty/prebuilds/win32-x64/…`), and N-API is ABI-stable
+  across Node/Electron — no rebuild is actually required. Left alone, Forge's
+  `rebuildConfig` doesn't know that and falls through to `node-gyp rebuild`,
+  which wants MSVC Build Tools. Fixed by `ignoreModules: ['node-pty']` in
+  `forge.config.ts`.
+- **npm 11's `allowScripts` blocks install scripts by default.** `node-pty`
+  (fetches its prebuild), `esbuild`, and `electron-winstaller` (the Squirrel
+  installer maker, Windows-only) all need their `postinstall`/`install`
+  scripts to run. Without an `allowScripts` block in `package.json`, `npm
+  install` silently skips them and `node-pty` ends up with no native binary
+  at all.
+- **Codex sessions failed to start — `resolveCodexBinary()` had no Windows
+  branch.** Its candidate list was entirely POSIX paths (`~/.codex/…`,
+  `/opt/homebrew/…`, `/usr/local/…`), so on win32 it always fell through to
+  a bare `'codex'` and let PATH decide. That's the right call on macOS/Linux,
+  but wrong on Windows for two independent reasons, both hit here:
+  - `codex` is installed by npm as a `codex.cmd` shim (confirmed via `where
+    codex`), never as `codex.exe`. `node-pty`'s Windows backend calls
+    `CreateProcess` directly, which resolves a bare name by trying
+    `<name>.exe` only — it doesn't walk `PATHEXT` the way a shell does. A
+    session pane spawning `codex` failed with `Cannot create process, error
+    code: 2` (`ERROR_FILE_NOT_FOUND`), reproduced directly with
+    `npx electron scripts/smoke-pty.js codex`.
+  - Separately, the app's own Codex app-server (`spawn(this.binary, …)` in
+    `codex-app-server.ts`) uses plain `child_process.spawn`, and Node has
+    refused to spawn `.cmd`/`.bat` files without `shell: true` since the
+    CVE-2024-27980 hardening — it throws `EINVAL` *synchronously*, not via
+    the `'error'` event the code already handles gracefully.
+  - Fixed by adding a win32 branch to `resolveCodexBinary()` that walks
+    `PATH` × `PATHEXT` itself (mirroring what a shell would do, since neither
+    `CreateProcess` nor `child_process.spawn` will), and by setting `shell:
+    true` on the app-server spawn when the resolved binary is a `.cmd`/
+    `.bat`. Verified end-to-end: a real codex session now spawns, connects
+    to the app server, and reaches `status: "working"`.
+  - `ClaudeAdapter` didn't need this — the installed `claude` is a genuine
+    `claude.exe`, not an npm shim, so `CreateProcess`'s built-in
+    "append `.exe` to a bare name" already finds it.
+- **`node-pty`'s ConPTY `kill()` can throw a benign but scary-looking
+  uncaught exception.** On the non-DLL ConPTY path, `kill()` forks a helper
+  (`conpty_console_list_agent.js`) to enumerate and force-kill the shell's
+  descendant processes, working around orphaned children (upstream cites
+  microsoft/vscode#26807). That helper calls `AttachConsole` on the just-killed
+  process's console and can lose the race, throwing `Error: AttachConsole
+  failed` with a full stack trace to stderr *after* the PTY has already been
+  killed successfully. Harmless — it's a one-shot child process, not the app
+  — but there's no macOS equivalent (the POSIX backend is a plain
+  `forkpty`), so don't mistake it for a real failure when it shows up in the
+  logs.
+- **The login-shell environment probe is a deliberate no-op on Windows.**
+  `hydrateLoginEnv()` exists because a macOS GUI app launched from the Dock
+  inherits launchd's near-empty PATH, not the user's shell profile — fixed by
+  asking `$SHELL -lic env` once at startup. `process.platform === 'win32'`
+  short-circuits that entirely and always returns `false`, which is correct:
+  Windows doesn't have the launchd problem, since Explorer-launched processes
+  already inherit the full user/system PATH from the registry. The startup
+  log line — `using the inherited environment; login shell did not answer` —
+  reads like a failure on Windows but is actually "as designed, never
+  attempted."
+- **Closing the window quits the whole app, unlike macOS.**
+  `window-all-closed` already guards on `process.platform !== 'darwin'`, so
+  this is handled correctly, not a bug — but it's a real behavior difference
+  worth knowing if you're used to Sertum staying alive in the Dock after the
+  last window closes. On Windows (and Linux), closing the window ends the
+  process, the hook server, and every session it owns.
+- `dev-app-name.js` (the Dock name/icon branding hack) already no-ops on
+  `process.platform !== 'darwin'`, `titleBarStyle` already falls back to
+  `'default'` off Darwin, and `curl`-based hooks and the PTY smoke test
+  already worked as documented above with no changes needed.
+
 ## Layout
 
 ```

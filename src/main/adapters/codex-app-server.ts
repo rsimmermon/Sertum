@@ -75,6 +75,13 @@ export class CodexAppServer extends EventEmitter {
     this.boundPort = await freePort();
     this.child = spawn(this.binary, ['app-server', '--listen', this.remoteUrl], {
       stdio: ['ignore', 'ignore', 'pipe'],
+      // npm on Windows installs `codex` as a `codex.cmd` shim, and Node has
+      // refused to spawn .cmd/.bat directly since the CVE-2024-27980 fix --
+      // it throws EINVAL synchronously instead of failing async via the
+      // 'error' handler below, which would otherwise take the app down.
+      // `shell: true` is what makes that spawn legal again; the args stay
+      // safe to array-quote because none of them come from user input.
+      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.binary),
     });
     this.child.stderr?.on('data', (d: Buffer) => {
       const text = d.toString();
@@ -390,14 +397,55 @@ async function isOurAppServer(pid: number, port: number): Promise<boolean> {
 }
 
 /**
+ * Windows has no single well-known install directory the way Homebrew or the
+ * standalone installer's `current` symlink do on macOS/Linux -- npm-global,
+ * nvm-for-windows, Volta, and the standalone Windows installer each land
+ * `codex` somewhere different. So unlike the POSIX candidates below, the
+ * Windows answer is to search PATH ourselves rather than guess a location.
+ *
+ * That search is still necessary work, not a redundant one: node-pty's
+ * Windows backend calls CreateProcess directly, which resolves a bare name
+ * by trying `<name>.exe` only. A shell would also try PATHEXT's other
+ * extensions, which is exactly how npm installs `codex` -- as `codex.cmd`,
+ * never `codex.exe`. Skipping this and returning a bare `'codex'` spawns
+ * fine from a real shell but fails from node-pty with "Cannot create
+ * process, error code: 2" (ERROR_FILE_NOT_FOUND), because `codex.exe` never
+ * existed to find.
+ */
+function resolveOnWindowsPath(name: string): string | null {
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const exts = (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext.toLowerCase());
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch { /* try the next extension */ }
+    }
+  }
+  return null;
+}
+
+/**
  * Finds the codex binary without relying on PATH.
  *
  * A GUI app launched from Finder or the Dock inherits a bare login PATH, not
  * the one from the user's shell profile, so a plain `codex` would resolve in
  * `npm start` and then fail in the packaged build. The standalone install is
  * checked first because it is the one that shadows the others on PATH.
+ *
+ * Windows doesn't have this problem -- Explorer-launched processes inherit
+ * the full user/system PATH already -- but it has a different one, handled
+ * by `resolveOnWindowsPath` above.
  */
 export function resolveCodexBinary(): string {
+  if (process.platform === 'win32') {
+    return resolveOnWindowsPath('codex') ?? 'codex';
+  }
+
   const home = os.homedir();
   const candidates = [
     path.join(home, '.codex', 'packages', 'standalone', 'current', 'codex'),
