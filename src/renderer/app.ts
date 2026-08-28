@@ -112,6 +112,15 @@ export class App {
   /** The shape that grid was built for; anything else needs a new one. */
   private gridKey = '';
   private lastCwd: string | null = null;
+  /**
+   * Repository the worktree manager was last pointed at.
+   *
+   * Kept because worktrees outlive sessions: after closing the session that
+   * used one, nothing else in the app still remembers which repository you
+   * were managing, and falling back to the launch folder would send you
+   * somewhere you never asked for.
+   */
+  private lastWorktreeRoot: string | null = null;
   private notice: string | null = null;
   /** A one-click way out of whatever `notice` is complaining about. */
   private noticeFix: { label: string; run: () => void } | null = null;
@@ -190,6 +199,7 @@ export class App {
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
     menu.on('stop', () => this.activeId && void api.killSession(this.activeId));
     menu.on('palette', () => this.openPalette());
+    menu.on('worktrees', () => void this.promptWorktrees());
     menu.on('rename', () => this.activeId && this.beginRename(this.activeId));
     menu.on('next-session', () => this.stepSession(1));
     menu.on('prev-session', () => this.stepSession(-1));
@@ -1256,18 +1266,25 @@ export class App {
    *
    * Which repository it shows follows the session you asked from, falling
    * back to the active one, so the manager is always about the code in front
-   * of you rather than some remembered default.
+   * of you rather than some remembered default. With nothing open there is no
+   * session to follow, so it resumes wherever it was last pointed and the
+   * dialog's own folder picker takes it anywhere else -- the manager is about
+   * a repository, and a repository outlasts every session in it.
    */
   private async promptWorktrees(cwd?: string): Promise<void> {
     const from =
       cwd ??
       (this.activeId ? this.sessions.get(this.activeId)?.cwd : undefined) ??
+      this.lastWorktreeRoot ??
       this.lastCwd ??
       (await api.defaultCwd());
     await openWorktreeDialog({
       cwd: from,
       sessionLabel: (id) => this.sessions.get(id)?.label,
       onOpenSession: (id) => this.focusSession(id),
+      onRootChanged: (root) => {
+        this.lastWorktreeRoot = root;
+      },
       // C9 does not grow its own creation path: it hands off to C1 with the
       // isolation already chosen, so there is one way to make a worktree.
       onNewWorktree: (root) =>

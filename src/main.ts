@@ -308,16 +308,25 @@ ipcMain.handle('session:list', () => ptys.list());
 ipcMain.handle('clipboard:write', (_e, text: string) => {
   clipboard.writeText(text);
 });
-ipcMain.handle('worktree:list', (_e, cwd: string) => {
-  // Sessions are passed as a map so the inventory can say which worktree is
-  // occupied without the worktree layer knowing anything about sessions.
-  const byId = new Map(ptys.list().map((s) => [s.id, s.cwd]));
-  return readWorktrees(cwd, byId);
-});
+/**
+ * Every session's working folder, keyed by id.
+ *
+ * Passed into the worktree layer rather than reached for from inside it, so
+ * that layer keeps knowing nothing about sessions: it is handed a set of
+ * occupied folders and answers in those terms. Read fresh on each call --
+ * this is what makes "is anything using it?" true at the moment of removal
+ * rather than at the moment the manager was opened.
+ */
+const sessionCwds = (): Map<string, string> =>
+  new Map(ptys.list().map((s) => [s.id, s.cwd]));
+
+ipcMain.handle('worktree:list', (_e, cwd: string) =>
+  readWorktrees(cwd, sessionCwds()),
+);
 ipcMain.handle(
   'worktree:remove',
   (_e, { root, path: target, force }: { root: string; path: string; force: boolean }) =>
-    removeWorktree(root, target, force),
+    removeWorktree(root, target, force, sessionCwds()),
 );
 ipcMain.handle(
   'worktree:provision',
@@ -678,6 +687,14 @@ function buildMenu() {
         {
           label: 'Import Running Sessions…',
           click: send('menu:import-sessions'),
+        },
+        // Worktrees outlive the sessions that used them, so the manager has
+        // to be reachable with nothing open -- the row menu alone would hide
+        // it behind the very session you just closed.
+        {
+          label: 'Worktree Manager…',
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: send('menu:worktrees'),
         },
         { type: 'separator' },
         {

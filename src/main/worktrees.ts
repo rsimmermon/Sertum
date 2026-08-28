@@ -7,6 +7,7 @@ import type {
   WorktreeInfo,
   WorktreeInventory,
   WorktreeProvisionResult,
+  WorktreeRemoveResult,
 } from '../shared/types';
 
 const run = promisify(execFile);
@@ -46,17 +47,49 @@ export async function readWorktrees(
   };
 }
 
-/** Removes a worktree, and its branch when that branch is now unreachable. */
+/**
+ * Deletes a worktree's folder and its entry in the repository.
+ *
+ * The branch is left alone: `git worktree remove` unregisters a checkout, so
+ * the commits on that branch stay in the repository whether or not they have
+ * been merged. What is actually destroyed is the folder -- which means the
+ * untracked files in it, since those exist nowhere else.
+ *
+ * Two refusals are absolute and `force` overrides neither. The main checkout
+ * is where the repository itself lives. And a folder a session is working in
+ * is a live process's cwd: deleting it strands the agent mid-turn on files
+ * that vanished underneath it. Everything `force` does override -- modified
+ * and untracked files -- is the user's own to weigh, and the caller confirms
+ * it before asking.
+ *
+ * The occupancy test lives here rather than in the dialog because it is the
+ * safety rule, not a piece of presentation: the renderer's inventory can be
+ * seconds stale, and a session started while the manager was open must still
+ * be honoured.
+ */
 export async function removeWorktree(
   root: string,
   worktreePath: string,
   force: boolean,
-): Promise<{ ok: boolean; reason?: string }> {
-  // Never let a caller remove the checkout the repository itself lives in.
+  sessionCwds: ReadonlyMap<string, string>,
+): Promise<WorktreeRemoveResult> {
   const main = await mainRepoRoot(root);
-  if (main && path.resolve(worktreePath) === path.resolve(main)) {
+  if (main && samePath(worktreePath, main)) {
     return { ok: false, reason: 'That is the main checkout, not a worktree.' };
   }
+
+  const busy = occupants(worktreePath, sessionCwds);
+  if (busy.length > 0) {
+    return {
+      ok: false,
+      reason:
+        busy.length === 1
+          ? 'A session is working in that folder. Close it first.'
+          : `${busy.length} sessions are working in that folder. Close them first.`,
+      busySessionIds: busy,
+    };
+  }
+
   try {
     const args = ['-C', root, 'worktree', 'remove'];
     if (force) args.push('--force');
@@ -66,6 +99,51 @@ export async function removeWorktree(
   } catch (err) {
     return { ok: false, reason: gitMessage(err) };
   }
+}
+
+/**
+ * Sessions whose working folder lies inside a worktree.
+ *
+ * Containment, not equality: a session started in a subfolder of a checkout
+ * is still working in that checkout, and equality alone would call the folder
+ * free and delete it out from under exactly that session.
+ */
+function occupants(
+  worktreePath: string,
+  sessionCwds: ReadonlyMap<string, string>,
+): string[] {
+  const ids: string[] = [];
+  for (const [id, cwd] of sessionCwds) {
+    if (contains(worktreePath, cwd)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Path comparison for the safety tests above.
+ *
+ * Case-folded on macOS and Windows, whose filesystems are case-insensitive by
+ * default: a session recorded as /users/me/repo and a worktree listed as
+ * /Users/me/repo are the same folder, and a case-sensitive compare would call
+ * the busy one free.
+ */
+const CASE_BLIND = process.platform === 'darwin' || process.platform === 'win32';
+
+function normal(p: string): string {
+  const abs = path.resolve(p);
+  return CASE_BLIND ? abs.toLowerCase() : abs;
+}
+
+function samePath(a: string, b: string): boolean {
+  return normal(a) === normal(b);
+}
+
+function contains(dir: string, target: string): boolean {
+  const from = normal(dir);
+  const to = normal(target);
+  if (from === to) return true;
+  const rel = path.relative(from, to);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 /**
@@ -245,28 +323,19 @@ async function describe(
     directorySize(raw.path),
   ]);
 
-  const resolved = path.resolve(raw.path);
-  let sessionId: string | null = null;
-  for (const [id, cwd] of sessionCwds) {
-    if (path.resolve(cwd) === resolved) {
-      sessionId = id;
-      break;
-    }
-  }
-
   return {
     path: raw.path,
     name: path.basename(raw.path),
     branch: raw.branch,
     detached: raw.detached,
     locked: raw.locked,
-    isMain: path.resolve(root) === resolved,
+    isMain: samePath(root, raw.path),
     managed: isManagedWorktree(raw.path),
     modified: dirty.modified,
     untracked: dirty.untracked,
     merged,
     sizeBytes,
-    sessionId,
+    sessionIds: occupants(raw.path, sessionCwds),
   };
 }
 

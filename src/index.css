@@ -1046,28 +1046,79 @@ input.field:focus { outline: none; border-color: var(--accent); }
 /* ---------- worktree manager (wireframe C9) ---------- */
 .btn.ghost { background: transparent; }
 .btn.small { font-size: 12px; padding: 4px 10px; }
-.wt-dialog { width: 720px; max-width: calc(100vw - 48px); display: flex; flex-direction: column; gap: 16px; }
+.wt-dialog {
+  width: min(940px, calc(100vw - 48px));
+  display: flex; flex-direction: column; gap: 16px;
+}
 .wt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .wt-head-actions { display: flex; gap: 8px; flex: none; }
 .wt-title h2 { margin: 0 0 4px; font-size: 16px; letter-spacing: -0.2px; }
 .wt-title p { margin: 0; font-size: 12px; color: var(--muted); }
 
-.wt-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.wt-thead, .wt-row {
+/* One grid for the whole table, with the header and every row folded into it
+   by `display: contents`.
+
+   They used to be a grid each, which cannot work: a column sized to its
+   content resolves per container, so the action column came out ~0px wide in
+   the header (an empty cell) and ~140px in the rows (two buttons), and every
+   heading sat one column left of what it named.
+
+   The tracks are content-sized rather than fractional so a name is shown in
+   full whenever it fits. Only the branch takes a fraction, which makes it the
+   column that gives up space first; worktree and session can still shrink
+   under real pressure, and ellipsis plus the title tooltip cover that. */
+.wt-table {
   display: grid;
-  grid-template-columns: 1.4fr 1.4fr 1fr 0.9fr 0.6fr auto;
-  align-items: center; gap: 10px; padding: 7px 12px;
+  grid-template-columns:
+    minmax(0, max-content)  /* worktree */
+    minmax(0, 1fr)          /* branch   */
+    max-content             /* status   */
+    minmax(0, max-content)  /* session  */
+    max-content             /* size     */
+    max-content;            /* actions  */
+  align-items: center;
+  border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
 }
-.wt-thead {
+.wt-thead, .wt-row { display: contents; }
+.wt-thead > .wt-cell {
   background: var(--surface);
   font-size: 9px; font-weight: 700; letter-spacing: 0.5px; color: var(--muted);
 }
-.wt-row { border-top: 1px solid var(--line-soft); font-size: 12px; }
-.wt-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-row > .wt-cell { border-top: 1px solid var(--line-soft); font-size: 12px; }
+.wt-cell {
+  padding: 7px 5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Gaps come from cell padding, so the outer edges are padded back to the
+   table's own inset instead of doubling it. */
+.wt-thead > .wt-cell:first-child, .wt-row > .wt-cell:first-child { padding-left: 12px; }
+.wt-thead > .wt-cell:last-child, .wt-row > .wt-cell:last-child { padding-right: 12px; }
+/* A long session label must not push the columns that carry identity out. */
+.wt-session { max-width: 180px; }
 .wt-name { font-weight: 600; color: var(--ink); }
 .wt-branch, .wt-status { color: var(--ink-2); }
 .wt-size { font-family: var(--font-mono); font-size: 11px; color: var(--muted); text-align: right; }
-.wt-action { display: flex; justify-content: flex-end; }
+.wt-action { display: flex; justify-content: flex-end; gap: 6px; }
+
+/* The repository being managed. Its own row rather than a line in the header
+   because it is a control, not a caption: the manager follows a repository,
+   which outlives every session that ever worked in it. */
+.wt-repo {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: -8px;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--surface);
+}
+.wt-repo-path {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wt-empty {
+  padding: 24px 12px; text-align: center;
+  font-size: 12px; line-height: 1.5; color: var(--muted);
+  border: 1px dashed var(--line); border-radius: 6px;
+}
 .wt-chip {
   display: inline-block; max-width: 100%;
   padding: 2px 6px; border-radius: 3px;

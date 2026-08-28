@@ -152,8 +152,26 @@ export interface WorktreeInfo {
    * worktrees are the ones reuse and reclaim apply to.
    */
   managed: boolean;
-  /** The session working in this worktree, when one is. */
-  sessionId: string | null;
+  /**
+   * Sessions whose working folder lies inside this worktree.
+   *
+   * A list rather than one id because nothing stops two sessions sharing a
+   * checkout, and this is the field removal is gated on -- reporting only the
+   * first would let the second be deleted out from under.
+   */
+  sessionIds: string[];
+}
+
+/** Outcome of asking for a worktree to be deleted. */
+export interface WorktreeRemoveResult {
+  ok: boolean;
+  reason?: string;
+  /**
+   * Sessions occupying the folder, when that is why the removal was refused.
+   * Returned so the caller can name them: the main process knows ids, only
+   * the renderer knows what the user calls them.
+   */
+  busySessionIds?: string[];
 }
 
 export interface WorktreeInventory {
@@ -281,12 +299,17 @@ export interface SertumApi {
   copyText(text: string): Promise<void>;
   /** Git worktrees for the repository containing `cwd` (wireframe C9). */
   listWorktrees(cwd: string): Promise<WorktreeInventory | null>;
-  /** Remove a worktree. `force` discards uncommitted work in it. */
+  /**
+   * Remove a worktree. `force` discards uncommitted work in it.
+   *
+   * Refused by the main process whenever a session is working in the folder,
+   * and `force` does not override that -- see removeWorktree in main.
+   */
   removeWorktree(
     root: string,
     worktreePath: string,
     force: boolean,
-  ): Promise<{ ok: boolean; reason?: string }>;
+  ): Promise<WorktreeRemoveResult>;
   /**
    * Get a worktree for a branch, creating it or reusing a managed one.
    * Agent-neutral: a worktree is git's, so every agent takes the same path.
