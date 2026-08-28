@@ -20,6 +20,7 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:create', spec),
   listSessions: () => ipcRenderer.invoke('session:list'),
   copyText: (text: string) => ipcRenderer.invoke('clipboard:write', text),
+  readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   listWorktrees: (cwd: string) => ipcRenderer.invoke('worktree:list', cwd),
   removeWorktree: (root: string, path: string, force: boolean) =>
     ipcRenderer.invoke('worktree:remove', { root, path, force }),

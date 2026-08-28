@@ -182,6 +182,74 @@ discoverer today. Teaching discovery to query the app server directly would
 make it a richer discoverer registered ahead of the process scan; nothing
 downstream changes when that lands.
 
+## Terminal key handling
+
+A bare Enter is how you send a message to an agent, so composing a multi-line
+prompt needs a second chord. `terminal-pane.ts` intercepts Enter before xterm
+encodes it and writes `ESC CR` (`\x1b\r`) to the PTY for:
+
+| Chord | Platform |
+|---|---|
+| Shift+Enter | all |
+| Ctrl+Enter | all |
+| Alt+Enter | all |
+| Cmd+Enter | macOS |
+
+One sequence covers both agents: `ESC CR` is what Claude Code's own
+`/terminal-setup` installs for Shift+Enter, and what Codex reads as Alt+Enter.
+
+The handler requires *exactly one* modifier, so `⌘⌥↩` / `Ctrl+Alt+Enter` still
+falls through to the menu accelerator that maximises a pane.
+
+Ctrl+C is overloaded the way a terminal user expects. With a selection it
+copies and then clears the selection; with nothing selected it falls through to
+xterm untouched and stays the interrupt that stops the agent's current
+operation. Clearing matters: a selection left on screen would otherwise keep
+swallowing every interrupt. The copy goes through `api.copyText` (the main
+process's `clipboard:write`) rather than `navigator.clipboard`, matching how the
+rest of the app copies.
+
+Ctrl+V (Cmd+V on macOS) pastes, handled here rather than left to the browser
+because an image has to be turned into something a byte stream can carry before
+xterm sees it. `main/clipboard-paste.ts` answers with one of three things:
+
+| Clipboard holds | Pasted as |
+|---|---|
+| a bitmap (screenshot, image copied from a browser) | path to a PNG spilled into the temp dir |
+| an image file copied in Explorer/Finder | that file's own path, used where it lies |
+| text | the text, through `term.paste` so bracketed-paste mode is honoured |
+
+A bitmap wins over text, because copying an image from a browser puts both on
+the clipboard and the image is the part worth having. Spilled files are swept
+on the next paste once they are a day old -- nothing tracks whether an agent
+ever read one, so age is the only safe signal.
+
+Pasting a *path* rather than bytes is the whole trick: a PTY carries
+characters, and both Claude Code and Codex treat an image path in the prompt as
+an image, while a plain shell just shows the path.
+
+### Electron 44's clipboard is async and ClipboardItem-shaped
+
+There is no `clipboard.readImage()` or `clipboard.readBuffer()` any more. The
+API is modelled on the W3C one: `await clipboard.read()` gives
+`ClipboardItem[]`, each with `types` and `getType(mime)` resolving to a `Blob`.
+`getType` *rejects* for a format the item doesn't carry, which is how this code
+probes for one.
+
+Two things that cost time and are not obvious from the types:
+
+- **The `clipboard` export type-checks against lib.dom's `Clipboard`, not
+  Electron's.** With `"lib": [..., "DOM"]` in `tsconfig.json`, `Clipboard`
+  resolves to the browser interface even for an import from `electron` or
+  `electron/main`, so reaching for a removed method fails with a puzzling
+  "Property 'readImage' does not exist on type 'Clipboard'". The two interfaces
+  are close enough that the code compiles and runs correctly regardless.
+- **A file copied in Explorer arrives as `text/uri-list`, not `FileNameW`.**
+  Verified on Windows 11: the item's types are `text/uri-list` plus
+  `electron application/osclipboard;format="FileName"` (ANSI, note, not the
+  wide `FileNameW` the Win32 docs point at), and the uri-list body is a plain
+  `file:///C:/...` URL. A bitmap arrives as `image/png`.
+
 ## Pane layouts
 
 Design section 07. A window shows one terminal by default; splitting is opt-in
@@ -379,6 +447,7 @@ src/
   main/workspace.ts           Folder validation, git/worktree detection
   main/hook-server.ts         Plane 2 ingress — loopback HTTP, per-session URLs
   main/settings.ts            Display/agent-path preferences, JSON in userData
+  main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: resolveBinary, renameRemote

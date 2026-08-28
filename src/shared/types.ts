@@ -272,6 +272,18 @@ export const DEFAULT_SETTINGS: Settings = {
   agentBinaryPaths: { claude: '', codex: '' },
 };
 
+/**
+ * What the clipboard is offering a terminal paste.
+ *
+ * An image is handed over as a path rather than as bytes: a PTY carries
+ * characters, so the file on disk is the only form an agent on the other end
+ * can act on.
+ */
+export type ClipboardPaste =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; path: string }
+  | { kind: 'empty' };
+
 /** The surface exposed to the renderer through the preload bridge. */
 export interface SertumApi {
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
@@ -297,6 +309,14 @@ export interface SertumApi {
    * not, so the browser API would work in development and fail once shipped.
    */
   copyText(text: string): Promise<void>;
+  /**
+   * Read the system clipboard for a paste into a terminal.
+   *
+   * Read here rather than in the renderer because an image has to be spilled
+   * to a file before it can cross a PTY, and only the main process can write
+   * one.
+   */
+  readClipboard(): Promise<ClipboardPaste>;
   /** Git worktrees for the repository containing `cwd` (wireframe C9). */
   listWorktrees(cwd: string): Promise<WorktreeInventory | null>;
   /**

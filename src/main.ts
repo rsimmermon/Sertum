@@ -28,6 +28,7 @@ import {
   removeWorktree,
 } from './main/worktrees';
 import { getSettings, setSettings } from './main/settings';
+import { readClipboardPaste } from './main/clipboard-paste';
 import {
   isUserThread,
   mapCodexStatus,
@@ -305,9 +306,10 @@ ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
   return { ...snapshot, model: model ?? snapshot.model };
 });
 ipcMain.handle('session:list', () => ptys.list());
-ipcMain.handle('clipboard:write', (_e, text: string) => {
-  clipboard.writeText(text);
+ipcMain.handle('clipboard:write', async (_e, text: string) => {
+  await clipboard.writeText(text);
 });
+ipcMain.handle('clipboard:read', () => readClipboardPaste());
 /**
  * Every session's working folder, keyed by id.
  *

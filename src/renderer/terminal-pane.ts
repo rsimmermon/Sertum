@@ -52,6 +52,43 @@ export class TerminalPane {
       this.term.onData((data) => api.write(this.session.id, data)).dispose,
     );
 
+    this.term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+
+      // Shift/Ctrl/Alt+Enter (Cmd+Enter on macOS) insert a newline rather than
+      // submitting. xterm sends a bare CR for all of them, which every agent
+      // reads as "send the message". ESC+CR is the sequence Claude Code's own
+      // `/terminal-setup` installs for Shift+Enter, and Codex reads it as
+      // Alt+Enter, so one sequence covers both.
+      if (e.key === 'Enter' && newlineChord(e)) {
+        e.preventDefault();
+        api.write(this.session.id, '\x1b\r');
+        return false;
+      }
+
+      // Ctrl+C copies only when there is a selection to copy; with nothing
+      // selected it stays the interrupt that stops whatever the agent is
+      // doing. Copying clears the selection, so a second press interrupts
+      // instead of silently re-copying the same text.
+      if (isCopyChord(e) && this.term.hasSelection()) {
+        e.preventDefault();
+        void api.copyText(this.term.getSelection());
+        this.term.clearSelection();
+        return false;
+      }
+
+      // Ctrl+V (Cmd+V on macOS) pastes. Taken over from the browser's own
+      // paste handling because an image has to become something a byte stream
+      // can carry before xterm ever sees it.
+      if (isPasteChord(e)) {
+        e.preventDefault();
+        void this.pasteClipboard();
+        return false;
+      }
+
+      return true;
+    });
+
     // Every xterm resize must be mirrored to the PTY or the agent's TUI
     // redraws against stale geometry.
     this.disposers.push(
@@ -113,6 +150,24 @@ export class TerminalPane {
     this.term.focus();
   }
 
+  /**
+   * Put the system clipboard into this PTY.
+   *
+   * Goes through `term.paste` rather than a raw write so bracketed-paste mode
+   * is honoured -- an agent's composer has to be able to tell a pasted block
+   * from typing, or a multi-line paste submits on its first newline.
+   *
+   * An image cannot travel down a PTY, so it arrives as the path to a file the
+   * agent can read. Both Claude Code and Codex treat an image path in the
+   * prompt as an image; a plain shell just sees the path, which is the least
+   * surprising thing it could see.
+   */
+  private async pasteClipboard(): Promise<void> {
+    const item = await api.readClipboard();
+    if (item.kind === 'text') this.term.paste(item.text);
+    if (item.kind === 'image') this.term.paste(`${quotedPath(item.path)} `);
+  }
+
   /** Scrollback as text, for restoring a pane later. */
   snapshot(): string {
     return this.serialize.serialize();
@@ -158,4 +213,46 @@ function readTerminalTheme() {
     cursor: v('--accent', '#2563eb'),
     selectionBackground: '#2f4f57',
   };
+}
+
+/**
+ * True for the Enter chords that mean "newline, not submit".
+ *
+ * Deliberately exact about modifiers: Ctrl/Cmd+Alt+Enter is the maximise-pane
+ * accelerator, so a chord carrying both must fall through to the menu.
+ */
+function newlineChord(e: KeyboardEvent): boolean {
+  const mods = [e.shiftKey, e.ctrlKey, e.altKey, e.metaKey].filter(Boolean);
+  if (mods.length !== 1) return false;
+  if (e.metaKey) return api.platform === 'darwin';
+  return true;
+}
+
+/**
+ * True for a bare Ctrl+C -- the chord that is copy-with-a-selection and
+ * interrupt without one.
+ *
+ * Matched on `key` rather than `code` so it follows the user's layout, and
+ * lower-cased because Caps Lock reports 'C'.
+ */
+function isCopyChord(e: KeyboardEvent): boolean {
+  if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return false;
+  return e.key.toLowerCase() === 'c';
+}
+
+/** True for a bare Ctrl+V, or Cmd+V on macOS. */
+function isPasteChord(e: KeyboardEvent): boolean {
+  if (e.key.toLowerCase() !== 'v' || e.altKey || e.shiftKey) return false;
+  if (e.metaKey) return !e.ctrlKey && api.platform === 'darwin';
+  return e.ctrlKey;
+}
+
+/**
+ * A pasted path, quoted only when it needs to be.
+ *
+ * Bare is what an agent's path detection expects; quoting unconditionally
+ * would put quotes in front of every user who never had a space in a path.
+ */
+function quotedPath(target: string): string {
+  return /\s/.test(target) ? `"${target}"` : target;
 }
