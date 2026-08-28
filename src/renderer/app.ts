@@ -13,6 +13,7 @@ import { openWorktreeDialog } from './worktree-dialog';
 import {
   buildPaneGrid,
   SESSION_DND_TYPE,
+  type PaneGrid,
   type SlotView,
   type SplitAxis,
 } from './pane-grid';
@@ -106,11 +107,10 @@ export class App {
   private maximised: number | null = null;
   /** Which pane last took keyboard focus, so a render does not steal it. */
   private focusKey = '';
-  /** Re-runs the current grid's too-small check; set on every build. */
-  private gridRefresh: (() => void) | null = null;
-  /** Moves a gutter on the current grid, without rebuilding it. */
-  private gridResize: ((axis: SplitAxis, fraction: number) => void) | null =
-    null;
+  /** The grid on screen, or null while the window is showing its empty state. */
+  private grid: PaneGrid | null = null;
+  /** The shape that grid was built for; anything else needs a new one. */
+  private gridKey = '';
   private lastCwd: string | null = null;
   private notice: string | null = null;
   /** A one-click way out of whatever `notice` is complaining about. */
@@ -529,7 +529,7 @@ export class App {
     // Restate the flex weights in place. A drag fires this per pointer move,
     // and rebuilding the grid at that rate would re-parent every terminal
     // sixty times a second for a change two numbers describe.
-    this.gridResize?.(axis, fraction);
+    this.grid?.resize(axis, fraction);
     this.refitPanes();
     this.persistLayout();
   }
@@ -1353,11 +1353,16 @@ export class App {
   /**
    * Draws the pane area — design section 07.
    *
-   * Every render rebuilds the grid and re-parents the terminals into it. That
-   * is cheap and it is what keeps the layout honest: xterm instances live in
-   * `panes`, keyed by session and never rebuilt here, so moving one between
-   * panes -- or between layouts -- costs a DOM move and a refit, never its
-   * scrollback or its PTY.
+   * xterm instances live in `panes`, keyed by session and never rebuilt here,
+   * so moving one between panes -- or between layouts -- costs a DOM move and
+   * a refit, never its scrollback or its PTY.
+   *
+   * That move is not free, though, and this is what decides how often it
+   * happens. A render is triggered by any session update, including the meta
+   * poll ticking another agent's context every few seconds, and re-parenting a
+   * terminal blurs whatever inside it holds keyboard focus. So the grid is
+   * rebuilt only when its shape changes; the ordinary repaint hands the same
+   * cells a new header and leaves every terminal exactly where it is.
    */
   private renderPane(): void {
     const host = this.el.paneHost;
@@ -1371,48 +1376,91 @@ export class App {
     if (onScreen.size === 0 && !this.isSplit()) {
       this.el.paneHead.style.display = 'none';
       host.replaceChildren(this.emptyState());
+      // The grid is out of the document, so the next render has to build one
+      // rather than update the one it used to hold.
+      this.grid = null;
+      this.gridKey = '';
       return;
     }
 
     this.el.paneHead.style.display = '';
     this.renderPaneHead();
 
+    const layout = this.maximised === null ? this.layout : 'single';
     const slots: SlotView[] = drawn.map((id, index) =>
       this.slotView(id, index, drawn.length),
     );
+    // Everything the grid fixes at build time. The splits and the type size
+    // are not in here: `update` restates both, so neither is worth a rebuild.
+    const key = `${layout}:${drawn.length}`;
 
-    const grid = buildPaneGrid({
-      layout: this.maximised === null ? this.layout : 'single',
-      slots,
-      splits: this.settings.paneSplits,
-      fontSize: this.settings.terminalFontSize,
-      onFocus: (slot) => this.focusSlot(this.slotIndex(slot)),
-      onSplit: (axis, fraction) => this.setSplit(axis, fraction),
-      onDrop: (slot, id) => this.dropIntoPane(this.slotIndex(slot), id),
+    this.withFocusKept(() => {
+      if (this.grid && key === this.gridKey) {
+        this.grid.update(
+          slots,
+          this.settings.paneSplits,
+          this.settings.terminalFontSize,
+        );
+      } else {
+        this.grid = buildPaneGrid({
+          layout,
+          slots,
+          splits: this.settings.paneSplits,
+          fontSize: this.settings.terminalFontSize,
+          onFocus: (slot) => this.focusSlot(this.slotIndex(slot)),
+          onSplit: (axis, fraction) => this.setSplit(axis, fraction),
+          onDrop: (slot, id) => this.dropIntoPane(this.slotIndex(slot), id),
+        });
+        this.gridKey = key;
+        host.replaceChildren(this.grid.element);
+      }
+
+      // xterm measures its host to work out a cell, so it can only be opened
+      // once the grid is in the document.
+      for (const id of onScreen) this.panes.get(id)?.attach();
+
+      // Re-fit now, synchronously. A terminal that just changed size has to
+      // tell its PTY or the agent's TUI draws against stale geometry (design
+      // note 294), and deferring that to an animation frame would make it
+      // conditional on the window being visible -- rAF does not run while a
+      // window is occluded, which left panes wrong until something else
+      // resized them. Measuring here forces the pending layout, which is all
+      // the frame bought.
+      this.refitPanes();
     });
-    host.replaceChildren(grid.element);
-
-    this.gridRefresh = grid.refresh;
-    this.gridResize = grid.resize;
-
-    // xterm measures its host to work out a cell, so it can only be opened
-    // once the grid is in the document.
-    for (const id of onScreen) this.panes.get(id)?.attach();
-
-    // Re-fit now, synchronously. A terminal that just changed size has to tell
-    // its PTY or the agent's TUI draws against stale geometry (design note
-    // 294), and deferring that to an animation frame would make it conditional
-    // on the window being visible -- rAF does not run while a window is
-    // occluded, which left panes wrong until something else resized them.
-    // Measuring here forces the pending layout, which is all the frame bought.
-    this.refitPanes();
 
     this.focusActivePane();
   }
 
+  /**
+   * Runs `work` without letting it take the caret away.
+   *
+   * Whenever a node leaves the document the browser blurs whatever inside it
+   * had keyboard focus, and putting the node back does not hand the focus
+   * back. A pane that is re-parented -- by a layout change, or by a session
+   * being dragged into a different pane -- therefore leaves the person who was
+   * typing in it typing into nothing, with no event to say so.
+   *
+   * Only a focus that `work` itself destroyed is restored, and only to an
+   * element still in the document: when the pane is genuinely gone, deciding
+   * where the caret belongs is `focusActivePane`'s job, and it runs after this.
+   */
+  private withFocusKept(work: () => void): void {
+    const held = document.activeElement;
+    work();
+    if (
+      held instanceof HTMLElement &&
+      held !== document.body &&
+      held !== document.activeElement &&
+      held.isConnected
+    ) {
+      held.focus();
+    }
+  }
+
   /** Re-measures the panes on screen without touching the grid's DOM. */
   private refitPanes(): void {
-    this.gridRefresh?.();
+    this.grid?.refresh();
     for (const id of this.onScreen()) this.panes.get(id)?.refit();
   }
 
