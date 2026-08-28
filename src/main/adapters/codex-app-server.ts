@@ -1,4 +1,4 @@
-import { execFile, spawn, ChildProcess } from 'node:child_process';
+import { execFile, spawn, spawnSync, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -42,6 +42,10 @@ export class CodexAppServer extends EventEmitter {
   private boundPort = 0;
   private events = 0;
   private binary = '';
+  /** Pid of whatever actually holds the port; see `serverPid`. */
+  private listeningPid: number | null = null;
+  /** Whether the spawn went through a shell, which displaces our real child. */
+  private usedShell = false;
 
   /**
    * Resolved lazily, in `start()`, rather than baked in as a constructor
@@ -58,9 +62,18 @@ export class CodexAppServer extends EventEmitter {
     return this.boundPort;
   }
 
-  /** Pid of the spawned server, so its owner can record it for cleanup. */
-  get childPid(): number | null {
-    return this.child?.pid ?? null;
+  /**
+   * Pid of the process actually serving the port, so its owner can record it
+   * for cleanup.
+   *
+   * Usually the child we spawned. On Windows an npm-installed `codex` is a
+   * `.cmd` shim that has to go through a shell, which makes our direct child
+   * `cmd.exe` and the server its grandchild -- so the child's pid names a
+   * process that dies with the shim and tells the next launch's reaper
+   * nothing. The port is the reliable handle to the real one.
+   */
+  get serverPid(): number | null {
+    return this.listeningPid ?? this.child?.pid ?? null;
   }
 
   /** The value to pass to a session's `--remote` flag. */
@@ -83,6 +96,8 @@ export class CodexAppServer extends EventEmitter {
 
     this.binary = this.resolveBinary();
     this.boundPort = await freePort();
+    this.usedShell =
+      process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.binary);
     this.child = spawn(this.binary, ['app-server', '--listen', this.remoteUrl], {
       stdio: ['ignore', 'ignore', 'pipe'],
       // npm on Windows installs `codex` as a `codex.cmd` shim, and Node has
@@ -91,7 +106,7 @@ export class CodexAppServer extends EventEmitter {
       // 'error' handler below, which would otherwise take the app down.
       // `shell: true` is what makes that spawn legal again; the args stay
       // safe to array-quote because none of them come from user input.
-      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.binary),
+      shell: this.usedShell,
     });
     this.child.stderr?.on('data', (d: Buffer) => {
       const text = d.toString();
@@ -102,6 +117,10 @@ export class CodexAppServer extends EventEmitter {
     });
     this.child.on('exit', (code) => {
       this.child = null;
+      // Dropped with the child, not kept: a pid outlives its process only as
+      // a number, and Windows reuses those. A remembered pid is a licence to
+      // kill, so it must never outlast the certainty that it is still ours.
+      this.listeningPid = null;
       this.emit('log', `app server exited (${code})`);
       if (!this.stopping) this.scheduleReconnect();
     });
@@ -120,6 +139,13 @@ export class CodexAppServer extends EventEmitter {
     if (!(await this.waitForReady())) {
       this.stop();
       return false;
+    }
+    // Asked only when a shell displaced our child, which is the one case
+    // where its pid is known not to be the server's -- a standalone install
+    // is spawned directly and needs no PowerShell round trip at startup.
+    // Done after readiness, so the socket exists by the time we look for it.
+    if (this.usedShell) {
+      this.listeningPid = await pidListeningOn(this.boundPort);
     }
     return this.connect();
   }
@@ -243,6 +269,12 @@ export class CodexAppServer extends EventEmitter {
    * is identified and killed by reapStrayAppServers on the next launch, which
    * runs with a working event loop and against a process that is no longer
    * our child.
+   *
+   * Windows needs more than a kill on the child. When the binary is a `.cmd`
+   * shim the child is `cmd.exe`, and terminating it leaves the server running
+   * with a dead parent -- an orphan on every *normal* quit, not just a crash.
+   * `taskkill /T` walks the tree instead, and it runs before the child is
+   * killed because the tree is only walkable while the shim is alive.
    */
   stop(): void {
     this.stopping = true;
@@ -250,8 +282,20 @@ export class CodexAppServer extends EventEmitter {
     this.reconnectTimer = null;
     try { this.socket?.close(); } catch { /* already gone */ }
     this.socket = null;
-    this.child?.kill();
+
+    const child = this.child;
+    const server = this.listeningPid;
     this.child = null;
+    this.listeningPid = null;
+
+    if (process.platform === 'win32') {
+      killTreeSync([child?.pid ?? null, server]);
+    }
+    try {
+      child?.kill();
+    } catch {
+      // Already gone.
+    }
   }
 }
 
@@ -293,6 +337,66 @@ function writeRecords(file: string, records: AppServerRecord[]): void {
   } catch {
     // Losing the record costs one stray, which the process scan already
     // declines to list. Not worth failing startup over.
+  }
+}
+
+/**
+ * Pid holding a listening socket on a loopback port, from Windows' own TCP
+ * table. Get-NetTCPConnection is the modern route; netstat is the fallback for
+ * hosts where the cmdlet is missing or PowerShell is locked down.
+ */
+async function pidListeningOn(port: number): Promise<number | null> {
+  try {
+    const { stdout } = await run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `(Get-NetTCPConnection -LocalPort ${port} -State Listen ` +
+          '-ErrorAction Stop | Select-Object -First 1).OwningProcess',
+      ],
+      { timeout: 8000 },
+    );
+    const pid = Number(stdout.trim());
+    if (Number.isInteger(pid) && pid > 0) return pid;
+  } catch {
+    // Cmdlet unavailable or blocked; netstat is on every Windows host.
+  }
+  try {
+    const { stdout } = await run('netstat', ['-ano', '-p', 'TCP'], {
+      timeout: 8000,
+    });
+    for (const line of stdout.split(/\r?\n/)) {
+      const match = /^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/.exec(
+        line,
+      );
+      if (match && Number(match[1]) === port) return Number(match[2]);
+    }
+  } catch {
+    // No answer at all: the child's own pid remains the best guess.
+  }
+  return null;
+}
+
+/**
+ * Ends process trees, synchronously, for use while the process is exiting.
+ *
+ * `spawnSync` rather than an async kill because the only caller has
+ * `process.exit` on the line after it -- an async spawn would never be
+ * issued. taskkill returns in milliseconds, so this is not the blocking wait
+ * on a zombie child that `stop` is careful to avoid.
+ */
+function killTreeSync(pids: Array<number | null>): void {
+  const targets = [...new Set(pids.filter((p): p is number => p !== null))];
+  if (targets.length === 0) return;
+  try {
+    spawnSync(
+      'taskkill',
+      ['/T', '/F', ...targets.flatMap((pid) => ['/PID', String(pid)])],
+      { stdio: 'ignore', timeout: 4000, windowsHide: true },
+    );
+  } catch {
+    // Nothing more can be done from a process that is already going away.
   }
 }
 

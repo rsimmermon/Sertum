@@ -21,9 +21,16 @@
  * path.txt (how Forge locates the binary), and re-signing, since the ad-hoc
  * signature seals the executable name.
  *
+ * The same bundle also has to declare NSAppleEventsUsageDescription, or macOS
+ * refuses every Apple event we send with -1743 and never lists Sertum under
+ * Privacy & Security > Automation -- leaving no toggle to grant. Electron's
+ * stock Info.plist ships usage strings for camera, mic and Bluetooth but not
+ * that one.
+ *
  * Packaged builds need none of this: Forge writes the correct bundle from
- * packagerConfig. This only touches the throwaway dev copy, and re-applies
- * itself after any `npm install` restores the pristine bundle.
+ * packagerConfig (see `extendInfo` in forge.config.ts for the same key). This
+ * only touches the throwaway dev copy, and re-applies itself after any
+ * `npm install` restores the pristine bundle.
  */
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -31,6 +38,10 @@ const path = require('node:path');
 
 const APP_NAME = 'Sertum';
 const BUNDLE_ID = 'dev.sertum.app';
+// Keep in step with packagerConfig.extendInfo in forge.config.ts.
+const APPLE_EVENTS_REASON =
+  'Sertum sends Apple events to your terminal so it can bring the window '
+  + 'and tab of an agent session running there to the front.';
 
 if (process.platform !== 'darwin') process.exit(0);
 
@@ -62,12 +73,17 @@ if (!fs.existsSync(plist)) process.exit(0);
 
 const get = (key) => {
   try {
+    // A missing key is an expected answer here, not a problem to report, so
+    // PlistBuddy's complaint about it stays off the console.
     return execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist],
-      { encoding: 'utf8' }).trim();
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch { return null; }
 };
 const set = (key, value) => {
-  const verb = get(key) === null ? `Add :${key} string ${value}` : `Set :${key} ${value}`;
+  // PlistBuddy parses the command as one string, so a value with spaces has
+  // to arrive quoted or only its first word lands.
+  const quoted = JSON.stringify(value);
+  const verb = get(key) === null ? `Add :${key} string ${quoted}` : `Set :${key} ${quoted}`;
   execFileSync('/usr/libexec/PlistBuddy', ['-c', verb, plist]);
 };
 
@@ -84,7 +100,13 @@ if (!Object.entries(names).every(([k, v]) => get(k) === v)) {
   changed.push('name');
 }
 
-// 2. Dock icon. Overwrites the file Info.plist already points at, so the
+// 2. Permission to send Apple events at all.
+if (get('NSAppleEventsUsageDescription') !== APPLE_EVENTS_REASON) {
+  set('NSAppleEventsUsageDescription', APPLE_EVENTS_REASON);
+  changed.push('apple events');
+}
+
+// 3. Dock icon. Overwrites the file Info.plist already points at, so the
 //    CFBundleIconFile key stays valid and untouched.
 if (fs.existsSync(ourIcon) && fs.existsSync(bundleIcon)
     && !fs.readFileSync(ourIcon).equals(fs.readFileSync(bundleIcon))) {
@@ -92,7 +114,7 @@ if (fs.existsSync(ourIcon) && fs.existsSync(bundleIcon)
   changed.push('icon');
 }
 
-// 3. Dock label, which follows the executable name.
+// 4. Dock label, which follows the executable name.
 const pristine = path.join(macOsDir, 'Electron');
 const renamed = path.join(macOsDir, APP_NAME);
 if (fs.existsSync(pristine)) {
@@ -136,3 +158,7 @@ try {
 } catch { /* cache busting is best-effort */ }
 
 console.log(`[dev-app-name] dev bundle branded as ${APP_NAME} (${changed.join(', ')})`);
+// TCC pins an ad-hoc grant to the code signature, so the re-sign above voids
+// any Automation permission the previous bundle had been given.
+console.log('[dev-app-name] re-signed; if Automation was already granted, run '
+  + `\`tccutil reset AppleEvents ${BUNDLE_ID}\` and allow it again.`);

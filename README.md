@@ -111,6 +111,37 @@ the tab is matched by controlling tty, so a window with ten tabs still lands on
 the right one; other platforms fall back to activating the app, and unsupported
 ones say so instead of failing quietly.
 
+### The macOS Automation grant
+
+Selecting a specific tab means sending an Apple event to the terminal, which
+macOS gates behind Privacy & Security › Automation. Three things have to line
+up before that grant is even offerable, and all three are in the build rather
+than in the app's code:
+
+- **`NSAppleEventsUsageDescription` in Info.plist.** Without it macOS refuses
+  every Apple event with `-1743` and never prompts — so the app never appears
+  under Automation and there is no toggle to switch on. Set for packaged builds
+  by `extendInfo` in `forge.config.ts`, and for `npm start` by
+  `scripts/dev-app-name.js`, which patches the throwaway dev bundle Electron
+  ships.
+- **A signature that verifies.** Packager writes Info.plist after the fuses
+  plugin re-signs, leaving the bundle failing `codesign --verify`; TCC will not
+  hold a grant for a bundle in that state. The `postPackage` hook in
+  `forge.config.ts` re-signs once everything else is done.
+- **Our own signing identifier.** That same fuses re-sign preserves Electron's
+  `com.github.Electron` identifier, which is what TCC keys the grant on — so
+  every ad-hoc Electron app on the machine would share one TCC identity. The
+  re-sign above derives `dev.sertum.app` from `CFBundleIdentifier` instead.
+
+Because the signature is ad-hoc, its designated requirement pins the cdhash:
+each rebuild is a new identity, and the grant has to be given again. To clear a
+stale one, `tccutil reset AppleEvents dev.sertum.app`.
+
+Refusing the grant is not fatal. Raising the app itself goes through
+LaunchServices (`open -b <bundle id>`), which needs no permission at all, so
+the jump still works — only tab selection is lost, and the UI says so with a
+button that opens the right settings pane.
+
 Discovery is agent-agnostic by construction. `AgentDiscoverer` implementations
 are tried richest-first and merged by pid:
 
@@ -129,6 +160,51 @@ sessions started elsewhere — which is why process-scan remains the only Codex
 discoverer today. Teaching discovery to query the app server directly would
 make it a richer discoverer registered ahead of the process scan; nothing
 downstream changes when that lands.
+
+## Pane layouts
+
+Design section 07. A window shows one terminal by default; splitting is opt-in
+and per window. Tabs stay the session registry — a layout only decides how many
+of them are visible at once, so nothing about a split starts, stops or hides a
+session.
+
+| Layout | Panes | Shortcut | For |
+|---|---|---|---|
+| Single | 1 | ⌘⌥1 | the default, and where closing the last split returns to |
+| Columns | 2 | ⌘⌥2 | one session you are steering, one you are watching |
+| Rows | 2 | ⌘⌥3 | wide, shallow output — build logs, test runs, diffs |
+| Grid | 4 | ⌘⌥4 | the fleet view; four is the ceiling |
+
+Reachable from the layout button in the pane header, from View → Layout, or with
+the picker at ⌘⌥L. `⌘⌥D` / `⌘⌥⇧D` split the focused pane right or down and
+promote the layout to suit; `⌘⌥W` closes a pane, `⌘⌥↩` maximises one and `⌘⌥0`
+equalises the gutters. `⌘⌥` arrows move focus — spatially in Grid, along its own
+axis in Columns and Rows — and while a split is up `⌘1…4` address panes rather
+than sessions, matching the number printed on each pane and its sidebar row.
+
+Choosing a layout backfills its new panes from sessions that were only tabs
+until now. Splitting the focused pane deliberately does not: it opens empty and
+names its three ways in — drop a session on it, click a tab or sidebar row while
+it has focus, or start a new session. A session occupies at most one pane, so
+loading it somewhere else moves it rather than duplicating it; two views onto
+one PTY is a separate feature with its own sizing rules and is not built.
+
+Three things follow from a terminal being a real PTY rather than a view:
+
+- **Every pane resize is sent to its PTY.** Each pane gets its own geometry, so
+  four panes mean four different `cols`/`rows` and four TUIs reflowing to fit.
+- **Panes refuse to shrink below a readable terminal.** Gutter drags clamp at 40
+  columns and 12 rows, scaled to the terminal's own point size; a window too
+  small to honour that says so over the pane instead of clipping output.
+- **Moving a session between panes costs a DOM move and a refit.** The xterm
+  instance is keyed by session and never rebuilt, so scrollback survives every
+  layout change.
+
+Layout and gutter positions are remembered across launches; the sessions that
+were in those panes are not, because the PTYs die with the app. While a split is
+up the sidebar regroups into IN VIEW and OTHER SESSIONS, and an unfocused pane
+carries its status colour on its border so an errored session reads from across
+the room.
 
 ## Running
 
@@ -254,6 +330,19 @@ fixed along the way:
   worth knowing if you're used to Sertum staying alive in the Dock after the
   last window closes. On Windows (and Linux), closing the window ends the
   process, the hook server, and every session it owns.
+- **The `.cmd` shim also displaces the codex app server's pid, which used to
+  orphan it on every quit.** The same `shell: true` that makes a `codex.cmd`
+  spawn legal puts `cmd.exe` between us and the server: `child.kill()`
+  terminates the shim while the server carries on holding its ephemeral port,
+  and the pid recorded for the next launch's reaper is the shim's — a pid that
+  died with the shim, so the reaper looked for it, found nothing and dropped
+  the record. One orphan per *normal* quit, not just per crash, each holding a
+  port until reboot. Fixed on both ends: the real pid is resolved from the port
+  it is listening on (`Get-NetTCPConnection`, falling back to `netstat -ano`)
+  and recorded instead of the shim's, and shutdown runs `taskkill /T /F` —
+  before killing the child, since the tree is only walkable while the shim is
+  alive. Neither path runs off Windows, where the process we spawn is the
+  server. Untested on Windows so far.
 - `dev-app-name.js` (the Dock name/icon branding hack) already no-ops on
   `process.platform !== 'darwin'`, `titleBarStyle` already falls back to
   `'default'` off Darwin, and `curl`-based hooks and the PTY smoke test

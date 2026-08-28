@@ -69,6 +69,15 @@
           <header class="pane-head" id="pane-head" style="display: none">
             <div class="pane-title" id="pane-title"></div>
             <div class="pane-actions">
+              <!-- Design note 244: the layout picker hangs off this button, so
+                   splitting is reachable without going through the menu bar. -->
+              <button
+                class="btn ghost pane-layout-btn"
+                id="pane-layout"
+                type="button"
+                aria-haspopup="dialog"
+                title="Pane layout  (⌘⌥L)"
+              >▢ Single</button>
               <button class="btn ghost" disabled>Info</button>
               <button class="btn ghost" disabled>Diff</button>
               <button class="btn ghost" disabled>Stop</button>

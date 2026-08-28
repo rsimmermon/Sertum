@@ -329,6 +329,18 @@ ipcMain.handle(
 ipcMain.handle('shell:reveal', (_e, target: string) => {
   shell.showItemInFolder(target);
 });
+/**
+ * Deep link to the pane holding our Apple events grant.
+ *
+ * Sertum only shows up there once it has actually asked to control something,
+ * which needs NSAppleEventsUsageDescription in the bundle -- see the key set
+ * in forge.config.ts and scripts/dev-app-name.js.
+ */
+ipcMain.handle('shell:automation-settings', () =>
+  shell.openExternal(
+    'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+  ),
+);
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
 ipcMain.handle(
   'session:rename',
@@ -352,9 +364,15 @@ ipcMain.handle(
 ipcMain.handle('session:remove', (_e, id: string) => ptys.remove(id));
 ipcMain.handle('workspace:default-cwd', () => defaultCwd());
 ipcMain.handle('settings:get', () => getSettings());
-ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) =>
-  setSettings(patch),
-);
+ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+  const before = getSettings().paneLayout;
+  const stored = setSettings(patch);
+  // The View menu carries the layout radio set, so it has to be rebuilt when
+  // the layout is changed from anywhere else -- the picker, a shortcut, or a
+  // pane close collapsing back to Single.
+  if (stored.paneLayout !== before) buildMenu();
+  return stored;
+});
 ipcMain.handle('discovery:list', () =>
   discoverSessions(ptys.ownedPids(), resolvedCommand),
 );
@@ -484,10 +502,10 @@ app.on('ready', async () => {
         ? `[sertum] codex app server on ${codex.remoteUrl}`
         : '[sertum] codex not available; codex sessions run unmonitored',
     );
-    if (up && codex.childPid !== null) {
+    if (up && codex.serverPid !== null) {
       recordAppServer(appServerRecordFile(), {
         ownerPid: process.pid,
-        serverPid: codex.childPid,
+        serverPid: codex.serverPid,
         port: codex.port,
       });
     }
@@ -620,6 +638,9 @@ app.on('activate', () => {
 function buildMenu() {
   const isMac = process.platform === 'darwin';
   const send = (channel: string) => () => broadcast(channel, null);
+  // The radio ticks have to start where the stored layout is, or the menu
+  // disagrees with the window until the user opens the picker.
+  const layout = getSettings().paneLayout;
 
   const appMenu: Electron.MenuItemConstructorOptions = {
     label: 'Sertum',
@@ -715,10 +736,102 @@ function buildMenu() {
           click: send('menu:palette'),
         },
         { type: 'separator' },
-        { label: 'Layout: Single', type: 'radio', checked: true },
-        { label: 'Layout: Columns', type: 'radio', enabled: false },
-        { label: 'Layout: Rows', type: 'radio', enabled: false },
-        { label: 'Layout: Grid', type: 'radio', enabled: false },
+        // Design section 07. The radio set mirrors the layout picker, and the
+        // accelerators live here rather than in the renderer so they keep
+        // working while focus is inside a terminal -- a keystroke the renderer
+        // would have to intercept is a keystroke the agent's TUI never sees.
+        {
+          label: 'Pane Layout…',
+          accelerator: 'CmdOrCtrl+Alt+L',
+          click: send('menu:layout-picker'),
+        },
+        {
+          label: 'Layout',
+          submenu: [
+            {
+              label: 'Single',
+              type: 'radio',
+              checked: layout === 'single',
+              accelerator: 'CmdOrCtrl+Alt+1',
+              click: send('menu:layout-single'),
+            },
+            {
+              label: 'Columns',
+              type: 'radio',
+              checked: layout === 'columns',
+              accelerator: 'CmdOrCtrl+Alt+2',
+              click: send('menu:layout-columns'),
+            },
+            {
+              label: 'Rows',
+              type: 'radio',
+              checked: layout === 'rows',
+              accelerator: 'CmdOrCtrl+Alt+3',
+              click: send('menu:layout-rows'),
+            },
+            {
+              label: 'Grid',
+              type: 'radio',
+              checked: layout === 'grid',
+              accelerator: 'CmdOrCtrl+Alt+4',
+              click: send('menu:layout-grid'),
+            },
+          ],
+        },
+        {
+          label: 'Panes',
+          submenu: [
+            {
+              label: 'Split Focused Pane Right',
+              accelerator: 'CmdOrCtrl+Alt+D',
+              click: send('menu:split-right'),
+            },
+            {
+              label: 'Split Focused Pane Down',
+              accelerator: 'CmdOrCtrl+Alt+Shift+D',
+              click: send('menu:split-down'),
+            },
+            { type: 'separator' },
+            {
+              label: 'Maximise Focused Pane',
+              accelerator: 'CmdOrCtrl+Alt+Return',
+              click: send('menu:maximise-pane'),
+            },
+            {
+              label: 'Close Focused Pane',
+              accelerator: 'CmdOrCtrl+Alt+W',
+              click: send('menu:close-pane'),
+            },
+            {
+              label: 'Reset Pane Sizes',
+              accelerator: 'CmdOrCtrl+Alt+0',
+              click: send('menu:reset-panes'),
+            },
+            { type: 'separator' },
+            // Design notes 249, 257 and 263: one binding per direction, which
+            // a two-pane layout answers on its own axis only.
+            {
+              label: 'Focus Pane Left',
+              accelerator: 'CmdOrCtrl+Alt+Left',
+              click: send('menu:focus-pane-left'),
+            },
+            {
+              label: 'Focus Pane Right',
+              accelerator: 'CmdOrCtrl+Alt+Right',
+              click: send('menu:focus-pane-right'),
+            },
+            {
+              label: 'Focus Pane Up',
+              accelerator: 'CmdOrCtrl+Alt+Up',
+              click: send('menu:focus-pane-up'),
+            },
+            {
+              label: 'Focus Pane Down',
+              accelerator: 'CmdOrCtrl+Alt+Down',
+              click: send('menu:focus-pane-down'),
+            },
+          ],
+        },
         { type: 'separator' },
         { role: 'reload' },
         { role: 'toggleDevTools' },

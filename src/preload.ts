@@ -43,6 +43,8 @@ const api: SertumApi = {
   attachSession: (d) => ipcRenderer.invoke('discovery:attach', d),
   monitorSession: (d) => ipcRenderer.invoke('discovery:monitor', d),
   focusExternal: (pid: number) => ipcRenderer.invoke('discovery:focus', pid),
+  openAutomationSettings: () =>
+    ipcRenderer.invoke('shell:automation-settings'),
   write: (id, data) => ipcRenderer.send('pty:input', { id, data }),
   resize: (id, size: PtySize) =>
     ipcRenderer.send('pty:resize', { id, ...size }),

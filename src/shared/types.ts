@@ -105,6 +105,8 @@ export interface FocusOutcome {
   ok: boolean;
   app?: string;
   reason?: string;
+  /** macOS withheld Automation consent, so the user has a toggle to flip. */
+  needsPermission?: boolean;
 }
 
 export interface AdapterStatus {
@@ -186,8 +188,42 @@ export type TabPlacement = 'side' | 'top' | 'both';
  * session's behaviour lives in settings, so a corrupt or missing file can
  * always fall back to DEFAULT_SETTINGS without losing work.
  */
+/**
+ * How many terminals the pane area shows at once — design section 07.
+ *
+ * Opt-in: every window starts at `single` and splitting is a per-window
+ * choice. Tabs stay the session registry; a layout only decides how many of
+ * them are visible together.
+ */
+export type PaneLayout = 'single' | 'columns' | 'rows' | 'grid';
+
+/** Panes a layout draws. Four is the practical ceiling (design G3). */
+export const PANE_COUNT: Record<PaneLayout, number> = {
+  single: 1,
+  columns: 2,
+  rows: 2,
+  grid: 4,
+};
+
+/**
+ * Gutter positions, as the fraction of the axis given to the first pane.
+ *
+ * Stored per layout per axis, because a split you tuned for Columns should
+ * not be disturbed by visiting Grid. `col` splits left/right, `row` splits
+ * top/bottom, so Grid needs both and the others need one each.
+ */
+export interface PaneSplits {
+  columns: number;
+  rows: number;
+  gridCol: number;
+  gridRow: number;
+}
+
 export interface Settings {
   tabPlacement: TabPlacement;
+  /** Pane layout, remembered until changed (design G4). */
+  paneLayout: PaneLayout;
+  paneSplits: PaneSplits;
   /** Point sizes. The terminal is separate: it is read far more closely. */
   terminalFontSize: number;
   tabFontSize: number;
@@ -207,6 +243,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   tabPlacement: 'side',
+  paneLayout: 'single',
+  paneSplits: { columns: 0.5, rows: 0.5, gridCol: 0.5, gridRow: 0.5 },
   terminalFontSize: 14,
   tabFontSize: 13,
   listFontSize: 13,
@@ -283,6 +321,8 @@ export interface SertumApi {
   monitorSession(d: DiscoveredSession): Promise<SessionSnapshot>;
   /** Raise the OS window that owns a session we cannot render. */
   focusExternal(pid: number): Promise<FocusOutcome>;
+  /** Opens Privacy & Security › Automation, where our grant lives. */
+  openAutomationSettings(): Promise<void>;
   write(id: string, data: string): void;
   resize(id: string, size: PtySize): void;
   onData(cb: (e: PtyDataEvent) => void): () => void;

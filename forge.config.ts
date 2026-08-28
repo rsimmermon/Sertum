@@ -1,3 +1,7 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
@@ -33,6 +37,46 @@ function shipInPackage(file: string): boolean {
   );
 }
 
+const run = promisify(execFile);
+
+/**
+ * Re-signs the packaged macOS bundle ad-hoc, after everything else has
+ * finished writing to it.
+ *
+ * Two things go wrong on their own, both of which cost us TCC:
+ *
+ *  - Packager writes Info.plist (our `extendInfo` keys, ElectronAsarIntegrity)
+ *    *after* the fuses plugin's `packageAfterCopy` re-sign, so the shipped
+ *    bundle fails `codesign --verify` outright -- and macOS will not hold an
+ *    Automation grant for a bundle whose signature does not check out.
+ *  - That fuses re-sign passes `--preserve-metadata`, which carries Electron's
+ *    own signing identifier (com.github.Electron) forward even though our
+ *    Info.plist says dev.sertum.app. TCC keys the grant on the signing
+ *    identifier, so left alone Sertum would share one TCC identity with every
+ *    other ad-hoc-signed Electron app on the machine.
+ *
+ * A plain deep re-sign fixes both: each nested bundle takes its identifier
+ * from its own CFBundleIdentifier, and the seal covers the final plist.
+ *
+ * The signature is ad-hoc, so its designated requirement pins the cdhash --
+ * every rebuild is a new identity, and any Automation grant given to the
+ * previous build has to be given again.
+ */
+async function resignDarwinBundle(outputPaths: string[]): Promise<void> {
+  for (const dir of outputPaths) {
+    const bundles = (await fs.readdir(dir)).filter((e) => e.endsWith('.app'));
+    for (const bundle of bundles) {
+      await run('codesign', [
+        '--force',
+        '--sign',
+        '-',
+        '--deep',
+        path.join(dir, bundle),
+      ]);
+    }
+  }
+}
+
 const config: ForgeConfig = {
   packagerConfig: {
     // node-pty also ships plain executables it exec()s — spawn-helper on
@@ -46,6 +90,21 @@ const config: ForgeConfig = {
     appBundleId: 'dev.sertum.app',
     // Extension-less: packager picks .icns on macOS and .ico on Windows.
     icon: 'assets/icon',
+    // Raising another terminal's exact tab is an Apple event, and macOS
+    // refuses to send one -- silently, with error -1743 -- unless the bundle
+    // says why it wants to. Worse, without this key the app never appears
+    // under Privacy & Security > Automation at all, so there is nothing for
+    // the user to switch on. Keep this string in step with the one in
+    // scripts/dev-app-name.js, which puts it on the dev bundle.
+    //
+    // Signing with the hardened runtime would additionally need a
+    // com.apple.security.automation.apple-events entitlement; we ship
+    // ad-hoc signed, so the usage string is the whole requirement today.
+    extendInfo: {
+      NSAppleEventsUsageDescription:
+        'Sertum sends Apple events to your terminal so it can bring the '
+        + 'window and tab of an agent session running there to the front.',
+    },
     ignore: (file) => !shipInPackage(file),
   },
   rebuildConfig: {
@@ -65,6 +124,11 @@ const config: ForgeConfig = {
     new MakerRpm({ options: { icon: 'assets/icon.png' } }),
     new MakerDeb({ options: { icon: 'assets/icon.png' } }),
   ],
+  hooks: {
+    postPackage: async (_forgeConfig, { platform, outputPaths }) => {
+      if (platform === 'darwin') await resignDarwinBundle(outputPaths);
+    },
+  },
   plugins: [
     // node-pty ships a .node binary, and native modules cannot be loaded from
     // inside an asar. Without this the packaged app throws the moment a

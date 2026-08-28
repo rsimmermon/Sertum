@@ -11,7 +11,21 @@ import {
 } from './command-palette';
 import { openWorktreeDialog } from './worktree-dialog';
 import {
+  buildPaneGrid,
+  SESSION_DND_TYPE,
+  type SlotView,
+  type SplitAxis,
+} from './pane-grid';
+import {
+  closeLayoutPicker,
+  LAYOUT_OPTIONS,
+  layoutLabel,
+  openLayoutPicker,
+} from './layout-picker';
+import {
   DEFAULT_SETTINGS,
+  PANE_COUNT,
+  type PaneLayout,
   type SessionSnapshot,
   type SessionStatus,
   type Settings,
@@ -38,6 +52,31 @@ const STATUS_GLYPH: Record<SessionStatus, string> = {
   idle: '○',
 };
 
+/**
+ * Border tint an unfocused pane carries (design note 265).
+ *
+ * Only the states worth noticing across the room get one: an idle pane stays
+ * neutral so the ones that need you stand out rather than everything glowing.
+ */
+const STATUS_TONE: Record<SessionStatus, 'run' | 'warn' | 'err' | null> = {
+  'needs-input': 'warn',
+  working: 'run',
+  attention: 'err',
+  // Design note 265 tints an unfocused pane only when it is not green: a
+  // finished session is not asking for anything, so it stays neutral and the
+  // panes that do need you are the ones that stand out.
+  done: null,
+  idle: null,
+};
+
+/** A one-glyph diagram of each layout, for the pane header's button. */
+const LAYOUT_GLYPH: Record<PaneLayout, string> = {
+  single: '▢',
+  columns: '▥',
+  rows: '▤',
+  grid: '▦',
+};
+
 /** CSS custom properties the settings dialog drives. */
 const FONT_VARS: Array<[keyof Settings, string]> = [
   ['tabFontSize', '--size-tab'],
@@ -48,9 +87,34 @@ const FONT_VARS: Array<[keyof Settings, string]> = [
 export class App {
   private sessions = new Map<string, SessionSnapshot>();
   private panes = new Map<string, TerminalPane>();
-  private activeId: string | null = null;
+  /**
+   * Which session each pane holds, in reading order; null is an empty pane.
+   *
+   * Design section 07. With more than one terminal on screen, "the active
+   * session" is exactly "whatever is in the focused pane", so `activeId` is
+   * derived from this rather than stored alongside it -- one source of truth,
+   * which is what stops the two from drifting when a pane is closed or a
+   * session is dropped into a different one.
+   */
+  private slots: Array<string | null> = [null];
+  private focusedSlot = 0;
+  private layout: PaneLayout = 'single';
+  /**
+   * A pane promoted to the full viewport. The layout is kept, not discarded,
+   * so a second press restores it (design G6, note 287).
+   */
+  private maximised: number | null = null;
+  /** Which pane last took keyboard focus, so a render does not steal it. */
+  private focusKey = '';
+  /** Re-runs the current grid's too-small check; set on every build. */
+  private gridRefresh: (() => void) | null = null;
+  /** Moves a gutter on the current grid, without rebuilding it. */
+  private gridResize: ((axis: SplitAxis, fraction: number) => void) | null =
+    null;
   private lastCwd: string | null = null;
   private notice: string | null = null;
+  /** A one-click way out of whatever `notice` is complaining about. */
+  private noticeFix: { label: string; run: () => void } | null = null;
   private adapters: import('../shared/types').AdapterStatus | null = null;
   private settings: Settings = { ...DEFAULT_SETTINGS };
 
@@ -72,6 +136,7 @@ export class App {
     paneHost: qs('#pane-host'),
     paneHead: qs('#pane-head'),
     paneTitle: qs('#pane-title'),
+    layoutButton: qs('#pane-layout') as HTMLButtonElement,
     statusLeft: qs('#status-left'),
     statusRight: qs('#status-right'),
   };
@@ -85,6 +150,11 @@ export class App {
       this.settings = { ...DEFAULT_SETTINGS };
     }
     this.applySettings(this.settings);
+    // The layout is a preference, so it is restored with the others -- but the
+    // panes start empty, because nothing this window was showing survived the
+    // last quit (design G4: layout is remembered, sessions are not).
+    this.layout = this.settings.paneLayout;
+    this.slots = Array.from({ length: PANE_COUNT[this.layout] }, () => null);
     this.installSplitter();
 
     // Row ages are derived from startedAt, so a sidebar that nothing else is
@@ -94,6 +164,7 @@ export class App {
     this.el.sidebarNew.onclick = () => void this.promptNewSession();
     this.installFilter();
     this.el.openSettings.onclick = () => void this.promptSettings();
+    this.el.layoutButton.onclick = () => this.openLayoutMenu(this.el.layoutButton);
 
     api.onData(({ id, data }) => this.panes.get(id)?.write(data));
 
@@ -126,9 +197,24 @@ export class App {
       menu.on(`goto-session-${n}`, () => this.gotoSession(n));
     }
 
-    window.addEventListener('resize', () =>
-      this.activeId ? this.panes.get(this.activeId)?.refit() : undefined,
-    );
+    for (const opt of LAYOUT_OPTIONS) {
+      menu.on(`layout-${opt.layout}`, () => this.setLayout(opt.layout));
+    }
+    menu.on('layout-picker', () => this.openLayoutMenu(this.el.layoutButton));
+    menu.on('split-right', () => this.splitFocused('right'));
+    menu.on('split-down', () => this.splitFocused('down'));
+    menu.on('close-pane', () => this.closePane(this.focusedSlot));
+    menu.on('reset-panes', () => this.resetPaneSizes());
+    menu.on('maximise-pane', () => this.toggleMaximise(this.focusedSlot));
+    for (const dir of ['left', 'right', 'up', 'down'] as const) {
+      menu.on(`focus-pane-${dir}`, () => this.moveFocus(dir));
+    }
+
+    // Every pane on screen has to re-fit, not just the focused one, or the
+    // unfocused PTYs keep drawing against the geometry they had before. The
+    // grid itself is left alone: rebuilding it per resize frame would re-parent
+    // every terminal for no gain.
+    window.addEventListener('resize', () => this.refitPanes());
 
     // Only macOS hides its own title bar, so only macOS gets ours.
     this.el.root.classList.toggle('mac', api.platform === 'darwin');
@@ -204,23 +290,373 @@ export class App {
     this.render();
   }
 
+  // ------------------------------------------------------------ pane layout
+
+  /** The session in the focused pane, which is what "active" now means. */
+  private get activeId(): string | null {
+    return this.slots[this.focusedSlot] ?? null;
+  }
+
+  private set activeId(id: string | null) {
+    this.assignSlot(this.focusedSlot, id);
+  }
+
+  /**
+   * Puts a session in a pane.
+   *
+   * A session occupies at most one pane, so moving it into this one vacates
+   * wherever it was rather than showing the same PTY twice -- two views onto
+   * one terminal is a separate feature (design G8) with its own sizing rules.
+   */
+  private assignSlot(slot: number, id: string | null): void {
+    if (id !== null) {
+      const at = this.slots.indexOf(id);
+      if (at >= 0 && at !== slot) this.slots[at] = null;
+    }
+    this.slots[slot] = id;
+  }
+
+  /**
+   * Panes actually drawn, which is one while a pane is maximised.
+   *
+   * Distinct from `isSplit`, and the distinction matters: maximising is a
+   * temporary zoom, not a layout change, so the tabs, the sidebar and the
+   * status bar keep describing the split that is still there while the grid
+   * draws only the promoted pane.
+   */
+  private paneCount(): number {
+    return this.maximised === null ? PANE_COUNT[this.layout] : 1;
+  }
+
+  private isSplit(): boolean {
+    return PANE_COUNT[this.layout] > 1;
+  }
+
+  /** Slots the layout has, maximised or not. */
+  private layoutSlots(): Array<string | null> {
+    return this.slots.slice(0, PANE_COUNT[this.layout]);
+  }
+
+  /** Slot contents as drawn: the whole layout, or just the maximised pane. */
+  private visiblePaneSlots(): Array<string | null> {
+    if (this.maximised !== null) return [this.slots[this.maximised] ?? null];
+    return this.layoutSlots();
+  }
+
+  /** Sessions the layout holds — what the sidebar calls IN VIEW. */
+  private inView(): string[] {
+    return this.layoutSlots().filter((id): id is string => id !== null);
+  }
+
+  /** Sessions with a terminal on screen right now, so refits reach them. */
+  private onScreen(): string[] {
+    return this.visiblePaneSlots().filter((id): id is string => id !== null);
+  }
+
+  /**
+   * Switches layout, keeping what is already on screen.
+   *
+   * `fill` is the difference between the two ways a pane appears. Choosing a
+   * layout from the picker backfills new panes from sessions that were only
+   * tabs until now -- the common case is one session you are steering and one
+   * you are watching, and making you drag it there would be busywork. A split
+   * of the focused pane deliberately does not: it opens empty and names its
+   * three ways in, because there it is genuinely unclear which session was
+   * meant (design G4 note 272 against G5).
+   */
+  private applyLayout(next: PaneLayout, fill: boolean): void {
+    // A shortcut or a menu item can change the layout while the picker is
+    // still open, which would leave it showing the wrong selection.
+    closeLayoutPicker();
+    const count = PANE_COUNT[next];
+    // The focused session leads, so it is the one that keeps the viewport when
+    // panes go away (design note 268).
+    const ordered = [
+      this.slots[this.focusedSlot],
+      ...this.visiblePaneSlots(),
+    ].filter(
+      (id): id is string => typeof id === 'string' && this.sessions.has(id),
+    );
+    const slots: Array<string | null> = [...new Set(ordered)].slice(0, count);
+
+    if (fill) {
+      for (const s of this.orderedSessions()) {
+        if (slots.length >= count) break;
+        if (!slots.includes(s.id)) slots.push(s.id);
+      }
+    }
+    while (slots.length < count) slots.push(null);
+
+    this.layout = next;
+    this.slots = slots;
+    this.focusedSlot = 0;
+    this.maximised = null;
+    this.persistLayout();
+    this.render();
+  }
+
+  /** Called by the picker, the View menu and ⌘⌥1…4. */
+  setLayout(next: PaneLayout): void {
+    if (next === this.layout && this.maximised === null) return;
+    this.applyLayout(next, true);
+  }
+
+  /**
+   * Adds a pane beside the focused one and promotes the layout to suit.
+   *
+   * With four named layouts rather than a free-form tree, "one more pane" has
+   * exactly one honest destination each time, and past four there is none --
+   * a fifth pane would be too small to read, so the answer is another window
+   * (design note 276).
+   */
+  private splitFocused(axis: 'right' | 'down'): void {
+    const next = this.splitTarget(axis);
+    if (!next) {
+      this.setNotice(
+        'Grid already shows the four panes that stay readable. Open another window for a fifth session.',
+      );
+      this.render();
+      return;
+    }
+    this.applyLayout(next, false);
+    // applyLayout compacts what was on screen to the front, so the pane this
+    // split just added is the first empty one.
+    const empty = this.slots.indexOf(null);
+    if (empty >= 0) this.focusedSlot = empty;
+    this.render();
+  }
+
+  private splitTarget(axis: 'right' | 'down'): PaneLayout | null {
+    if (this.layout === 'single') return axis === 'right' ? 'columns' : 'rows';
+    if (this.layout === 'grid') return null;
+    return 'grid';
+  }
+
+  /**
+   * Closing a pane is a layout action, never a session action (design G6).
+   *
+   * The session keeps running and stays in the list; only this view of it goes
+   * away. Once one pane is left there is no split to preserve, so the window
+   * drops back to Single rather than sitting on a layout full of holes.
+   */
+  private closePane(slot: number): void {
+    closeLayoutPicker();
+    if (this.maximised !== null) this.maximised = null;
+    this.slots[slot] = null;
+    const filled = this.inView();
+    if (filled.length <= 1) {
+      this.layout = 'single';
+      this.slots = [filled[0] ?? null];
+      this.focusedSlot = 0;
+      this.persistLayout();
+      this.render();
+      return;
+    }
+    this.focusedSlot = this.nearestFilled(slot);
+    this.render();
+  }
+
+  /** The closest pane holding something, so focus never lands on a hole. */
+  private nearestFilled(from: number): number {
+    const count = PANE_COUNT[this.layout];
+    for (let step = 1; step < count; step += 1) {
+      for (const at of [from - step, from + step]) {
+        if (at >= 0 && at < count && this.slots[at]) return at;
+      }
+    }
+    return Math.min(from, count - 1);
+  }
+
+  /** ⤢ — full viewport for one pane, with the layout remembered. */
+  private toggleMaximise(slot: number): void {
+    this.maximised = this.maximised === null ? slot : null;
+    if (this.maximised !== null) this.focusedSlot = slot;
+    this.render();
+  }
+
+  private focusSlot(slot: number): void {
+    if (slot === this.focusedSlot) return;
+    this.focusedSlot = slot;
+    // The render moves keyboard focus into the newly focused pane; see
+    // focusActivePane, which is what keeps that from happening on every paint.
+    this.render();
+  }
+
+  /**
+   * ⌘⌥ arrows. Grid moves spatially in all four directions; a two-pane layout
+   * only answers the axis it actually splits (design notes 249, 257, 263).
+   */
+  private moveFocus(dir: 'left' | 'right' | 'up' | 'down'): void {
+    if (!this.isSplit()) return;
+    const horizontal = dir === 'left' || dir === 'right';
+    if (this.layout === 'grid') {
+      const col = this.focusedSlot % 2;
+      const row = Math.floor(this.focusedSlot / 2);
+      const next = horizontal
+        ? row * 2 + (col === 0 ? 1 : 0)
+        : (row === 0 ? 1 : 0) * 2 + col;
+      this.focusSlot(next);
+      return;
+    }
+    const along = this.layout === 'columns' ? horizontal : !horizontal;
+    if (!along) return;
+    this.focusSlot(this.focusedSlot === 0 ? 1 : 0);
+  }
+
+  private resetPaneSizes(): void {
+    this.settings = {
+      ...this.settings,
+      paneSplits: { columns: 0.5, rows: 0.5, gridCol: 0.5, gridRow: 0.5 },
+    };
+    this.persistLayout();
+    this.render();
+  }
+
+  private setSplit(axis: SplitAxis, fraction: number): void {
+    const key =
+      this.layout === 'grid'
+        ? axis === 'col'
+          ? 'gridCol'
+          : 'gridRow'
+        : this.layout === 'columns'
+          ? 'columns'
+          : 'rows';
+    if (this.settings.paneSplits[key] === fraction) return;
+    this.settings = {
+      ...this.settings,
+      paneSplits: { ...this.settings.paneSplits, [key]: fraction },
+    };
+    // Restate the flex weights in place. A drag fires this per pointer move,
+    // and rebuilding the grid at that rate would re-parent every terminal
+    // sixty times a second for a change two numbers describe.
+    this.gridResize?.(axis, fraction);
+    this.refitPanes();
+    this.persistLayout();
+  }
+
+  /**
+   * Persists layout and gutter positions.
+   *
+   * Not awaited and deliberately quiet: the layout on screen is already
+   * authoritative, and a failed write costs a preference next launch rather
+   * than anything the user is doing now. Dragging a gutter fires this on every
+   * frame, so the write is coalesced.
+   */
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private persistLayout(): void {
+    // Keep the cached settings in step with the window, not just the file.
+    // The settings dialog is seeded from this object and writes the whole of
+    // it back, so leaving it stale here means saving an unrelated preference
+    // would quietly revert the layout on the next launch.
+    this.settings = { ...this.settings, paneLayout: this.layout };
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void api
+        .setSettings({
+          paneLayout: this.layout,
+          paneSplits: this.settings.paneSplits,
+        })
+        .catch(() => undefined);
+    }, 200);
+  }
+
+  private openLayoutMenu(anchor: HTMLElement): void {
+    const split = this.isSplit();
+    const canSplit = this.splitTarget('right') !== null;
+    const tooMany = !canSplit
+      ? 'Four panes is the ceiling — past that a terminal is too small to read. File → New Window takes a fifth session.'
+      : undefined;
+    openLayoutPicker({
+      anchor,
+      current: this.layout,
+      onPick: (next) => this.setLayout(next),
+      actions: [
+        {
+          label: 'Split focused pane right',
+          accel: '⌘⌥D',
+          run: canSplit ? () => this.splitFocused('right') : undefined,
+          unavailable: tooMany,
+        },
+        {
+          label: 'Split focused pane down',
+          accel: '⌘⌥⇧D',
+          run: canSplit ? () => this.splitFocused('down') : undefined,
+        },
+        {
+          label: 'Close focused pane',
+          accel: '⌘⌥W',
+          run: split ? () => this.closePane(this.focusedSlot) : undefined,
+        },
+        {
+          label: 'Reset pane sizes',
+          accel: '⌘⌥0',
+          run: split ? () => this.resetPaneSizes() : undefined,
+        },
+        // Two views onto one PTY is design G8, which is not built: listed
+        // without a handler so the feature's shape stays legible.
+        ...(split
+          ? [{ label: 'Mirror focused pane', accel: '⌘⌥M' }]
+          : []),
+      ],
+    });
+  }
+
   /** Raises the OS window owning a session we cannot render. */
   private async revealExternal(s: SessionSnapshot): Promise<void> {
     if (s.pid === null) return;
     const result = await api.focusExternal(s.pid);
-    if (!result.ok && result.reason) {
-      this.notice = result.reason;
+    // A reason can arrive on success too -- the window was raised but the
+    // exact tab was not selected -- and that is worth saying.
+    if (!result.reason) {
+      this.setNotice(null);
       this.render();
+      return;
     }
+    this.setNotice(
+      result.reason,
+      result.needsPermission
+        ? {
+            label: 'Open Automation settings',
+            run: () => void api.openAutomationSettings(),
+          }
+        : null,
+    );
+    this.render();
   }
 
+  private setNotice(
+    message: string | null,
+    fix: { label: string; run: () => void } | null = null,
+  ): void {
+    this.notice = message;
+    this.noticeFix = fix;
+  }
+
+  /**
+   * Picks a session, from a tab, a sidebar row or the palette.
+   *
+   * With a split active this is where "which pane?" gets answered: a session
+   * already on screen means focus its pane, and one that is not gets loaded
+   * into the focused pane (design notes 246 and 278). Nothing here duplicates
+   * a session into two panes.
+   */
   private select(id: string): void {
     const session = this.sessions.get(id);
     // A monitored session has no terminal here, so selecting it means going
     // to where it actually lives.
     if (session?.origin === 'monitored') void this.revealExternal(session);
-    if (this.activeId === id) return;
-    this.notice = null;
+
+    const at = this.slots.indexOf(id);
+    if (at >= 0) {
+      // Focusing a pane hidden behind a maximised one has to un-maximise, or
+      // the click would appear to do nothing.
+      if (this.maximised !== null && this.maximised !== at) this.maximised = null;
+      this.focusSlot(at);
+      return;
+    }
+    this.setNotice(null);
     this.activeId = id;
     this.render();
   }
@@ -257,7 +693,9 @@ export class App {
     if (!gone) {
       // The process outlived SIGKILL. Keep the row: dropping it would leave a
       // live process with nothing in the UI to reclaim it.
-      this.notice = `${session.label} will not exit — its process is still running.`;
+      this.setNotice(
+        `${session.label} will not exit — its process is still running.`,
+      );
       this.renderStatus();
       return;
     }
@@ -265,8 +703,27 @@ export class App {
     this.panes.get(id)?.dispose();
     this.panes.delete(id);
     this.sessions.delete(id);
-    if (this.activeId === id) {
-      this.activeId = [...this.sessions.keys()][0] ?? null;
+    // Ending a session vacates whatever pane held it. Backfilling only makes
+    // sense in a single-pane window: with a split, an empty pane is a drop
+    // target and choosing a replacement for the user would be a guess.
+    const at = this.slots.indexOf(id);
+    if (at >= 0) {
+      this.slots[at] = this.isSplit()
+        ? null
+        : ([...this.sessions.keys()][0] ?? null);
+      if (this.maximised === at) this.maximised = null;
+      if (this.isSplit() && !this.slots[this.focusedSlot]) {
+        this.focusedSlot = this.nearestFilled(this.focusedSlot);
+      }
+      // Ending the last session on screen leaves a split with nothing to
+      // split, so the window drops back to Single and shows the empty state
+      // rather than a grid of holes (design note 283).
+      if (this.isSplit() && this.inView().length === 0) {
+        this.layout = 'single';
+        this.slots = [null];
+        this.focusedSlot = 0;
+        this.persistLayout();
+      }
     }
     this.render();
   }
@@ -314,7 +771,7 @@ export class App {
     try {
       this.applySettings(await api.setSettings(chosen));
     } catch {
-      this.notice = 'Could not save settings.';
+      this.setNotice('Could not save settings.');
       this.renderStatus();
     }
   }
@@ -390,6 +847,11 @@ export class App {
       tab.setAttribute('aria-selected', String(selected));
       const stack = div('tab-stack');
       const head = div('tab-head');
+      // Which pane this session occupies, and its ⌘-digit (design note 245).
+      const pane = this.slots.indexOf(s.id);
+      if (pane >= 0 && this.isSplit()) {
+        head.append(text('span', String(pane + 1), 'tab-pane'));
+      }
       head.append(text('span', s.label, 'tab-label'));
       const badges = this.chipsFor(s);
       if (badges) head.append(badges);
@@ -404,6 +866,7 @@ export class App {
       close.classList.add('close');
       tab.append(close);
       tab.tabIndex = 0;
+      makeSessionDraggable(tab, s);
       tab.onclick = () => this.select(s.id);
       tab.onkeydown = (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -471,6 +934,39 @@ export class App {
     );
   }
 
+  /**
+   * How the sidebar groups its rows.
+   *
+   * Normally by what needs you most (wireframe B3). While a split is up that
+   * question is answered on screen, and the useful one becomes what is *not*
+   * on screen -- so the list regroups into IN VIEW and OTHER SESSIONS, and
+   * drops the grouping again as soon as one pane is left (design notes 252 and
+   * 290).
+   */
+  private sidebarGroups(
+    visible: SessionSnapshot[],
+  ): Array<{ label: string; tint: string; rows: SessionSnapshot[] }> {
+    if (this.isSplit()) {
+      const order = this.layoutSlots();
+      const inView = visible
+        .filter((s) => order.includes(s.id))
+        .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+      return [
+        { label: 'IN VIEW', tint: 'in-view', rows: inView },
+        {
+          label: 'OTHER SESSIONS',
+          tint: 'idle',
+          rows: visible.filter((s) => !order.includes(s.id)),
+        },
+      ];
+    }
+    return GROUP_ORDER.map((g) => ({
+      label: g.label,
+      tint: g.key,
+      rows: visible.filter((s) => s.status === g.key),
+    }));
+  }
+
   private renderSidebar(): void {
     const list = this.el.sidebarList;
     list.replaceChildren();
@@ -500,15 +996,15 @@ export class App {
       return;
     }
 
-    for (const group of GROUP_ORDER) {
-      const rows = visible.filter((s) => s.status === group.key);
+    for (const group of this.sidebarGroups(visible)) {
+      const rows = group.rows;
       // A group with nothing in it collapses out rather than showing an
       // empty heading, which is what B10 asks for while filtering.
       if (rows.length === 0) continue;
       const groupHead = div('sb-group');
       groupHead.append(
         text('span', group.label, 'sb-group-label'),
-        text('span', String(rows.length), `sb-count ${group.key}`),
+        text('span', String(rows.length), `sb-count ${group.tint}`),
       );
       list.append(groupHead);
       for (const s of rows) {
@@ -532,6 +1028,11 @@ export class App {
         if (s.origin === 'monitored') {
           top.append(text('span', '↗', 'external-mark'));
           row.classList.add('is-external');
+        }
+        const pane = this.slots.indexOf(s.id);
+        if (pane >= 0 && this.isSplit()) {
+          row.classList.add('in-view');
+          top.append(text('span', String(pane + 1), 'sb-pane'));
         }
 
         // The only close affordance used to live on the top tab strip, which
@@ -567,6 +1068,7 @@ export class App {
         row.setAttribute('role', 'option');
         row.setAttribute('aria-selected', String(selected));
         row.dataset.session = s.id;
+        makeSessionDraggable(row, s);
         row.onclick = () => this.select(s.id);
         row.ondblclick = () => this.beginRename(s.id);
         row.onkeydown = (e) => {
@@ -598,8 +1100,20 @@ export class App {
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
-      { label: 'Open in focused pane' },
-      { label: 'Open in new pane' },
+      {
+        label: 'Open in focused pane',
+        onSelect: () => this.dropIntoPane(this.focusedSlot, s.id),
+      },
+      {
+        label: 'Open in new pane',
+        // Only offered while there is room for one; past four panes a terminal
+        // stops being readable (design note 276).
+        onSelect:
+          this.splitTarget('right') !== null
+            ? () => this.openInNewPane(s.id)
+            : undefined,
+      },
+      // Two views onto one PTY is design G8, which is not built.
       { label: 'Mirror in new pane', accel: '⌘⌥M' },
       { label: 'Open in new window' },
       SEPARATOR,
@@ -664,7 +1178,20 @@ export class App {
     this.focusSession(list[next].id);
   }
 
+  /**
+   * ⌘1…9.
+   *
+   * While a split is up the low digits address panes instead of sessions, as
+   * design note 264 asks -- the pane number is printed on both the pane and
+   * its tab, so it is the more direct reading of ⌘2 when two terminals are
+   * side by side. Digits past the pane count still reach sessions.
+   */
   private gotoSession(position: number): void {
+    if (this.isSplit() && position <= PANE_COUNT[this.layout]) {
+      if (this.maximised !== null) this.maximised = null;
+      this.focusSlot(position - 1);
+      return;
+    }
     const target = this.orderedSessions()[position - 1];
     if (target) this.focusSession(target.id);
   }
@@ -823,37 +1350,287 @@ export class App {
     return wrap;
   }
 
+  /**
+   * Draws the pane area — design section 07.
+   *
+   * Every render rebuilds the grid and re-parents the terminals into it. That
+   * is cheap and it is what keeps the layout honest: xterm instances live in
+   * `panes`, keyed by session and never rebuilt here, so moving one between
+   * panes -- or between layouts -- costs a DOM move and a refit, never its
+   * scrollback or its PTY.
+   */
   private renderPane(): void {
     const host = this.el.paneHost;
-    const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    const drawn = this.visiblePaneSlots();
+    const onScreen = new Set(drawn.filter((id): id is string => id !== null));
 
-    for (const [id, pane] of this.panes) if (id !== this.activeId) pane.unmount();
+    // A pane not on screen keeps its buffer but must leave the DOM, or its
+    // ResizeObserver keeps firing against a zero-sized element.
+    for (const [id, pane] of this.panes) if (!onScreen.has(id)) pane.unmount();
 
-    if (!active) {
+    if (onScreen.size === 0 && !this.isSplit()) {
       this.el.paneHead.style.display = 'none';
       host.replaceChildren(this.emptyState());
       return;
     }
 
     this.el.paneHead.style.display = '';
-    this.el.paneTitle.replaceChildren(
-      text('span', basename(active.cwd) || active.cwd, 'repo'),
-      text('span', '·'),
-      text('span', active.cwd, 'branch'),
+    this.renderPaneHead();
+
+    const slots: SlotView[] = drawn.map((id, index) =>
+      this.slotView(id, index, drawn.length),
     );
 
-    if (active.origin === 'monitored') {
-      host.replaceChildren(this.externalPane(active));
-      return;
+    const grid = buildPaneGrid({
+      layout: this.maximised === null ? this.layout : 'single',
+      slots,
+      splits: this.settings.paneSplits,
+      fontSize: this.settings.terminalFontSize,
+      onFocus: (slot) => this.focusSlot(this.slotIndex(slot)),
+      onSplit: (axis, fraction) => this.setSplit(axis, fraction),
+      onDrop: (slot, id) => this.dropIntoPane(this.slotIndex(slot), id),
+    });
+    host.replaceChildren(grid.element);
+
+    this.gridRefresh = grid.refresh;
+    this.gridResize = grid.resize;
+
+    // xterm measures its host to work out a cell, so it can only be opened
+    // once the grid is in the document.
+    for (const id of onScreen) this.panes.get(id)?.attach();
+
+    // Re-fit now, synchronously. A terminal that just changed size has to tell
+    // its PTY or the agent's TUI draws against stale geometry (design note
+    // 294), and deferring that to an animation frame would make it conditional
+    // on the window being visible -- rAF does not run while a window is
+    // occluded, which left panes wrong until something else resized them.
+    // Measuring here forces the pending layout, which is all the frame bought.
+    this.refitPanes();
+
+    this.focusActivePane();
+  }
+
+  /** Re-measures the panes on screen without touching the grid's DOM. */
+  private refitPanes(): void {
+    this.gridRefresh?.();
+    for (const id of this.onScreen()) this.panes.get(id)?.refit();
+  }
+
+  /**
+   * Maps a drawn pane back to the slot it stands for.
+   *
+   * While a pane is maximised the grid draws a single pane at index 0, but the
+   * session in it still belongs to whichever slot was promoted.
+   */
+  private slotIndex(drawnIndex: number): number {
+    return this.maximised === null ? drawnIndex : this.maximised;
+  }
+
+  /**
+   * Moves keyboard focus into the focused pane, but only when the pane it
+   * should be in has actually changed.
+   *
+   * Focusing on every render would pull the caret out of the sidebar filter
+   * and out of any open dialog, since both leave the pane grid mounted.
+   */
+  private focusActivePane(): void {
+    const key = `${this.layout}:${this.maximised}:${this.focusedSlot}:${this.activeId}`;
+    if (key === this.focusKey) return;
+    this.focusKey = key;
+    if (!this.activeId) return;
+    this.panes.get(this.activeId)?.focus();
+  }
+
+  /** One pane: its chrome, and a terminal, a status row or an invitation. */
+  private slotView(
+    id: string | null,
+    drawnIndex: number,
+    drawnCount: number,
+  ): SlotView {
+    const slot = this.slotIndex(drawnIndex);
+    const focused = slot === this.focusedSlot;
+    const session = id ? this.sessions.get(id) : undefined;
+    // Single-pane windows already name the session in the pane header above,
+    // so per-pane chrome only earns its 28px once there is more than one.
+    const chrome = drawnCount > 1;
+
+    if (!session) {
+      return {
+        header: chrome ? this.paneChrome(null, slot, focused) : null,
+        body: this.emptyPane(slot),
+        focused,
+        tone: null,
+      };
     }
 
-    let pane = this.panes.get(active.id);
-    if (!pane) {
-      pane = new TerminalPane(active, this.settings.terminalFontSize);
-      this.panes.set(active.id, pane);
+    if (session.origin === 'monitored') {
+      return {
+        header: chrome ? this.paneChrome(session, slot, focused) : null,
+        body: this.externalPane(session),
+        focused,
+        tone: STATUS_TONE[session.status],
+      };
     }
-    host.replaceChildren();
-    pane.mount(host);
+
+    let pane = this.panes.get(session.id);
+    if (!pane) {
+      pane = new TerminalPane(session, this.settings.terminalFontSize);
+      this.panes.set(session.id, pane);
+    }
+    return {
+      header: chrome ? this.paneChrome(session, slot, focused) : null,
+      body: pane.element,
+      focused,
+      tone: STATUS_TONE[session.status],
+    };
+  }
+
+  /**
+   * The 28px bar on top of a pane (design G1).
+   *
+   * Focus has to be unambiguous when several terminals are on screen, because
+   * keystrokes only ever reach one of them: hence the accent border, the FOCUS
+   * chip and the pane number, which is also its ⌘-digit.
+   */
+  private paneChrome(
+    s: SessionSnapshot | null,
+    slot: number,
+    focused: boolean,
+  ): HTMLElement {
+    const head = div('pane-chrome' + (focused ? ' focused' : ''));
+
+    const left = div('pane-chrome-left');
+    left.append(text('span', String(slot + 1), 'pane-num'));
+    if (s) {
+      left.append(dot(s.status), text('span', s.label, 'pane-chrome-label'));
+    } else {
+      left.append(text('span', 'Empty pane', 'pane-chrome-label empty'));
+    }
+    if (focused) left.append(text('span', 'FOCUS', 'pane-focus-chip'));
+    head.append(left);
+
+    const right = div('pane-chrome-actions');
+    const maxed = this.maximised !== null;
+    right.append(
+      iconButton(
+        '⤢',
+        maxed ? 'Restore layout' : 'Maximise this pane',
+        (e) => {
+          e.stopPropagation();
+          this.toggleMaximise(slot);
+        },
+      ),
+    );
+    if (s) {
+      right.append(
+        iconButton('⋯', `Actions for ${s.label}`, (e) => {
+          e.stopPropagation();
+          this.focusSlot(slot);
+          this.openRowMenu(s, e.clientX, e.clientY);
+        }),
+      );
+    }
+    right.append(
+      iconButton('×', 'Close this pane — the session keeps running', (e) => {
+        e.stopPropagation();
+        this.closePane(slot);
+      }),
+    );
+    head.append(right);
+    return head;
+  }
+
+  /**
+   * An empty pane — design G5.
+   *
+   * Splitting never guesses which session you meant, so the pane says what it
+   * is and names every way to fill it rather than looking like a failure.
+   */
+  private emptyPane(slot: number): HTMLElement {
+    const wrap = div('pane-empty');
+    wrap.append(text('div', 'Empty pane', 'pane-empty-title'));
+    wrap.append(
+      text(
+        'div',
+        'Drop a session here, click a tab or a sidebar row, or start a new one.',
+        'pane-empty-body',
+      ),
+    );
+    const row = div('row');
+    row.append(
+      button('New session…', 'primary', () => {
+        this.focusedSlot = slot;
+        void this.promptNewSession();
+      }),
+      button('Choose session…', '', (e) => {
+        this.focusedSlot = slot;
+        this.openSessionChooser(slot, e);
+      }),
+    );
+    wrap.append(row);
+    return wrap;
+  }
+
+  /**
+   * A compact list of the sessions not currently on screen (design note 280).
+   *
+   * The row menu's popover is the right shape for this and already handles
+   * placement and dismissal, so it is reused rather than reinvented.
+   */
+  private openSessionChooser(slot: number, e: MouseEvent): void {
+    const shown = new Set(this.inView());
+    const candidates = this.orderedSessions().filter((s) => !shown.has(s.id));
+    openSessionMenu(
+      e.clientX,
+      e.clientY,
+      candidates.length ? 'Load into this pane' : 'No other sessions',
+      candidates.length
+        ? candidates.map((s) => ({
+            label: s.label,
+            accel: shortCwd(s.cwd),
+            onSelect: () => this.dropIntoPane(slot, s.id),
+          }))
+        : [{ label: 'Every session is already in view' }],
+    );
+  }
+
+  /**
+   * Splits, then loads the session into the pane that appeared.
+   *
+   * The split itself deliberately opens empty (design G5); this is the case
+   * where the user already said which session they meant, so leaving them to
+   * drag it into the hole they just asked for would be theatre.
+   */
+  private openInNewPane(id: string): void {
+    this.splitFocused('right');
+    const empty = this.slots.indexOf(null);
+    if (empty >= 0) this.dropIntoPane(empty, id);
+  }
+
+  /** A session assigned to a pane, however it got there. */
+  private dropIntoPane(slot: number, id: string): void {
+    if (!this.sessions.has(id)) return;
+    this.assignSlot(slot, id);
+    this.focusedSlot = slot;
+    this.setNotice(null);
+    this.render();
+  }
+
+  /** The bar above the grid: which session is focused, and the layout. */
+  private renderPaneHead(): void {
+    const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    this.el.paneTitle.replaceChildren();
+    if (active) {
+      this.el.paneTitle.append(
+        text('span', basename(active.cwd) || active.cwd, 'repo'),
+        text('span', '·'),
+        text('span', active.cwd, 'branch'),
+      );
+    } else {
+      this.el.paneTitle.append(text('span', 'Empty pane', 'repo'));
+    }
+    this.el.layoutButton.textContent = `${LAYOUT_GLYPH[this.layout]} ${layoutLabel(this.layout)}`;
+    this.el.layoutButton.title = `Pane layout: ${layoutLabel(this.layout)}  (⌘⌥L)`;
   }
 
   /**
@@ -882,7 +1659,14 @@ export class App {
     wrap.append(row);
 
     if (this.notice) {
-      wrap.append(text('div', this.notice, 'external-notice'));
+      const notice = div('external-notice');
+      notice.append(text('div', this.notice));
+      if (this.noticeFix) {
+        notice.append(
+          button(this.noticeFix.label, 'ghost small', this.noticeFix.run),
+        );
+      }
+      wrap.append(notice);
     }
     return wrap;
   }
@@ -914,6 +1698,27 @@ export class App {
     const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
     this.el.statusLeft.replaceChildren();
     this.el.statusRight.replaceChildren();
+
+    // Which layout, and which of its panes has the keyboard -- the two things
+    // that stop being obvious the moment more than one terminal is on screen.
+    if (this.isSplit()) {
+      const panes = PANE_COUNT[this.layout];
+      const empty = panes - this.inView().length;
+      this.el.statusLeft.append(
+        text(
+          'span',
+          `${panes} panes · ${layoutLabel(this.layout)}` +
+            (this.maximised !== null ? ' · maximised' : '') +
+            (empty > 0 ? ` · ${empty} empty` : ''),
+          'chip layout-chip',
+        ),
+        text(
+          'span',
+          active ? `focus: ${active.label}` : 'focus: empty pane',
+          'status-focus',
+        ),
+      );
+    }
 
     if (active) {
       this.el.statusLeft.append(
@@ -1125,6 +1930,26 @@ function pressure(pct: number | null): string {
 function dot(status: SessionStatus): HTMLElement {
   return div(`dot ${status}`);
 }
+/**
+ * Makes a tab or a sidebar row draggable onto a pane (design note 277).
+ *
+ * The payload is the session id under a private MIME type, so a pane can tell
+ * one of our drags from a file drop or a text selection and only lights up for
+ * the former.
+ */
+function makeSessionDraggable(el: HTMLElement, s: SessionSnapshot): void {
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => {
+    e.dataTransfer?.setData(SESSION_DND_TYPE, s.id);
+    // Plain text as well, so dragging out of the app somewhere useful is not
+    // silently empty.
+    e.dataTransfer?.setData('text/plain', s.label);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    el.classList.add('dragging');
+  });
+  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+}
+
 /** A compact icon control that is a real button, not a styled div. */
 function iconButton(
   glyph: string,
@@ -1138,7 +1963,11 @@ function iconButton(
   b.onclick = onClick;
   return b;
 }
-function button(label: string, cls: string, onClick: () => void): HTMLElement {
+function button(
+  label: string,
+  cls: string,
+  onClick: (e: MouseEvent) => void,
+): HTMLElement {
   const b = document.createElement('button');
   b.className = `btn ${cls}`.trim();
   b.textContent = label;

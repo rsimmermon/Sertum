@@ -1,7 +1,13 @@
 import { app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_SETTINGS, type Settings } from '../shared/types';
+import {
+  DEFAULT_SETTINGS,
+  PANE_COUNT,
+  type PaneLayout,
+  type PaneSplits,
+  type Settings,
+} from '../shared/types';
 
 /**
  * Display preferences, stored as JSON in userData.
@@ -25,13 +31,42 @@ function clampFont(value: unknown, fallback: number): number {
   return Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(value)));
 }
 
+/**
+ * Gutter fractions are clamped well away from the edges: a pane dragged to
+ * nothing would leave a terminal too small to read, which the layout refuses
+ * to do (design G7).
+ */
+const SPLIT_MIN = 0.15;
+const SPLIT_MAX = 0.85;
+
+function clampSplit(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, value));
+}
+
+function sanitizeSplits(
+  raw: Partial<PaneSplits> | undefined,
+  base: PaneSplits,
+): PaneSplits {
+  return {
+    columns: clampSplit(raw?.columns, base.columns),
+    rows: clampSplit(raw?.rows, base.rows),
+    gridCol: clampSplit(raw?.gridCol, base.gridCol),
+    gridRow: clampSplit(raw?.gridRow, base.gridRow),
+  };
+}
+
 function sanitize(raw: Partial<Settings>, base: Settings): Settings {
   const placement = raw.tabPlacement;
+  const layout = raw.paneLayout as PaneLayout | undefined;
   return {
     tabPlacement:
       placement === 'side' || placement === 'top' || placement === 'both'
         ? placement
         : base.tabPlacement,
+    paneLayout:
+      layout !== undefined && layout in PANE_COUNT ? layout : base.paneLayout,
+    paneSplits: sanitizeSplits(raw.paneSplits, base.paneSplits),
     terminalFontSize: clampFont(raw.terminalFontSize, base.terminalFontSize),
     tabFontSize: clampFont(raw.tabFontSize, base.tabFontSize),
     listFontSize: clampFont(raw.listFontSize, base.listFontSize),

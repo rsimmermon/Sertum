@@ -1,26 +1,34 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { FocusOutcome } from '../../shared/types';
 
 const run = promisify(execFile);
 
-export interface FocusResult {
-  ok: boolean;
-  /** Why it could not be done, phrased for the user. */
-  reason?: string;
-  app?: string;
+/**
+ * A terminal emulator we can identify from a process ancestry walk.
+ *
+ * `bundleId` is how the app gets raised: `open -b` goes through
+ * LaunchServices, which needs no Automation grant, so a session stays
+ * reachable even when Apple events are refused. `scriptable` marks the two we
+ * know how to ask for a specific tab.
+ */
+interface Terminal {
+  match: RegExp;
+  app: string;
+  bundleId?: string;
+  scriptable?: boolean;
 }
 
-/** Terminal emulators we can identify from a process ancestry walk. */
-const TERMINALS: Array<{ match: RegExp; app: string }> = [
-  { match: /iTerm/i, app: 'iTerm2' },
-  { match: /Terminal/i, app: 'Terminal' },
-  { match: /ghostty/i, app: 'Ghostty' },
-  { match: /WezTerm|wezterm/i, app: 'WezTerm' },
-  { match: /alacritty/i, app: 'Alacritty' },
-  { match: /kitty/i, app: 'kitty' },
-  { match: /Warp/i, app: 'Warp' },
-  { match: /Hyper/i, app: 'Hyper' },
-  { match: /Code Helper|Electron/i, app: 'VS Code' },
+const TERMINALS: Terminal[] = [
+  { match: /iTerm/i, app: 'iTerm2', bundleId: 'com.googlecode.iterm2', scriptable: true },
+  { match: /Terminal/i, app: 'Terminal', bundleId: 'com.apple.Terminal', scriptable: true },
+  { match: /ghostty/i, app: 'Ghostty', bundleId: 'com.mitchellh.ghostty' },
+  { match: /WezTerm|wezterm/i, app: 'WezTerm', bundleId: 'com.github.wez.wezterm' },
+  { match: /alacritty/i, app: 'Alacritty', bundleId: 'org.alacritty' },
+  { match: /kitty/i, app: 'kitty', bundleId: 'net.kovidgoyal.kitty' },
+  { match: /Warp/i, app: 'Warp', bundleId: 'dev.warp.Warp-Stable' },
+  { match: /Hyper/i, app: 'Hyper', bundleId: 'co.zeit.hyper' },
+  { match: /Code Helper|Electron/i, app: 'VS Code', bundleId: 'com.microsoft.VSCode' },
 ];
 
 /** Controlling terminal of a process, as an absolute device path. */
@@ -38,7 +46,7 @@ export async function ttyForPid(pid: number): Promise<string | null> {
 }
 
 /** Walks up the parent chain until a known terminal emulator is found. */
-export async function terminalOwnerOf(pid: number): Promise<string | null> {
+export async function terminalOwnerOf(pid: number): Promise<Terminal | null> {
   let current = pid;
   for (let hop = 0; hop < 10; hop++) {
     let ppid: number;
@@ -58,7 +66,7 @@ export async function terminalOwnerOf(pid: number): Promise<string | null> {
       return null;
     }
     const hit = TERMINALS.find((t) => t.match.test(comm));
-    if (hit) return hit.app;
+    if (hit) return hit;
     if (!ppid || ppid <= 1) return null;
     current = ppid;
   }
@@ -66,15 +74,45 @@ export async function terminalOwnerOf(pid: number): Promise<string | null> {
 }
 
 /**
+ * Whether an osascript failure was macOS withholding Automation consent.
+ *
+ * -1743 covers both "never granted" and a "Don't Allow" click; the missing
+ * Info.plist usage string used to produce it with no prompt at all. Anything
+ * else (a target that quit, a script error) is not the user's to fix.
+ */
+function deniedByTcc(err: unknown): boolean {
+  const detail = err as { stderr?: string; message?: string } | null;
+  const text = `${detail?.stderr ?? ''} ${detail?.message ?? ''}`;
+  return /-1743|-1744|Not authori[sz]ed to send Apple events/i.test(text);
+}
+
+/** Raises an app through LaunchServices, which needs no Apple events. */
+async function raiseApp(terminal: Terminal): Promise<boolean> {
+  const handles = terminal.bundleId
+    ? [['-b', terminal.bundleId], ['-a', terminal.app]]
+    : [['-a', terminal.app]];
+  for (const args of handles) {
+    try {
+      await run('open', args, { timeout: 5000 });
+      return true;
+    } catch {
+      // Wrong handle for this install; try the next one.
+    }
+  }
+  return false;
+}
+
+/**
  * Raises the OS window holding a session we cannot render.
  *
- * We cannot take over another terminal's PTY, but we can point you at it. On
- * macOS the exact tab is targeted by matching its controlling tty, so a window
- * with ten tabs still lands on the right one.
+ * We cannot take over another terminal's PTY, but we can point you at it. The
+ * exact tab is targeted by matching its controlling tty, so a window with ten
+ * tabs still lands on the right one -- that part needs Apple events, and is
+ * the only part that does. If macOS withholds that consent we still raise the
+ * app itself via LaunchServices, so the jump works and only tab selection is
+ * lost.
  */
-export async function focusExternalSession(
-  pid: number,
-): Promise<FocusResult> {
+export async function focusExternalSession(pid: number): Promise<FocusOutcome> {
   if (process.platform !== 'darwin') {
     return {
       ok: false,
@@ -83,42 +121,57 @@ export async function focusExternalSession(
     };
   }
 
-  const [tty, app] = await Promise.all([ttyForPid(pid), terminalOwnerOf(pid)]);
-  if (!app) {
-    return { ok: false, reason: 'Could not tell which terminal owns this session.' };
+  const [tty, terminal] = await Promise.all([
+    ttyForPid(pid),
+    terminalOwnerOf(pid),
+  ]);
+  if (!terminal) {
+    return {
+      ok: false,
+      reason: 'Could not tell which terminal owns this session.',
+    };
   }
+  const app = terminal.app;
 
-  if (tty && (app === 'iTerm2' || app === 'Terminal')) {
-    const script = app === 'iTerm2' ? iterm2Script(tty) : terminalScript(tty);
+  let denied = false;
+  if (tty && terminal.scriptable) {
+    const script =
+      app === 'iTerm2' ? iterm2Script(tty) : terminalScript(tty);
     try {
       const { stdout } = await run('osascript', ['-e', script], {
         timeout: 6000,
       });
       if (stdout.trim() === 'ok') return { ok: true, app };
     } catch (err) {
-      return {
-        ok: false,
-        app,
-        reason: `${app} refused the request. Grant Automation permission to Sertum in System Settings › Privacy & Security.`,
-      };
+      denied = deniedByTcc(err);
     }
   }
 
-  // Fall back to raising the application without selecting a tab.
-  try {
-    await run('osascript', ['-e', `tell application "${app}" to activate`], {
-      timeout: 5000,
-    });
+  if (!(await raiseApp(terminal))) {
+    return {
+      ok: false,
+      app,
+      needsPermission: denied,
+      reason: `Could not bring ${app} to the front.`,
+    };
+  }
+
+  if (denied) {
     return {
       ok: true,
       app,
-      reason: tty
-        ? undefined
-        : `Raised ${app}, but the exact tab could not be identified.`,
+      needsPermission: true,
+      reason:
+        `Raised ${app}, but macOS withheld permission to select the exact ` +
+        'tab. Allow Sertum to control it under Privacy & Security › Automation.',
     };
-  } catch {
-    return { ok: false, app, reason: `Could not activate ${app}.` };
   }
+
+  return {
+    ok: true,
+    app,
+    reason: tty ? undefined : `Raised ${app}, but the exact tab could not be identified.`,
+  };
 }
 
 function iterm2Script(tty: string): string {

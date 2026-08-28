@@ -63,21 +63,36 @@ export class TerminalPane {
     this.resizeObserver = new ResizeObserver(() => this.refit());
   }
 
-  /** Mount into the DOM. Safe to call repeatedly. */
+  /**
+   * Mount into the DOM. Safe to call repeatedly.
+   *
+   * Deliberately does not take keyboard focus: with a split layout the last
+   * pane mounted would otherwise steal it from the focused one, so the app
+   * focuses the pane it actually means.
+   */
   mount(parent: HTMLElement): void {
     parent.appendChild(this.element);
-    if (!this.attached) {
-      this.term.open(this.element);
-      try {
-        this.term.loadAddon(new WebglAddon());
-      } catch {
-        // Canvas fallback is automatic; nothing to do.
-      }
-      this.attached = true;
-      this.resizeObserver.observe(this.element);
+    this.attach();
+  }
+
+  /**
+   * Opens xterm against the host element, once.
+   *
+   * Separate from `mount` because the pane grid puts `element` in place itself
+   * -- the element has to already be in the document when this runs, since
+   * xterm measures it to work out its cell size.
+   */
+  attach(): void {
+    if (this.attached) return;
+    this.term.open(this.element);
+    try {
+      this.term.loadAddon(new WebglAddon());
+    } catch {
+      // Canvas fallback is automatic; nothing to do.
     }
+    this.attached = true;
+    this.resizeObserver.observe(this.element);
     this.refit();
-    this.term.focus();
   }
 
   /** Detach from the DOM without destroying the buffer. */
