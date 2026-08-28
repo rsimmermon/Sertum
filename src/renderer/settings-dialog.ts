@@ -77,8 +77,9 @@ export function openSettingsDialog(
       { key: 'listFontSize', label: 'Session list', hint: 'Sidebar rows' },
       { key: 'uiFontSize', label: 'Interface', hint: 'Menus, dialogs, status bar' },
     ];
+    const sizeGrid = el('div', 'setting-grid');
     for (const s of sizes) {
-      dlg.append(
+      sizeGrid.append(
         field(
           s.label,
           stepper(working[s.key] as number, (v) => apply({ [s.key]: v } as Partial<Settings>)),
@@ -86,6 +87,7 @@ export function openSettingsDialog(
         ),
       );
     }
+    dlg.append(sizeGrid);
 
     // -------------------------------------------------------- agents
     dlg.append(sectionHead('Agents'));
@@ -144,10 +146,10 @@ export function openSettingsDialog(
       const row = el('div', 'row');
       row.append(pathInput, browse, detect);
 
-      dlg.append(
-        field(a.label, row, 'Leave blank to auto-detect.'),
-        note,
-      );
+      const stack = el('div', 'setting-stack');
+      stack.append(row, note);
+
+      dlg.append(field(a.label, stack, 'Leave blank to auto-detect.', true));
     }
 
     // ---------------------------------------------------------- actions
@@ -206,8 +208,9 @@ function stepper(value: number, onChange: (v: number) => void): HTMLElement {
   return wrap;
 }
 
-function field(label: string, control: HTMLElement, hint?: string): HTMLElement {
-  const row = el('div', 'setting-row');
+/** `fill` gives the control the rest of the row rather than hugging it right. */
+function field(label: string, control: HTMLElement, hint?: string, fill = false): HTMLElement {
+  const row = el('div', 'setting-row' + (fill ? ' fill' : ''));
   const left = el('div', 'setting-label');
   left.append(text('span', label, 'setting-name'));
   if (hint) left.append(text('span', hint, 'setting-hint'));
