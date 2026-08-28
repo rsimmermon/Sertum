@@ -65,6 +65,20 @@ export class PtyManager extends EventEmitter {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cwd: resolved.cwd,
+      // Windows only (ignored elsewhere): node-pty's default ConPTY backend
+      // kills a session's process tree asynchronously -- it forks a helper
+      // that calls AttachConsole to enumerate and kill descendants, but
+      // kill() doesn't wait on it. That races disposeAll()'s immediate
+      // process.exit() on quit (see the SIGINT/SIGTERM/SIGHUP handler in
+      // main.ts) and can orphan the session outright if process.exit() wins,
+      // which happens often enough with 2+ sessions open to be routine --
+      // reproduced directly, along with 10-50s+ hangs and the helper's
+      // "AttachConsole failed" crash, by spawning sessions standalone and
+      // driving the exact disposeAll()+process.exit() sequence against them.
+      // useConptyDll routes through node-pty's own bundled conpty.dll
+      // instead, whose kill() has no such fork, and eliminated all three
+      // symptoms across 30+ repeated runs of the same repro.
+      useConptyDll: true,
       env: {
         ...agentSafeEnv(),
         TERM: 'xterm-256color',
