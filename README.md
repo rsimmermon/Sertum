@@ -18,29 +18,42 @@ job:
 | Plane | Owns | Implementation |
 |---|---|---|
 | **1 — pixels** | Characters in, characters out | `node-pty` per session, rendered by `@xterm/xterm`. Never parsed for meaning. |
-| **2 — truth** | What each agent is actually doing | Adapter events. Claude Code hooks: **done**. Codex app-server JSON-RPC: next. |
+| **2 — truth** | What each agent is actually doing | Adapter events. Claude Code hooks and Codex app-server JSON-RPC: **both done**. |
 
 A tab badge turns amber because the agent *said* it needs input — not because
 its pixels stopped moving.
 
 ## Status
 
-Phase 01 (de-risking) and folder selection are done and verified:
+What's built and verified so far:
 
 - [x] Electron 44 + Vite + TypeScript, strict mode clean
 - [x] `node-pty` rebuilt against Electron's ABI; PTY spawn / write / read / resize / kill
-- [x] Real agent TUIs render correctly (Claude Code draws its full-screen UI)
+- [x] Real agent TUIs render correctly (Claude Code and Codex draw their
+      full-screen UI, on macOS and Windows)
 - [x] Keystrokes reach the PTY from the renderer
 - [x] Tab strip, sidebar grouped by status, pane header, status bar
 - [x] New Session dialog (wireframe C1) with a **native folder picker**, live
       git validation, recent folders, and auto-derived tab labels
 - [x] **Plane 2 for Claude Code** — loopback hook endpoint, per-session binding,
       status and activity driven by real agent events
+- [x] **Plane 2 for Codex** — a private app-server instance per app run,
+      driven over JSON-RPC (`thread/status/changed`, mapped by
+      `mapCodexStatus`); the TUI still renders for real while status arrives
+      out-of-band
 - [x] **Adopting sessions started elsewhere** — discovery, transcript
       summaries, and raising the owning OS window
-- [ ] Plane 2 for Codex (app-server JSON-RPC) — next
+- [x] **Worktree management** (wireframe C9) — inventory of what exists on
+      disk and what it costs, creation handed off to C1's isolation preset,
+      safe removal
+- [x] **Agent binary resolution you can see and override** — Settings >
+      Agents shows each agent's resolved path, a Detect button re-runs
+      discovery, Browse... sets a manual override; the status bar calls out a
+      binary that can't be found at all
+- [ ] Diff review (wireframe C11)
+- [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
+      beyond today's display/agent panes
 - [ ] Split views (wireframes G1–G8)
-- [ ] Worktree management (C9), diff review (C11), settings (E1–E7)
 
 ## How status actually works
 
@@ -110,8 +123,12 @@ Summaries come from each agent's own transcript, which is on disk regardless of
 who owns the process — `~/.claude/projects/**/<id>.jsonl` and
 `~/.codex/sessions/**/rollout-*.jsonl`. Only the tail is read.
 
-When the Codex app-server adapter lands it becomes a richer discoverer
-registered ahead of the process scan; nothing downstream changes.
+Codex's own app-server already drives live status for sessions Sertum starts
+(Plane 2, above), but that connection doesn't yet reach backward to describe
+sessions started elsewhere — which is why process-scan remains the only Codex
+discoverer today. Teaching discovery to query the app server directly would
+make it a richer discoverer registered ahead of the process scan; nothing
+downstream changes when that lands.
 
 ## Running
 
@@ -183,9 +200,33 @@ fixed along the way:
     true` on the app-server spawn when the resolved binary is a `.cmd`/
     `.bat`. Verified end-to-end: a real codex session now spawns, connects
     to the app server, and reaches `status: "working"`.
-  - `ClaudeAdapter` didn't need this — the installed `claude` is a genuine
-    `claude.exe`, not an npm shim, so `CreateProcess`'s built-in
-    "append `.exe` to a bare name" already finds it.
+- **`ClaudeAdapter.resolveBinary()` on win32 hardcoded the literal string
+  `'claude.exe'`, with no existence check at all.** The installed `claude` is
+  a genuine `claude.exe`, not an npm shim, so `CreateProcess`'s built-in
+  "append `.exe` to a bare name" does find it when it exists — but
+  `resolveBinary()` never actually checked, unlike the real PATH × PATHEXT
+  search Codex had. A session spawned `'claude.exe'` regardless of whether
+  that resolved to anything, so a broken or absent install failed exactly
+  like the Codex case above, and just as silently. Fixed by giving
+  `ClaudeAdapter.resolveBinary()` the same candidate-list-then-PATH search as
+  Codex, factored into a shared `src/main/adapters/binary-resolve.ts` both
+  adapters now call.
+- **Every session-creation failure was swallowed as an unhandled renderer
+  rejection, on every platform, for every agent** — so any spawn failure,
+  including the `claude.exe` bug above, looked identical to "click the button,
+  nothing happens." `new-session-dialog.ts` now performs session creation
+  itself and reports a failure inline instead of closing and letting the
+  error vanish. Settings > Agents (Detect / Browse... / a manual per-agent
+  path override) and a status-bar "Claude Code not found" / "Codex not
+  found" readout make a missing binary diagnosable rather than mysterious.
+- **`npm start` in dev mode shows Electron's own icon, not Sertum's.**
+  `npm start` runs the bare `electron.exe`/`Electron.app` binary, which
+  carries Electron's generic icon; a packaged build is its own icon-bearing
+  executable (`packagerConfig.icon`, applied by resedit at package time) and
+  needs no override. On macOS this was already patched for dev via
+  `dev-app-name.js`, but nothing did the equivalent for the title bar and
+  taskbar on Windows. Fixed by passing an explicit `icon:` to `BrowserWindow`
+  whenever `MAIN_WINDOW_VITE_DEV_SERVER_URL` is set (i.e., only in dev).
 - **`node-pty`'s ConPTY `kill()` can throw a benign but scary-looking
   uncaught exception.** On the non-DLL ConPTY path, `kill()` forks a helper
   (`conpty_console_list_agent.js`) to enumerate and force-kill the shell's
@@ -227,15 +268,29 @@ src/
   main/pty-manager.ts         Plane 1 — PTY lifecycle
   main/workspace.ts           Folder validation, git/worktree detection
   main/hook-server.ts         Plane 2 ingress — loopback HTTP, per-session URLs
+  main/settings.ts            Display/agent-path preferences, JSON in userData
+  main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
+  main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
+  main/adapters/agent-adapter.ts   Per-agent capabilities: resolveBinary, renameRemote
+  main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search
   main/adapters/claude.ts     Hook settings builder + event to status mapping
+  main/adapters/codex.ts      Codex thread status/summary mapping
+  main/adapters/codex-app-server.ts  Codex's private app-server: spawn, JSON-RPC, reap
   main/adapters/discovery.ts  Agent-agnostic discoverer registry
   main/adapters/process-scan.ts  Universal agent-process scanner
+  main/adapters/session-meta.ts  Model/effort/context read from a live transcript
   main/adapters/transcript.ts    Per-agent transcript summaries
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
   shared/types.ts             Contracts shared across processes
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
   renderer/terminal-pane.ts   One xterm bound to one PTY
+  renderer/chips.ts           Model/effort badges, read by shape and colour
+  renderer/command-palette.ts     ⌘K command palette — wireframe C13
+  renderer/confirm-dialog.ts      Destructive-action confirm gate — wireframe C7
+  renderer/session-menu.ts        Sidebar row context menu — wireframe C5
+  renderer/settings-dialog.ts     Settings — wireframe E1, plus agent paths
+  renderer/worktree-dialog.ts     Worktree manager — wireframe C9
   renderer/new-session-dialog.ts  Wireframe C1
   renderer/adopt-dialog.ts        Wireframe C18
 scripts/
