@@ -1,5 +1,7 @@
 import { DEFAULT_SETTINGS, type Settings, type TabPlacement } from '../shared/types';
 
+const api = window.sertum;
+
 /**
  * Wireframe E1. Display preferences only.
  *
@@ -82,6 +84,69 @@ export function openSettingsDialog(
           stepper(working[s.key] as number, (v) => apply({ [s.key]: v } as Partial<Settings>)),
           s.hint,
         ),
+      );
+    }
+
+    // -------------------------------------------------------- agents
+    dlg.append(sectionHead('Agents'));
+
+    const AGENT_FIELDS: Array<{ key: 'claude' | 'codex'; label: string }> = [
+      { key: 'claude', label: 'Claude Code' },
+      { key: 'codex', label: 'Codex' },
+    ];
+
+    for (const a of AGENT_FIELDS) {
+      const pathInput = document.createElement('input');
+      pathInput.type = 'text';
+      pathInput.className = 'field';
+      pathInput.spellcheck = false;
+      pathInput.placeholder = 'Auto-detect';
+      pathInput.value = working.agentBinaryPaths[a.key];
+      pathInput.setAttribute('aria-label', `${a.label} executable path`);
+
+      const note = el('div', 'note');
+      const setAgentNote = (kind: '' | 'ok' | 'warn' | 'error', msg: string) => {
+        note.className = kind ? `note ${kind}` : 'note';
+        note.textContent = msg;
+      };
+
+      const setPath = (value: string) => {
+        pathInput.value = value;
+        apply({
+          agentBinaryPaths: { ...working.agentBinaryPaths, [a.key]: value.trim() },
+        });
+      };
+
+      pathInput.oninput = () => setPath(pathInput.value);
+
+      const browse = button('Browse…', 'btn ghost', async () => {
+        const picked = await api.pickFile(pathInput.value || undefined);
+        if (!picked) return;
+        setPath(picked);
+        setAgentNote('ok', `Set to ${picked}`);
+      });
+
+      const detect = button('Detect', 'btn ghost', async () => {
+        setAgentNote('', 'Checking…');
+        const result = await api.detectAgentBinary(a.key);
+        if (result.path) {
+          setPath(result.path);
+          setAgentNote('ok', `Found at ${result.path}`);
+        } else {
+          setAgentNote(
+            'error',
+            'Not found on PATH or in common install locations — set it ' +
+              'manually with Browse…, or install the CLI.',
+          );
+        }
+      });
+
+      const row = el('div', 'row');
+      row.append(pathInput, browse, detect);
+
+      dlg.append(
+        field(a.label, row, 'Leave blank to auto-detect.'),
+        note,
       );
     }
 

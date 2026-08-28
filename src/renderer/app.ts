@@ -12,7 +12,6 @@ import {
 import { openWorktreeDialog } from './worktree-dialog';
 import {
   DEFAULT_SETTINGS,
-  type AgentKind,
   type SessionSnapshot,
   type SessionStatus,
   type Settings,
@@ -37,18 +36,6 @@ const STATUS_GLYPH: Record<SessionStatus, string> = {
   attention: '◭',
   done: '●',
   idle: '○',
-};
-
-/**
- * Launch arguments per agent. Deliberately no command: which executable an
- * agent is lives with that agent's adapter in the main process, because the
- * renderer cannot look at the filesystem and a bare name resolves only when
- * the app happens to have been started from a shell.
- */
-const AGENTS: Record<AgentKind, { args: string[] }> = {
-  claude: { args: [] },
-  codex: { args: [] },
-  shell: { args: [] },
 };
 
 /** CSS custom properties the settings dialog drives. */
@@ -169,6 +156,10 @@ export class App {
   /**
    * Opens wireframe C1 so the working folder is always an explicit choice,
    * then starts the session the user described.
+   *
+   * The dialog itself performs the spawn (see `new-session-dialog.ts`'s
+   * `done()`) and reports a failure inline, so by the time this resolves the
+   * session is real: this only has to wire the snapshot into a pane.
    */
   async promptNewSession(
     presetLabel?: string,
@@ -179,30 +170,13 @@ export class App {
       this.lastCwd ??
       (this.activeId ? this.sessions.get(this.activeId)?.cwd : undefined) ??
       (await api.defaultCwd());
-    const choice = await openNewSessionDialog({
+    const snapshot = await openNewSessionDialog({
       startCwd,
       presetLabel,
       presetIsolation: preset?.isolation,
     });
-    if (!choice) return;
-    await this.newSession(choice.agent, choice.cwd, choice.label);
-  }
-
-  /** Spawns a real agent CLI in a PTY and opens it as a tab. */
-  async newSession(
-    agent: AgentKind,
-    cwd?: string,
-    label?: string,
-  ): Promise<void> {
-    const preset = AGENTS[agent];
-    const resolvedCwd = cwd ?? (await api.defaultCwd());
-    this.lastCwd = resolvedCwd;
-    const snapshot = await api.createSession({
-      agent,
-      label: label ?? `${agent}`,
-      cwd: resolvedCwd,
-      args: preset.args,
-    });
+    if (!snapshot) return;
+    this.lastCwd = snapshot.cwd;
     this.sessions.set(snapshot.id, snapshot);
     this.panes.set(
       snapshot.id,
@@ -1002,6 +976,11 @@ export class App {
     const down = [
       a.claude.connected ? null : 'Claude hooks',
       a.codex.connected ? null : 'Codex app server',
+      // Distinct from "hooks offline": this means the CLI itself was never
+      // found on disk, so no session for that agent can start at all --
+      // worth a much louder signal than a dormant hook endpoint.
+      a.claude.binaryFound ? null : 'Claude Code not found',
+      a.codex.binaryFound ? null : 'Codex not found',
     ].filter(Boolean) as string[];
 
     // "adapters" is the vocabulary the designs use throughout (E2, C14), so
@@ -1014,6 +993,8 @@ export class App {
       ` · ${events(a.claude.events)}\n` +
       `Codex app server: ${a.codex.connected ? a.codex.url : 'offline'}` +
       ` · ${events(a.codex.events)}\n` +
+      `Claude Code CLI: ${a.claude.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
+      `Codex CLI: ${a.codex.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
       'These are the channels agents report status through. Counts are zero ' +
       'until a session does something.';
 

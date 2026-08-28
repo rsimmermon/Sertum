@@ -32,6 +32,9 @@ const api: SertumApi = {
   removeSession: (id: string) => ipcRenderer.invoke('session:remove', id),
   pickDirectory: (startIn?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', startIn),
+  pickFile: (startIn?: string) => ipcRenderer.invoke('dialog:pick-file', startIn),
+  detectAgentBinary: (agent: 'claude' | 'codex') =>
+    ipcRenderer.invoke('agent:detect', agent),
   defaultCwd: () => ipcRenderer.invoke('workspace:default-cwd'),
   inspectDirectory: (dir: string) =>
     ipcRenderer.invoke('workspace:inspect', dir),

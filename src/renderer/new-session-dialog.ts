@@ -1,4 +1,4 @@
-import type { AgentKind, DirectoryInfo } from '../shared/types';
+import type { AgentKind, DirectoryInfo, SessionSnapshot } from '../shared/types';
 
 type Isolation = 'main' | 'new' | 'existing';
 
@@ -6,17 +6,23 @@ const api = window.sertum;
 const RECENTS_KEY = 'sertum.recentFolders';
 const LAST_AGENT_KEY = 'sertum.lastAgent';
 
-export interface NewSessionResult {
-  agent: AgentKind;
-  cwd: string;
-  label: string;
-}
-
 const AGENT_LABELS: Array<{ id: AgentKind; label: string }> = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
   { id: 'shell', label: 'Shell' },
 ];
+
+/**
+ * Launch arguments per agent. Lives here rather than in app.ts because this
+ * dialog is what actually calls `api.createSession` now (see `done()` below):
+ * a failed spawn is reported back into the dialog that caused it, which only
+ * works if the dialog owns the call.
+ */
+const AGENT_ARGS: Record<AgentKind, string[]> = {
+  claude: [],
+  codex: [],
+  shell: [],
+};
 
 /**
  * Wireframe C1. Resolves with the chosen session, or null if cancelled.
@@ -38,7 +44,7 @@ export interface NewSessionOptions {
 
 export function openNewSessionDialog(
   opts: NewSessionOptions,
-): Promise<NewSessionResult | null> {
+): Promise<SessionSnapshot | null> {
   const { startCwd, presetLabel, presetIsolation } = opts;
   return new Promise((resolve) => {
     let agent: AgentKind =
@@ -177,10 +183,16 @@ export function openNewSessionDialog(
     const isoNote = el('div', 'note');
 
     // --- footer ------------------------------------------------------------
-    const create = btn('Create session', 'primary', () => void done());
+    const CREATE_LABEL = 'Create session';
+    const create = btn(CREATE_LABEL, 'primary', () => void done());
     const cancel = btn('Cancel', 'ghost', () => void done(true));
     const footer = el('div', 'dialog-footer');
     footer.append(cancel, create);
+
+    // Where a failed spawn is reported -- e.g. the agent's CLI could not be
+    // found. Separate from folderNote/isoNote so a spawn failure never
+    // overwrites folder-validity or worktree feedback the user still needs.
+    const createNote = el('div', 'note');
 
     dlg.append(
       title,
@@ -199,6 +211,7 @@ export function openNewSessionDialog(
       isoNote,
       labelEl('TAB LABEL'),
       labelInput,
+      createNote,
       footer,
     );
 
@@ -301,16 +314,26 @@ export function openNewSessionDialog(
       folderNote.textContent = text;
     }
 
+    function setCreateNote(kind: '' | 'ok' | 'warn' | 'error', text: string): void {
+      createNote.className = kind ? `note ${kind}` : 'note';
+      createNote.textContent = text;
+    }
+
+    let creating = false;
+
     async function done(cancelled = false): Promise<void> {
-      if (cancelled || !info?.isDirectory) {
+      if (cancelled) {
         document.removeEventListener('keydown', onKey, true);
         overlay.remove();
         return resolve(null);
       }
+      // Ignore a duplicate submit while a spawn is already in flight; the
+      // create/cancel buttons are disabled below for the same reason.
+      if (creating || !info?.isDirectory) return;
 
       let chosen = info.path;
 
-      // Provision before closing, so a git refusal is reported in the dialog
+      // Provision before spawning, so a git refusal is reported in the dialog
       // that caused it rather than as a session that silently never appears.
       if (isolation === 'new') {
         const branch = branchInput.value.trim() || suggestBranch();
@@ -323,6 +346,7 @@ export function openNewSessionDialog(
           return;
         }
         chosen = res.path;
+        setIsoNote('', '');
       } else if (isolation === 'existing') {
         if (!existingSelect.value) {
           setIsoNote('error', 'Choose a worktree, or switch to Main checkout.');
@@ -331,15 +355,42 @@ export function openNewSessionDialog(
         chosen = existingSelect.value;
       }
 
+      // The actual spawn happens here, before the dialog closes, so a failure
+      // -- the agent's CLI missing or misconfigured, most often -- lands back
+      // in this dialog with the user's choices intact, instead of vanishing
+      // as an unreported rejection after the window has already gone away.
+      creating = true;
+      create.toggleAttribute('disabled', true);
+      cancel.toggleAttribute('disabled', true);
+      create.textContent = 'Starting…';
+      setCreateNote('', `Starting ${agentLabel(agent)}…`);
+
+      let snapshot: SessionSnapshot;
+      try {
+        snapshot = await api.createSession({
+          agent,
+          label: labelInput.value.trim() || suggestLabel(),
+          cwd: chosen,
+          args: AGENT_ARGS[agent],
+        });
+      } catch (err) {
+        creating = false;
+        create.toggleAttribute('disabled', false);
+        cancel.toggleAttribute('disabled', false);
+        create.textContent = CREATE_LABEL;
+        setCreateNote(
+          'error',
+          `Could not start ${agentLabel(agent)}: ${errorMessage(err)}. ` +
+            'Check its location in Settings → Agents.',
+        );
+        return;
+      }
+
       document.removeEventListener('keydown', onKey, true);
       overlay.remove();
       saveRecents(info.path);
       localStorage.setItem(LAST_AGENT_KEY, agent);
-      resolve({
-        agent,
-        cwd: chosen,
-        label: labelInput.value.trim() || suggestLabel(),
-      });
+      resolve(snapshot);
     }
 
     function onKey(e: KeyboardEvent): void {
@@ -388,6 +439,12 @@ function btn(text: string, cls: string, onClick: () => void): HTMLElement {
 function basename(p: string): string {
   const parts = p.replace(/[/\\]+$/, '').split(/[/\\]/);
   return parts[parts.length - 1] ?? '';
+}
+function agentLabel(agent: AgentKind): string {
+  return AGENT_LABELS.find((a) => a.id === agent)?.label ?? agent;
+}
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 function loadRecents(): string[] {
   try {

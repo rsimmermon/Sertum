@@ -43,7 +43,15 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
         : base.sidebarWidth,
     showChips:
       typeof raw.showChips === 'boolean' ? raw.showChips : base.showChips,
+    agentBinaryPaths: {
+      claude: sanitizeBinaryPath(raw.agentBinaryPaths?.claude, base.agentBinaryPaths.claude),
+      codex: sanitizeBinaryPath(raw.agentBinaryPaths?.codex, base.agentBinaryPaths.codex),
+    },
   };
+}
+
+function sanitizeBinaryPath(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value.trim() : fallback;
 }
 
 export function getSettings(): Settings {

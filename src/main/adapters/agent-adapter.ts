@@ -1,7 +1,7 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentKind } from '../../shared/types';
+import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
 import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 
 /** The part of a session an adapter needs in order to act on it. */
@@ -75,22 +75,6 @@ class InertAgentAdapter implements AgentAdapter {
 }
 
 /**
- * First existing executable among the candidates, else the bare name so PATH
- * still gets its chance.
- */
-function firstExecutable(candidates: string[], fallback: string): string {
-  for (const candidate of candidates) {
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Try the next.
-    }
-  }
-  return fallback;
-}
-
-/**
  * Codex keeps thread names on its app server, so a rename is a real round
  * trip: `thread/name/set` takes the thread id and the new name.
  */
@@ -135,9 +119,15 @@ class ClaudeAdapter extends InertAgentAdapter {
 
   resolveBinary(): string {
     const home = os.homedir();
-    if (process.platform === 'win32') return 'claude.exe';
-    return firstExecutable(
-      [
+    if (process.platform === 'win32') {
+      return (
+        firstExecutable([path.join(home, '.local', 'bin', 'claude.exe')]) ??
+        resolveOnWindowsPath('claude') ??
+        'claude.exe'
+      );
+    }
+    return (
+      firstExecutable([
         // The official installer's location shadows the others on PATH, so it
         // is checked first for the same reason Codex checks its standalone
         // build first.
@@ -146,8 +136,7 @@ class ClaudeAdapter extends InertAgentAdapter {
         '/opt/homebrew/bin/claude',
         '/usr/local/bin/claude',
         path.join(home, '.volta', 'bin', 'claude'),
-      ],
-      'claude',
+      ]) ?? 'claude'
     );
   }
 }

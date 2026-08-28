@@ -7,6 +7,7 @@ import {
   Menu,
   shell,
 } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { PtyManager } from './main/pty-manager';
@@ -17,6 +18,7 @@ import {
   CodexAppServer,
   reapStrayAppServers,
   recordAppServer,
+  resolveCodexBinary,
 } from './main/adapters/codex-app-server';
 import { createAgentAdapters } from './main/adapters/agent-adapter';
 import { hydrateLoginEnv } from './main/login-env';
@@ -45,6 +47,7 @@ import {
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
   AgentKind,
+  BinaryDetection,
   DiscoveredSession,
   SessionSnapshot,
   SessionStatus,
@@ -76,7 +79,9 @@ const hooks = new HookServer();
  * at its own endpoint, so status comes from the agent telling us rather than
  * from watching its output.
  */
-const codex = new CodexAppServer();
+const codex = new CodexAppServer(
+  () => getSettings().agentBinaryPaths.codex || resolveCodexBinary(),
+);
 
 /**
  * One implementation per agent of everything the UI can ask of a session.
@@ -241,6 +246,19 @@ const createWindow = () => {
     minHeight: 560,
     backgroundColor: '#0d1113',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // Only needed in dev: `npm start` runs the bare electron.exe/Electron.app
+    // binary, which carries Electron's own generic icon, so without this the
+    // title bar and taskbar show that instead of Sertum's. A packaged build
+    // is its own icon-bearing executable (packagerConfig.icon, applied by
+    // resedit at package time) and needs no override -- Windows and macOS
+    // both read a running window's icon from its host executable by default.
+    icon: MAIN_WINDOW_VITE_DEV_SERVER_URL
+      ? path.join(
+          app.getAppPath(),
+          'assets',
+          process.platform === 'win32' ? 'icon.ico' : 'icon.png',
+        )
+      : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -370,13 +388,38 @@ ipcMain.handle('discovery:monitor', (_e, d: DiscoveredSession) =>
 );
 
 ipcMain.handle('adapters:status', () => ({
-  claude: { connected: hooks.port > 0, port: hooks.port, events: hooks.eventCount },
+  claude: {
+    connected: hooks.port > 0,
+    port: hooks.port,
+    events: hooks.eventCount,
+    binaryFound: binaryFound('claude'),
+  },
   codex: {
     connected: codex.connected,
     url: codex.connected ? codex.remoteUrl : '',
     events: codex.eventCount,
+    binaryFound: binaryFound('codex'),
   },
 }));
+ipcMain.handle(
+  'agent:detect',
+  (_e, agent: 'claude' | 'codex'): BinaryDetection => {
+    // Auto-detection only -- a saved override is deliberately not consulted
+    // here, so this always answers "what would Sertum find on its own?",
+    // which is what both the Settings "Detect" button and validating a
+    // freshly-typed path need.
+    const candidate = agentAdapters.get(agent)?.resolveBinary();
+    if (!candidate) return { path: null };
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return { path: candidate };
+    } catch {
+      // A bare command name (the last-resort fallback every adapter returns)
+      // is not a path fs can confirm -- nothing was actually found.
+      return { path: null };
+    }
+  },
+);
 ipcMain.handle('workspace:inspect', (_e, dir: string) => inspectDirectory(dir));
 ipcMain.handle('dialog:pick-directory', async (_e, startIn?: string) => {
   const result = await dialog.showOpenDialog({
@@ -384,6 +427,15 @@ ipcMain.handle('dialog:pick-directory', async (_e, startIn?: string) => {
     defaultPath: startIn || defaultCwd(),
     properties: ['openDirectory', 'createDirectory'],
     buttonLabel: 'Use this folder',
+  });
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+ipcMain.handle('dialog:pick-file', async (_e, startIn?: string) => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose an executable',
+    defaultPath: startIn || undefined,
+    properties: ['openFile'],
+    buttonLabel: 'Use this file',
   });
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
@@ -488,7 +540,32 @@ function resolvedCommand(
 ): string | undefined {
   if (explicit) return explicit;
   if (!agent) return undefined;
+  // A saved override always wins over auto-detection: it exists precisely for
+  // the case where detection guessed wrong, so it must not be second-guessed.
+  if (agent === 'claude' || agent === 'codex') {
+    const override = getSettings().agentBinaryPaths[agent];
+    if (override) return override;
+  }
   return agentAdapters.get(agent)?.resolveBinary();
+}
+
+/**
+ * Whether `resolvedCommand(agent)` currently points at a real, executable
+ * file -- override or auto-detected, doesn't matter which. Shared by the
+ * status bar (`adapters:status`) and the Settings "Detect" affordance
+ * (`agent:detect`), so both report exactly the same fact.
+ */
+function binaryFound(agent: 'claude' | 'codex'): boolean {
+  const cmd = resolvedCommand(agent);
+  if (!cmd) return false;
+  try {
+    fs.accessSync(cmd, fs.constants.X_OK);
+    return true;
+  } catch {
+    // Either nothing was found (the adapter fell back to a bare command name,
+    // which is not a path fs can check) or an override points at nothing.
+    return false;
+  }
 }
 
 /** Where the spawned codex app server is remembered between runs. */

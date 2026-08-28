@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
 
 const run = promisify(execFile);
 
@@ -40,8 +41,16 @@ export class CodexAppServer extends EventEmitter {
   private stopping = false;
   private boundPort = 0;
   private events = 0;
+  private binary = '';
 
-  constructor(private binary = resolveCodexBinary()) {
+  /**
+   * Resolved lazily, in `start()`, rather than baked in as a constructor
+   * default: a caller may want to consult a user override that lives in
+   * settings, which are not guaranteed loaded at the moment this object is
+   * constructed (module load time) but are well before `start()` runs (inside
+   * `app.on('ready')`).
+   */
+  constructor(private resolveBinary: () => string = resolveCodexBinary) {
     super();
   }
 
@@ -72,6 +81,7 @@ export class CodexAppServer extends EventEmitter {
     if (this.child) return this.connected;
     this.stopping = false;
 
+    this.binary = this.resolveBinary();
     this.boundPort = await freePort();
     this.child = spawn(this.binary, ['app-server', '--listen', this.remoteUrl], {
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -397,39 +407,6 @@ async function isOurAppServer(pid: number, port: number): Promise<boolean> {
 }
 
 /**
- * Windows has no single well-known install directory the way Homebrew or the
- * standalone installer's `current` symlink do on macOS/Linux -- npm-global,
- * nvm-for-windows, Volta, and the standalone Windows installer each land
- * `codex` somewhere different. So unlike the POSIX candidates below, the
- * Windows answer is to search PATH ourselves rather than guess a location.
- *
- * That search is still necessary work, not a redundant one: node-pty's
- * Windows backend calls CreateProcess directly, which resolves a bare name
- * by trying `<name>.exe` only. A shell would also try PATHEXT's other
- * extensions, which is exactly how npm installs `codex` -- as `codex.cmd`,
- * never `codex.exe`. Skipping this and returning a bare `'codex'` spawns
- * fine from a real shell but fails from node-pty with "Cannot create
- * process, error code: 2" (ERROR_FILE_NOT_FOUND), because `codex.exe` never
- * existed to find.
- */
-function resolveOnWindowsPath(name: string): string | null {
-  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  const exts = (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
-    .split(';')
-    .filter(Boolean);
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const candidate = path.join(dir, name + ext.toLowerCase());
-      try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return candidate;
-      } catch { /* try the next extension */ }
-    }
-  }
-  return null;
-}
-
-/**
  * Finds the codex binary without relying on PATH.
  *
  * A GUI app launched from Finder or the Dock inherits a bare login PATH, not
@@ -438,8 +415,11 @@ function resolveOnWindowsPath(name: string): string | null {
  * checked first because it is the one that shadows the others on PATH.
  *
  * Windows doesn't have this problem -- Explorer-launched processes inherit
- * the full user/system PATH already -- but it has a different one, handled
- * by `resolveOnWindowsPath` above.
+ * the full user/system PATH already -- but it has a different one: Windows
+ * has no single well-known install directory the way Homebrew or the
+ * standalone installer's `current` symlink do on macOS/Linux, so the answer
+ * there is to search PATH x PATHEXT ourselves (`resolveOnWindowsPath`, in
+ * `./binary-resolve`) rather than guess a location.
  */
 export function resolveCodexBinary(): string {
   if (process.platform === 'win32') {
@@ -447,21 +427,17 @@ export function resolveCodexBinary(): string {
   }
 
   const home = os.homedir();
-  const candidates = [
-    path.join(home, '.codex', 'packages', 'standalone', 'current', 'codex'),
-    path.join(home, '.local', 'bin', 'codex'),
-    '/opt/homebrew/bin/codex',
-    '/usr/local/bin/codex',
-    path.join(home, '.volta', 'bin', 'codex'),
-  ];
-  for (const candidate of candidates) {
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch { /* try the next one */ }
-  }
-  // Last resort: let PATH decide, which is correct when launched from a shell.
-  return 'codex';
+  return (
+    firstExecutable([
+      path.join(home, '.codex', 'packages', 'standalone', 'current', 'codex'),
+      path.join(home, '.local', 'bin', 'codex'),
+      '/opt/homebrew/bin/codex',
+      '/usr/local/bin/codex',
+      path.join(home, '.volta', 'bin', 'codex'),
+    ]) ??
+    // Last resort: let PATH decide, which is correct when launched from a shell.
+    'codex'
+  );
 }
 
 function delay(ms: number): Promise<void> {

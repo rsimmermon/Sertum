@@ -108,8 +108,14 @@ export interface FocusOutcome {
 }
 
 export interface AdapterStatus {
-  claude: { connected: boolean; port: number; events: number };
-  codex: { connected: boolean; url: string; events: number };
+  claude: { connected: boolean; port: number; events: number; binaryFound: boolean };
+  codex: { connected: boolean; url: string; events: number; binaryFound: boolean };
+}
+
+/** What auto-detection found for one agent, ignoring any saved override. */
+export interface BinaryDetection {
+  /** The resolved, existence-checked path, or null if nothing was found. */
+  path: string | null;
 }
 
 /** What we can tell the user about a candidate working folder. */
@@ -191,6 +197,12 @@ export interface Settings {
   sidebarWidth: number;
   /** Model and effort badges on tabs and rows. */
   showChips: boolean;
+  /**
+   * Explicit path to an agent's CLI, overriding auto-detection. Empty string
+   * means "keep auto-detecting" -- this is what Settings clears a field back
+   * to, not a sentinel some other part of the app has to know about.
+   */
+  agentBinaryPaths: { claude: string; codex: string };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -201,6 +213,7 @@ export const DEFAULT_SETTINGS: Settings = {
   uiFontSize: 13,
   sidebarWidth: 280,
   showChips: true,
+  agentBinaryPaths: { claude: '', codex: '' },
 };
 
 /** The surface exposed to the renderer through the preload bridge. */
@@ -249,6 +262,13 @@ export interface SertumApi {
   revealPath(target: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */
   pickDirectory(startIn?: string): Promise<string | null>;
+  /** Native file picker, for browsing to an agent's CLI. Resolves null if the user cancels. */
+  pickFile(startIn?: string): Promise<string | null>;
+  /**
+   * Runs auto-detection for one agent right now, ignoring any saved override
+   * -- what Settings' "Detect" button and manual-path validation both call.
+   */
+  detectAgentBinary(agent: 'claude' | 'codex'): Promise<BinaryDetection>;
   /** Absolute path used when a session does not specify one. */
   defaultCwd(): Promise<string>;
   /** Validates a folder before we try to spawn an agent in it. */
