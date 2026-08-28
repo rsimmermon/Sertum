@@ -3,7 +3,7 @@ import { openNewSessionDialog } from './new-session-dialog';
 import { openAdoptDialog } from './adopt-dialog';
 import { openSettingsDialog } from './settings-dialog';
 import { openConfirmDialog } from './confirm-dialog';
-import { effortChip, modelChip } from './chips';
+import { agentName, effortChip, modelChip } from './chips';
 import { openSessionMenu, SEPARATOR } from './session-menu';
 import {
   openCommandPalette,
@@ -385,6 +385,8 @@ export class App {
     for (const s of this.sessions.values()) {
       const selected = s.id === this.activeId;
       const tab = div('tab' + (selected ? ' active' : ''));
+      tab.classList.add(`agent-${s.agent}`);
+      tab.title = `${s.label} — ${agentName(s.agent)}`;
       tab.setAttribute('aria-selected', String(selected));
       const stack = div('tab-stack');
       const head = div('tab-head');
@@ -512,6 +514,7 @@ export class App {
       for (const s of rows) {
         const selected = s.id === this.activeId;
         const row = div('sb-row' + (selected ? ' active' : ''));
+        row.classList.add(`agent-${s.agent}`);
 
         const top = div('sb-top');
         top.append(dot(s.status));
@@ -556,7 +559,8 @@ export class App {
         }
 
         row.append(top, bottom);
-        row.title = `${s.cwd}\n${s.activity ?? ''}`.trim();
+        row.title =
+          `${agentName(s.agent)}\n${s.cwd}\n${s.activity ?? ''}`.trim();
         row.tabIndex = 0;
         // Announced as a selectable option so the highlight is not the only
         // signal of which session is showing.

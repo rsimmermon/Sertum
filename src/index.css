@@ -39,6 +39,13 @@
   --m-gpt: #10b981;
   --m-gemini: #f59e0b;
   --m-other: #8b949e;
+
+  /* Agent kind (which tool is driving the session), independent of the model
+     it happens to be running. A different axis from the model-family colours
+     above, so it deliberately avoids reusing their hues. */
+  --agent-claude: #cc785c;
+  --agent-codex: #4f46e5;
+  --agent-shell: #6b7280;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -62,6 +69,9 @@
     --ok: #6bc07e;
     --ok-soft: #16301c;
     --term-bg: #080c0e;
+    --agent-claude: #e0916f;
+    --agent-codex: #8583f5;
+    --agent-shell: #8b96a3;
   }
 }
 
@@ -907,3 +917,14 @@ select.field {
   background: var(--accent-soft); color: var(--accent);
   font-size: 9px; font-weight: 700; letter-spacing: 0.3px; vertical-align: 1px;
 }
+
+/* ---------- agent-kind indicator ----------
+   A persistent left-edge stripe naming which tool drives the session, on
+   both the top tab strip and the sidebar row. It is a border rather than a
+   box-shadow so it sits outside the sidebar's own inset accent edge (see
+   .sb-row.active above) instead of fighting it for the same pixels: an
+   active row shows agent colour, then accent, as two adjacent stripes. */
+.tab, .sb-row { border-left: 3px solid transparent; }
+.tab.agent-claude, .sb-row.agent-claude { border-left-color: var(--agent-claude); }
+.tab.agent-codex, .sb-row.agent-codex { border-left-color: var(--agent-codex); }
+.tab.agent-shell, .sb-row.agent-shell { border-left-color: var(--agent-shell); }

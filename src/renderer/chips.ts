@@ -1,5 +1,5 @@
 /**
- * Model and effort badges.
+ * Model, effort, and agent-kind badges.
  *
  * These are meant to be read by shape and colour first. A model's family sets
  * the colour, so a glance across the sidebar tells you which agent is which
@@ -11,6 +11,19 @@
  * Full values stay available in the title attribute — the badge is a summary,
  * never the only place the information exists.
  */
+
+import type { AgentKind } from '../shared/types';
+
+const AGENT_NAMES: Record<AgentKind, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  shell: 'Shell',
+};
+
+/** Human label for an agent kind, matching what New Session and Settings call it. */
+export function agentName(agent: AgentKind): string {
+  return AGENT_NAMES[agent];
+}
 
 export type ModelFamily =
   | 'opus'
