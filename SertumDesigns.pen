@@ -72771,7 +72771,8 @@
                                   "content": "INTEL-298 schema",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -72918,7 +72919,8 @@
                                   "content": "codex nfp reasons",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -73065,7 +73067,8 @@
                                   "content": "CodeBuilder tickerq",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -75311,7 +75314,8 @@
                                   "content": "INTEL-298 schema",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -75458,7 +75462,8 @@
                                   "content": "codex nfp reasons",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -75605,7 +75610,8 @@
                                   "content": "CodeBuilder tickerq",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -77805,7 +77811,8 @@
                                   "content": "CodeBuilder tickerq",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -84097,7 +84104,8 @@
                                   "content": "INTEL-294 review",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -84259,7 +84267,8 @@
                                   "content": "INTEL-298 schema",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -84421,7 +84430,8 @@
                                   "content": "codex nfp reasons",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
@@ -84583,7 +84593,8 @@
                                   "content": "CodeBuilder tickerq",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
-                                  "fontSize": 11
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
                                 },
                                 {
                                   "type": "frame",
