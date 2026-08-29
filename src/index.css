@@ -328,6 +328,11 @@ button.btn.ghost { background: transparent; border-color: transparent; color: va
   color: var(--ok); background: var(--ok-soft);
   padding: 2px 5px; border-radius: 3px;
 }
+.pane-tool-chip {
+  flex: none; font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
+  color: var(--warn); background: var(--warn-soft);
+  padding: 2px 5px; border-radius: 3px;
+}
 .pane-chrome-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 .pane-chrome-actions button {
   border: 0; background: transparent; color: var(--muted);

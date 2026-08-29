@@ -30,6 +30,8 @@ export class HookServer extends EventEmitter {
   /** Control replies waiting for the next attributable hook boundary. */
   private pendingInterrupts = new Set<string>();
   private pendingSteers = new Map<string, string>();
+  /** Sessions whose PreToolUse requests are denied until explicitly resumed. */
+  private toolGates = new Set<string>();
 
   async start(): Promise<number> {
     if (this.server) return this.boundPort;
@@ -109,10 +111,16 @@ export class HookServer extends EventEmitter {
     this.pendingSteers.set(sessionId, text);
   }
 
+  setToolGate(sessionId: string, paused: boolean): void {
+    if (paused) this.toolGates.add(sessionId);
+    else this.toolGates.delete(sessionId);
+  }
+
   /** Forget control words for a session that no longer exists. */
   clearControl(sessionId: string): void {
     this.pendingInterrupts.delete(sessionId);
     this.pendingSteers.delete(sessionId);
+    this.toolGates.delete(sessionId);
   }
 
   private controlReply(
@@ -123,6 +131,17 @@ export class HookServer extends EventEmitter {
       return {
         continue: false,
         stopReason: 'Turn interrupted from Sertum.',
+      };
+    }
+
+    if (event === 'PreToolUse' && this.toolGates.has(sessionId)) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            'Tool use is paused in Sertum. Resume it from the session menu.',
+        },
       };
     }
 
@@ -144,5 +163,6 @@ export class HookServer extends EventEmitter {
     this.server = null;
     this.pendingInterrupts.clear();
     this.pendingSteers.clear();
+    this.toolGates.clear();
   }
 }

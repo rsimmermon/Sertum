@@ -81,6 +81,9 @@ What's built and verified so far:
 - [x] **Structured turn steer and interrupt** — Claude through command-hook
       JSON responses, Codex through app-server `turn/steer` and
       `turn/interrupt`; Grok and shell explicitly decline
+- [x] **Claude tool gating** — Pause tool use persistently denies
+      `PreToolUse` through structured hook responses until resumed; the pane
+      carries a TOOLS PAUSED chip and no terminal bytes are synthesized
 - [ ] Diff review (wireframe C11)
 - [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
       beyond today's display/agent panes
@@ -265,6 +268,19 @@ Codex guidance requires an active turn. A failed active-turn precondition is
 reported in the session activity rather than silently ignored. Pending Claude
 control words and Codex turn ids are cleared when the owning PTY exits, so a
 later session cannot inherit them.
+
+Claude additionally declares `tool-gate`. While enabled, every attributable
+`PreToolUse` hook receives `permissionDecision: "deny"` with a reason that
+points back to Sertum; unrelated hooks still receive an empty 204. This is
+called **Pause tool use**, not Pause agent: Claude may continue reasoning or
+responding, but it cannot execute another tool until the gate is released.
+The gate persists across denied attempts, an interrupt takes precedence for
+the hook boundary that consumes it, and the gate remains afterward until the
+user resumes it. `SessionSnapshot.toolsPaused` drives the row-menu label,
+command-palette action, and TOOLS PAUSED pane chip. Process exit clears both
+the hook-server gate and the snapshot flag. Codex currently declines because
+Sertum has not verified a persistent structured tool gate for its TUI-owned
+turns; Grok's event log is read-only and shell has no agent policy to gate.
 
 ## Adopting sessions started outside the app
 

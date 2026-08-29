@@ -498,6 +498,24 @@ ipcMain.handle('session:interrupt-turn', async (_e, id: string) => {
   return accepted;
 });
 ipcMain.handle(
+  'session:tool-gate',
+  async (_e, { id, paused }: { id: string; paused: boolean }) => {
+    const session = ptys.get(id);
+    const adapter = session && agentAdapters.get(session.agent);
+    if (!session || !adapter?.capabilities['tool-gate'].ok) return false;
+    const accepted = await adapter.setToolGate(
+      {
+        id,
+        externalId: session.externalId,
+        activeTurnId: activeCodexTurns.get(id) ?? null,
+        cwd: session.cwd,
+      },
+      paused,
+    );
+    return accepted && ptys.setToolsPaused(id, paused);
+  },
+);
+ipcMain.handle(
   'session:rename',
   (_e, { id, label }: { id: string; label: string }) => {
     const stored = ptys.rename(id, label);

@@ -92,6 +92,7 @@ export class PtyManager extends EventEmitter {
     const snapshot: SessionSnapshot = {
       ...resolved,
       id,
+      toolsPaused: false,
       origin: 'owned',
       externalId: null,
       status: 'working',
@@ -118,6 +119,7 @@ export class PtyManager extends EventEmitter {
         session.snapshot.status = exitCode === 0 ? 'done' : 'attention';
         session.snapshot.exitCode = exitCode;
         session.snapshot.pid = null;
+        session.snapshot.toolsPaused = false;
         session.snapshot.activity =
           exitCode === 0 ? 'exited cleanly' : `exited with code ${exitCode}`;
         this.emit('session-updated', { ...session.snapshot });
@@ -212,6 +214,7 @@ export class PtyManager extends EventEmitter {
 
     const snapshot: SessionSnapshot = {
       id: randomUUID(),
+      toolsPaused: false,
       origin: 'monitored',
       externalId: input.externalId,
       label: input.label,
@@ -297,6 +300,19 @@ export class PtyManager extends EventEmitter {
     const next = { ...session.snapshot };
     this.emit('session-updated', next);
     return next;
+  }
+
+  /** Records structured tool gating so every renderer surface stays in sync. */
+  setToolsPaused(id: string, paused: boolean): boolean {
+    const session = this.sessions.get(id);
+    if (!session || session.snapshot.exitCode !== null) return false;
+    if (session.snapshot.toolsPaused === paused) return true;
+    session.snapshot.toolsPaused = paused;
+    session.snapshot.activity = paused
+      ? 'tool use paused'
+      : 'tool use resumed';
+    this.emit('session-updated', { ...session.snapshot });
+    return true;
   }
 
   write(id: string, data: string): void {

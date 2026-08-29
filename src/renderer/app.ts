@@ -1199,6 +1199,7 @@ export class App {
     const running = s.origin === 'owned' && s.exitCode === null;
     const steer = this.capabilities?.[s.agent]['turn-steer'];
     const interrupt = this.capabilities?.[s.agent]['turn-interrupt'];
+    const toolGate = this.capabilities?.[s.agent]['tool-gate'];
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1219,6 +1220,14 @@ export class App {
       { label: 'Mirror in new pane', accel: '⌘⌥M' },
       { label: 'Open in new window' },
       SEPARATOR,
+      {
+        label: s.toolsPaused ? 'Resume tool use' : 'Pause tool use',
+        accel: toolGate && !toolGate.ok ? toolGate.reason : undefined,
+        onSelect:
+          running && toolGate?.ok
+            ? () => void this.setToolGate(s, !s.toolsPaused)
+            : undefined,
+      },
       {
         // The agent's own id when we know it, ours otherwise -- either way
         // this identifies the session, whatever is running in it.
@@ -1278,6 +1287,13 @@ export class App {
 
   private async interruptTurn(s: SessionSnapshot): Promise<void> {
     await api.interruptTurn(s.id);
+  }
+
+  private async setToolGate(
+    s: SessionSnapshot,
+    paused: boolean,
+  ): Promise<void> {
+    await api.setToolGate(s.id, paused);
   }
 
   private filter = '';
@@ -1350,6 +1366,9 @@ export class App {
     const activeInterrupt = active
       ? this.capabilities?.[active.agent]['turn-interrupt']
       : undefined;
+    const activeToolGate = active
+      ? this.capabilities?.[active.agent]['tool-gate']
+      : undefined;
     const actions: PaletteAction[] = [
       {
         glyph: '＋',
@@ -1374,6 +1393,19 @@ export class App {
         run:
           active && active.origin === 'owned' && active.exitCode === null && activeSteer?.ok
             ? () => void this.promptSteer(active)
+            : undefined,
+      },
+      {
+        glyph: active?.toolsPaused ? '▶' : '‖',
+        label: active?.toolsPaused
+          ? 'Resume tool use in focused session'
+          : 'Pause tool use in focused session',
+        run:
+          active &&
+          active.origin === 'owned' &&
+          active.exitCode === null &&
+          activeToolGate?.ok
+            ? () => void this.setToolGate(active, !active.toolsPaused)
             : undefined,
       },
       {
@@ -1732,6 +1764,9 @@ export class App {
       if (s.remoteControl) {
         left.append(text('span', 'REMOTE', 'pane-remote-chip'));
       }
+      if (s.toolsPaused) {
+        left.append(text('span', 'TOOLS PAUSED', 'pane-tool-chip'));
+      }
     } else {
       left.append(text('span', 'Empty pane', 'pane-chrome-label empty'));
     }
@@ -1857,6 +1892,11 @@ export class App {
       );
       if (active.remoteControl) {
         this.el.paneTitle.append(text('span', 'REMOTE', 'pane-remote-chip'));
+      }
+      if (active.toolsPaused) {
+        this.el.paneTitle.append(
+          text('span', 'TOOLS PAUSED', 'pane-tool-chip'),
+        );
       }
     } else {
       this.el.paneTitle.append(text('span', 'Empty pane', 'repo'));

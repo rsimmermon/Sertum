@@ -34,6 +34,8 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:steer', { id, text }),
   interruptTurn: (id: string) =>
     ipcRenderer.invoke('session:interrupt-turn', id),
+  setToolGate: (id: string, paused: boolean) =>
+    ipcRenderer.invoke('session:tool-gate', { id, paused }),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
   agentCapabilities: () => ipcRenderer.invoke('agent:capabilities'),

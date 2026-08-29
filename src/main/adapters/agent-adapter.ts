@@ -18,6 +18,7 @@ export interface AgentSessionRef {
 interface ClaudeTurnControl {
   queueSteer(sessionId: string, text: string): void;
   queueInterrupt(sessionId: string): void;
+  setToolGate(sessionId: string, paused: boolean): void;
 }
 
 /**
@@ -92,6 +93,9 @@ export interface AgentAdapter {
 
   /** Stop an active turn through the agent's structured control plane. */
   interruptTurn(session: AgentSessionRef): Promise<boolean>;
+
+  /** Deny or resume tool execution through the structured control plane. */
+  setToolGate(session: AgentSessionRef, paused: boolean): Promise<boolean>;
 }
 
 /**
@@ -130,6 +134,13 @@ class InertAgentAdapter implements AgentAdapter {
   async interruptTurn(_session: AgentSessionRef): Promise<boolean> {
     return false;
   }
+
+  async setToolGate(
+    _session: AgentSessionRef,
+    _paused: boolean,
+  ): Promise<boolean> {
+    return false;
+  }
 }
 
 /**
@@ -151,6 +162,10 @@ class CodexAdapter implements AgentAdapter {
     },
     'turn-steer': { ok: true },
     'turn-interrupt': { ok: true },
+    'tool-gate': {
+      ok: false,
+      reason: 'Codex has no persistent structured tool gate in this client.',
+    },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -233,6 +248,13 @@ class CodexAdapter implements AgentAdapter {
       return null;
     }
   }
+
+  async setToolGate(
+    _session: AgentSessionRef,
+    _paused: boolean,
+  ): Promise<boolean> {
+    return false;
+  }
 }
 
 /**
@@ -251,6 +273,7 @@ class ClaudeAdapter extends InertAgentAdapter {
       'remote-control': { ok: true },
       'turn-steer': { ok: true },
       'turn-interrupt': { ok: true },
+      'tool-gate': { ok: true },
     });
   }
 
@@ -281,6 +304,14 @@ class ClaudeAdapter extends InertAgentAdapter {
 
   override async interruptTurn(session: AgentSessionRef): Promise<boolean> {
     this.control.queueInterrupt(session.id);
+    return true;
+  }
+
+  override async setToolGate(
+    session: AgentSessionRef,
+    paused: boolean,
+  ): Promise<boolean> {
+    this.control.setToolGate(session.id, paused);
     return true;
   }
 
@@ -331,6 +362,10 @@ class GrokAdapter extends InertAgentAdapter {
       'turn-interrupt': {
         ok: false,
         reason: 'Grok’s event log reports turns but cannot control them.',
+      },
+      'tool-gate': {
+        ok: false,
+        reason: 'Grok’s event log cannot deny tool execution.',
       },
     });
   }
@@ -384,6 +419,10 @@ export function createAgentAdapters(deps: {
         'turn-interrupt': {
           ok: false,
           reason: 'A shell has no structured turn to interrupt.',
+        },
+        'tool-gate': {
+          ok: false,
+          reason: 'A shell has no agent tool policy to gate.',
         },
       }),
     ],

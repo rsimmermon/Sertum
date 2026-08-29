@@ -54,7 +54,9 @@ export type AgentCapability =
   /** Add structured guidance without writing characters into the PTY. */
   | 'turn-steer'
   /** Stop an active turn through the agent's structured control plane. */
-  | 'turn-interrupt';
+  | 'turn-interrupt'
+  /** Deny tool execution until the user explicitly resumes it. */
+  | 'tool-gate';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -95,6 +97,8 @@ export type SessionOrigin = 'owned' | 'attached' | 'monitored';
 
 export interface SessionSnapshot extends SessionSpec {
   id: string;
+  /** True while the adapter is denying tool execution for this session. */
+  toolsPaused: boolean;
   origin: SessionOrigin;
   /** The agent's own session id, when we adopted rather than spawned it. */
   externalId: string | null;
@@ -374,6 +378,8 @@ export interface SertumApi {
   steerSession(id: string, text: string): Promise<boolean>;
   /** Interrupt the active turn through its adapter, not with PTY bytes. */
   interruptTurn(id: string): Promise<boolean>;
+  /** Enable or release the adapter's structured tool-execution gate. */
+  setToolGate(id: string, paused: boolean): Promise<boolean>;
   /**
    * Rename a session. The label is Sertum's own, so this works for every
    * agent -- including a plain shell, which has no notion of a session name.
