@@ -1,5 +1,6 @@
 import type { AgentKind, DirectoryInfo, SessionSnapshot } from '../shared/types';
 import { openAgentPicker } from './agent-picker';
+import { agentIcon } from './agent-icon';
 import { agentName } from './chips';
 
 type Isolation = 'main' | 'new' | 'existing';
@@ -116,12 +117,11 @@ export function openNewSessionDialog(
     agentButton.type = 'button';
 
     const drawAgent = () => {
-      const dot = el('span', 'agent-dot agent-' + agent);
       const name = el('span', 'field-select-name');
       name.textContent = agentName(agent);
       const caret = el('span', 'field-select-caret');
       caret.textContent = '⌄';
-      agentButton.replaceChildren(dot, name, caret);
+      agentButton.replaceChildren(agentIcon(agent), name, caret);
       agentButton.title = 'Agent: ' + agentName(agent) + ' — click to change';
     };
 

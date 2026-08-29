@@ -1,4 +1,5 @@
 import type { AdapterStatus, AgentKind } from '../shared/types';
+import { agentIcon } from './agent-icon';
 import { agentName } from './chips';
 
 const api = window.sertum;
@@ -62,7 +63,13 @@ export function noteAgentAvailability(status: AdapterStatus): void {
 }
 
 export interface AgentPickerOptions {
-  /** Ticked in the list, and where the keyboard cursor starts. */
+  /**
+   * Marked as the value in force -- quietly, in weight rather than colour.
+   *
+   * Only a picker standing in for a field passes this. A menu that starts a
+   * new session has no current value to show: everything in it is equally
+   * available, and pre-marking one implies a decision nobody made.
+   */
   current?: AgentKind | null;
   /** Offered at the foot of the list, for a CLI that could not be found. */
   onManage?: () => void;
@@ -134,7 +141,16 @@ export function openAgentPicker(
     }
 
     let rows: Array<{ agent: AgentKind; el: HTMLButtonElement }> = [];
-    let cursor = 0;
+    /**
+     * Which row the keyboard is on, or -1 for none.
+     *
+     * It starts nowhere on purpose. Highlighting a row the moment the list
+     * opens reads as a choice already made -- and the list opens under a
+     * button whose whole job is to make that choice -- so the first arrow key
+     * is what puts the cursor somewhere. Marking the current agent is a
+     * separate, quieter thing: see the `on` class below.
+     */
+    let cursor = -1;
     /** Set by the footer, to see the agents that are not installed. */
     let showAll = false;
 
@@ -176,14 +192,12 @@ export function openAgentPicker(
           row.className = 'ctx-item agent-row';
           if (agent === opts.current) row.classList.add('on');
 
-          const dot = document.createElement('span');
-          dot.className = 'agent-dot agent-' + agent;
           const name = document.createElement('span');
           name.className = 'agent-row-name';
           name.textContent = agentName(agent);
           const left = document.createElement('span');
           left.className = 'agent-row-left';
-          left.append(dot, name);
+          left.append(agentIcon(agent), name);
           row.append(left);
 
           // Availability is the one thing a picker can say that a button row
@@ -218,12 +232,23 @@ export function openAgentPicker(
       more.hidden = hiddenNow === 0;
       more.textContent = hiddenNow + ' not installed — show';
 
-      cursor = Math.min(cursor, Math.max(0, rows.length - 1));
+      cursor = Math.min(cursor, rows.length - 1);
+      cursorForFilter();
       highlight();
     };
 
     const highlight = () => {
       rows.forEach((r, i) => r.el.classList.toggle('cursor', i === cursor));
+    };
+
+    /**
+     * Filtering is different: you have narrowed the list yourself, so the top
+     * match is what Enter should take, and showing which one that is saves you
+     * arrowing to it.
+     */
+    const cursorForFilter = () => {
+      if (filter && cursor < 0 && rows.length > 0) cursor = 0;
+      if (!filter) cursor = -1;
     };
 
     const showFilter = () => {
@@ -262,14 +287,20 @@ export function openAgentPicker(
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         consume(e);
         if (rows.length === 0) return;
-        const step = e.key === 'ArrowDown' ? 1 : -1;
-        cursor = (cursor + step + rows.length) % rows.length;
+        const down = e.key === 'ArrowDown';
+        // From nowhere, the first press enters at the end you came from.
+        cursor =
+          cursor < 0
+            ? down
+              ? 0
+              : rows.length - 1
+            : (cursor + (down ? 1 : -1) + rows.length) % rows.length;
         highlight();
         return;
       }
       if (e.key === 'Enter') {
         consume(e);
-        if (rows[cursor]) finish(rows[cursor].agent);
+        if (cursor >= 0 && rows[cursor]) finish(rows[cursor].agent);
         return;
       }
       if (e.key === 'Backspace') {
@@ -328,12 +359,6 @@ export function openAgentPicker(
         // No answer is not the same as "missing": leave the rows unmarked.
       });
 
-    // Start on the current agent, so Enter repeats the last choice.
-    const at = rows.findIndex((r) => r.agent === opts.current);
-    if (at >= 0) {
-      cursor = at;
-      highlight();
-    }
   });
 }
 

@@ -23,6 +23,7 @@ import {
   layoutLabel,
   openLayoutPicker,
 } from './layout-picker';
+import { agentIcon } from './agent-icon';
 import { noteAgentAvailability, openAgentPicker } from './agent-picker';
 import {
   DEFAULT_SETTINGS,
@@ -181,10 +182,10 @@ export class App {
     // The caret names the agent up front; the button itself repeats the last
     // one, which is the common case and stays a single click.
     this.el.sidebarNewAgent.onclick = () => {
+      // No `current`: this list starts a session rather than editing a
+      // value, so nothing in it is already chosen. The face of the split
+      // button is where "the one you used last" lives.
       void openAgentPicker(this.el.sidebarNewAgent, {
-        current:
-          (localStorage.getItem('sertum.lastAgent') as AgentKind | null) ??
-          null,
         onManage: () => void this.promptSettings(),
       }).then((agent) => {
         if (agent) void this.promptNewSession(undefined, { agent });
@@ -925,7 +926,10 @@ export class App {
       stack.append(head);
       const meta = metaLine(s);
       if (meta) stack.append(meta);
-      tab.append(dot(s.status), stack);
+      // One badge, both facts -- the mark says which agent, the tint says what
+      // it needs. The separate status dot beside it was saying half of that
+      // twice.
+      tab.append(agentBadge(s.agent, s.status), stack);
       const close = iconButton('×', `Close ${s.label}`, (e) => {
         e.stopPropagation();
         void this.closeTab(s.id);
@@ -1080,7 +1084,7 @@ export class App {
         row.classList.add(`agent-${s.agent}`);
 
         const top = div('sb-top');
-        top.append(dot(s.status));
+        top.append(agentBadge(s.agent, s.status));
         if (this.renaming === s.id) {
           top.append(this.renameField(s));
         } else {
@@ -1913,18 +1917,14 @@ export class App {
     const a = this.adapters;
     if (!a) return;
 
+    // Only things that are genuinely broken. A CLI that is not installed used
+    // to be announced here, which made a normal machine -- one that simply
+    // does not have all three agents -- look permanently faulty. It is not a
+    // fault, and the agent list already says so by not offering it; the
+    // tooltip below still names it for anyone who goes looking.
     const down = [
       a.claude.connected ? null : 'Claude hooks',
       a.codex.connected ? null : 'Codex app server',
-      // Distinct from "hooks offline": this means the CLI itself was never
-      // found on disk, so no session for that agent can start at all --
-      // worth a much louder signal than a dormant hook endpoint.
-      a.claude.binaryFound ? null : 'Claude Code not found',
-      a.codex.binaryFound ? null : 'Codex not found',
-      // Grok has no endpoint or server to be offline: its status is read from
-      // each session's own event log, so a missing CLI is the only failure
-      // there is to report.
-      a.grok.binaryFound ? null : 'Grok not found',
     ].filter(Boolean) as string[];
 
     // "adapters" is the vocabulary the designs use throughout (E2, C14), so
@@ -2112,6 +2112,20 @@ function button(
   b.onclick = onClick;
   return b;
 }
+/**
+  * The agent's mark in a small square.
+  *
+  * With a status it does two jobs at once: the glyph says which agent, the
+  * tint says what that session needs. That is what lets it stand in for the
+  * status dot in the sidebar without losing the property the whole app is
+  * built on -- a row going amber because the agent said it needs you.
+  */
+function agentBadge(agent: AgentKind, status?: SessionStatus): HTMLElement {
+  const box = div('agent-badge' + (status ? ' st-' + status : ''));
+  box.append(agentIcon(agent));
+  return box;
+}
+
 function basename(p: string): string {
   const parts = p.replace(/[/\\]+$/, '').split(/[/\\]/);
   return parts[parts.length - 1] ?? '';
