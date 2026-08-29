@@ -501,6 +501,7 @@ input.field:focus { outline: none; border-color: var(--accent); }
   background: var(--surface); border: 1px solid var(--line); border-radius: 5px;
   cursor: default;
 }
+.remote-control-check[hidden] { display: none; }
 .remote-control-check input { margin-top: 2px; }
 .remote-control-copy { display: flex; flex-direction: column; gap: 2px; }
 .remote-control-title { font-size: 13px; font-weight: 600; color: var(--ink); }
