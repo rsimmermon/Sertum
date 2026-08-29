@@ -12,6 +12,8 @@ export interface ConfirmOptions {
   confirmLabel: string;
   /** Extra line shown in a warning tone, for consequences worth spelling out. */
   warning?: string;
+  /** Keep the destructive button disabled until this exact value is typed. */
+  typeToConfirm?: string;
 }
 
 export function openConfirmDialog(opts: ConfirmOptions): Promise<boolean> {
@@ -24,9 +26,29 @@ export function openConfirmDialog(opts: ConfirmOptions): Promise<boolean> {
     dlg.append(text('p', opts.body, 'dialog-sub'));
     if (opts.warning) dlg.append(text('p', opts.warning, 'confirm-warning'));
 
+    let typed: HTMLInputElement | null = null;
+    if (opts.typeToConfirm) {
+      const field = el('label', 'confirm-type');
+      field.append(
+        text('span', `TYPE ${opts.typeToConfirm} TO CONFIRM`, 'field-label'),
+      );
+      typed = document.createElement('input');
+      typed.className = 'field';
+      typed.autocomplete = 'off';
+      typed.spellcheck = false;
+      field.append(typed);
+      dlg.append(field);
+    }
+
     const actions = el('div', 'dialog-actions');
     const cancel = button('Cancel', 'btn ghost', () => close(false));
     const confirm = button(opts.confirmLabel, 'btn danger', () => close(true));
+    if (typed && opts.typeToConfirm) {
+      confirm.disabled = true;
+      typed.oninput = () => {
+        confirm.disabled = typed?.value !== opts.typeToConfirm;
+      };
+    }
     actions.append(el('div', 'grow'), cancel, confirm);
     dlg.append(actions);
 

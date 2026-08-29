@@ -84,8 +84,8 @@ What's built and verified so far:
 - [x] **Claude tool gating** — Pause tool use persistently denies
       `PreToolUse` through structured hook responses until resumed; the pane
       carries a TOOLS PAUSED chip and no terminal bytes are synthesized
-- [ ] Diff review (wireframe C11) — read-only changed-file inventory and
-      per-file unified diff are built; discard and the C15 commit sheet remain
+- [ ] Diff review (wireframe C11) — changed-file inventory, per-file unified
+      diff and types-to-confirm discard are built; the C15 commit sheet remains
 - [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
       beyond today's display/agent panes
 - [ ] Split views (wireframes G1–G8)

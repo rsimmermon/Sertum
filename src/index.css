@@ -1364,6 +1364,8 @@ select.field {
 .diff-patch .del { color: var(--err); background: var(--err-soft); }
 .diff-patch .hunk { color: var(--accent); background: var(--accent-soft); }
 .diff-message, .diff-empty { display: grid; flex: 1; place-items: center; padding: 24px; color: var(--muted); font-size: 12px; text-align: center; }
+.diff-error { flex: none; padding: 9px 11px; border-radius: 5px; color: var(--err); background: var(--err-soft); }
+.confirm-type { display: flex; flex-direction: column; gap: 6px; }
 @media (max-width: 680px) {
   .diff-body { grid-template-columns: 160px minmax(0, 1fr); }
   .diff-actions { display: none; }

@@ -32,7 +32,7 @@ import {
   readWorktrees,
   removeWorktree,
 } from './main/worktrees';
-import { readDiff, readDiffFile } from './main/diff-review';
+import { discardDiff, readDiff, readDiffFile } from './main/diff-review';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import {
@@ -448,6 +448,7 @@ ipcMain.handle(
   (_e, { root, path: file }: { root: string; path: string }) =>
     readDiffFile(root, file),
 );
+ipcMain.handle('diff:discard', (_e, root: string) => discardDiff(root));
 ipcMain.handle('shell:reveal', (_e, target: string) => {
   shell.showItemInFolder(target);
 });

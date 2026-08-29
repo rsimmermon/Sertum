@@ -1,4 +1,5 @@
 import type { DiffFileInfo, DiffInventory } from '../shared/types';
+import { openConfirmDialog } from './confirm-dialog';
 
 const api = window.sertum;
 
@@ -48,8 +49,34 @@ function render(inv: DiffInventory, dlg: HTMLElement, close: () => void): void {
   );
   const actions = document.createElement('div');
   actions.className = 'diff-actions';
+  const discard = actionButton('Discard all', 'danger');
+  discard.onclick = async () => {
+    const confirmation = inv.branch ?? 'DISCARD';
+    const shown = inv.files.slice(0, 8).map((file) => file.path);
+    const remainder = inv.files.length - shown.length;
+    const ok = await openConfirmDialog({
+      title: `Discard changes in ${inv.branch ?? 'this worktree'}?`,
+      body: `Permanently restores or removes ${count(inv.files.length, 'changed file')}: ${shown.join(', ')}${remainder ? `, and ${remainder} more` : ''}.`,
+      warning: 'Uncommitted changes and untracked files cannot be recovered from Git.',
+      confirmLabel: 'Discard all',
+      typeToConfirm: confirmation,
+    });
+    if (!ok) return;
+    discard.disabled = true;
+    const result = await api.discardDiff(inv.root);
+    if (!result.ok) {
+      discard.disabled = false;
+      const error = message(result.reason ?? 'The changes could not be discarded.');
+      error.classList.add('diff-error');
+      dlg.insertBefore(error, dlg.lastElementChild);
+      return;
+    }
+    dlg.textContent = 'Reading changes…';
+    const refreshed = await api.readDiff(inv.root);
+    if (refreshed) render(refreshed, dlg, close);
+  };
   actions.append(
-    disabled('Discard all', 'Destructive review actions are not built yet.', 'danger'),
+    discard,
     disabled('Commit & push', 'The C15 commit sheet is not built yet.', 'primary'),
   );
   head.append(actions);
@@ -158,12 +185,17 @@ function message(text: string): HTMLElement {
 }
 
 function disabled(label: string, title: string, tone: string): HTMLButtonElement {
+  const button = actionButton(label, tone);
+  button.title = title;
+  button.disabled = true;
+  return button;
+}
+
+function actionButton(label: string, tone: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = `btn ${tone} small`;
   button.textContent = label;
-  button.title = title;
-  button.disabled = true;
   return button;
 }
 

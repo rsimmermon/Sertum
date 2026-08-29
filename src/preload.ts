@@ -31,6 +31,7 @@ const api: SertumApi = {
   readDiff: (cwd: string) => ipcRenderer.invoke('diff:read', cwd),
   readDiffFile: (root: string, path: string) =>
     ipcRenderer.invoke('diff:file', { root, path }),
+  discardDiff: (root: string) => ipcRenderer.invoke('diff:discard', root),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   steerSession: (id: string, text: string) =>

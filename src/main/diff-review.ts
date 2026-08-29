@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type {
+  DiffDiscardResult,
   DiffFileInfo,
   DiffFilePatch,
   DiffInventory,
@@ -92,6 +93,55 @@ export async function readDiffFile(
   ], MAX_PATCH_BYTES);
   if (patch === null) return unavailable(relative, 'Git could not read this diff.');
   return { path: relative, patch, reason: patch ? null : 'No textual diff.' };
+}
+
+/**
+ * Discards exactly the paths Git reports at execution time.
+ *
+ * The renderer's earlier inventory is display only: this function resolves
+ * the repository again and re-reads its changes before touching anything.
+ * Untracked entries come from `--untracked-files=all`, so each target is an
+ * individual file or symlink and never a recursively deleted directory.
+ */
+export async function discardDiff(root: string): Promise<DiffDiscardResult> {
+  const inventory = await readDiff(root);
+  if (!inventory || !samePath(inventory.root, root)) {
+    return { ok: false, reason: 'The worktree could not be verified.' };
+  }
+  if (!inventory.files.length) return { ok: true };
+
+  const tracked = inventory.files
+    .filter((file) => file.status !== 'untracked')
+    .map((file) => file.path);
+  if (tracked.length) {
+    const restored = await gitOk(inventory.root, [
+      'restore',
+      '--source=HEAD',
+      '--staged',
+      '--worktree',
+      '--',
+      ...tracked,
+    ]);
+    if (!restored) {
+      return { ok: false, reason: 'Git refused to restore the tracked files.' };
+    }
+  }
+
+  for (const entry of inventory.files.filter((file) => file.status === 'untracked')) {
+    const target = safePath(inventory.root, entry.path);
+    if (!target) return { ok: false, reason: `Refused unsafe path: ${entry.path}` };
+    try {
+      const stat = fs.lstatSync(target);
+      if (!stat.isFile() && !stat.isSymbolicLink()) {
+        return { ok: false, reason: `Refused non-file path: ${entry.path}` };
+      }
+      fs.rmSync(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return { ok: false, reason: `Could not remove ${entry.path}.` };
+    }
+  }
+  return { ok: true };
 }
 
 function parseStatus(raw: string): Array<{ path: string; status: DiffFileInfo['status'] }> {
@@ -188,6 +238,14 @@ function safePath(root: string, relative: string): string | null {
   return target === base || target.startsWith(`${base}${path.sep}`) ? target : null;
 }
 
+function samePath(a: string, b: string): boolean {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
 function unavailable(file: string, reason: string): DiffFilePatch {
   return { path: file, patch: null, reason };
 }
@@ -202,5 +260,18 @@ async function git(cwd: string, args: string[], maxBuffer = 4_000_000): Promise<
     return stdout.trimEnd();
   } catch {
     return null;
+  }
+}
+
+async function gitOk(cwd: string, args: string[]): Promise<boolean> {
+  try {
+    await run('git', ['-C', cwd, ...args], {
+      timeout: 12_000,
+      maxBuffer: 4_000_000,
+      encoding: 'utf8',
+    });
+    return true;
+  } catch {
+    return false;
   }
 }

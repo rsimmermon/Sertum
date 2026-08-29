@@ -305,6 +305,11 @@ export interface DiffFilePatch {
   reason: string | null;
 }
 
+export interface DiffDiscardResult {
+  ok: boolean;
+  reason?: string;
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -466,6 +471,8 @@ export interface SertumApi {
   readDiff(cwd: string): Promise<DiffInventory | null>;
   /** Load one selected path's unified diff without involving an agent. */
   readDiffFile(root: string, path: string): Promise<DiffFilePatch>;
+  /** Permanently discard the currently reported worktree changes. */
+  discardDiff(root: string): Promise<DiffDiscardResult>;
   /** Show a folder in the OS file manager. */
   revealPath(target: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */
