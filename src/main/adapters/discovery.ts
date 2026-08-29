@@ -155,11 +155,11 @@ function socketFor(pid: number): string | null {
  * session, summarise it from its transcript, and raise the window that owns
  * it.
  *
- * Neither agent's own plumbing reaches backward to sessions started
- * elsewhere: the Codex app server describes only threads we opened, and Grok
- * names a session for us only when we spawn it. Teaching either to answer for
- * a session it did not start would make it a richer discoverer registered
- * ahead of this one, and this stays as the fallback.
+ * Neither agent's own plumbing provides attributable live truth for sessions
+ * started elsewhere. A separate Codex app server lists their stored threads
+ * as `notLoaded`, without an owning pid, and Grok names a session for us only
+ * when we spawn it. A future vendor roster that supplies stable process and
+ * session identity belongs ahead of this fallback.
  */
 const processDiscoverer: AgentDiscoverer = {
   agent: 'codex',

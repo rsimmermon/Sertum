@@ -349,11 +349,16 @@ who owns the process — `~/.claude/projects/**/<id>.jsonl`,
 `~/.grok/sessions/**/<id>/chat_history.jsonl`. Only the tail is read.
 
 Codex's own app-server already drives live status for sessions Sertum starts
-(Plane 2, above), but that connection doesn't yet reach backward to describe
-sessions started elsewhere — which is why process-scan remains the only Codex
-discoverer today. Teaching discovery to query the app server directly would
-make it a richer discoverer registered ahead of the process scan; nothing
-downstream changes when that lands.
+(Plane 2, above), but a separate instance cannot supply live truth for a TUI it
+does not own. Verified against Codex CLI 0.150.1: `thread/list` finds an active
+external CLI thread by exact id, cwd, rollout path and title, but reports
+`status: { type: "notLoaded" }`, `canAcceptDirectInput: null`, and no owning
+pid. The managed app-server daemon that could share loaded runtime state is
+Unix-only in that release (`codex app-server daemon version` refuses win32).
+Consequently, joining an app-server row to a Windows process would require a
+timing/cwd guess and still would not improve live status. Process-scan remains
+the honest Codex discoverer until Codex exposes a cross-platform roster with a
+stable process/session identity; stored thread metadata alone is not Plane 2.
 
 ## Terminal key handling
 
