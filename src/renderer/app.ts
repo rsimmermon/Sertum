@@ -23,7 +23,7 @@ import {
   layoutLabel,
   openLayoutPicker,
 } from './layout-picker';
-import { openAgentPicker } from './agent-picker';
+import { noteAgentAvailability, openAgentPicker } from './agent-picker';
 import {
   DEFAULT_SETTINGS,
   PANE_COUNT,
@@ -256,6 +256,10 @@ export class App {
     const pollAdapters = async () => {
       try {
         this.adapters = await api.adapterStatus();
+        // The picker lists what this machine can run, and has to be right on
+        // its first paint -- so it reads this poll's answer rather than
+        // starting its own round trip when it opens.
+        noteAgentAvailability(this.adapters);
         this.renderStatus();
       } catch {
         this.adapters = null;

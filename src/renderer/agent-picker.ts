@@ -1,4 +1,4 @@
-import type { AgentKind } from '../shared/types';
+import type { AdapterStatus, AgentKind } from '../shared/types';
 import { agentName } from './chips';
 
 const api = window.sertum;
@@ -36,6 +36,30 @@ export const ALL_AGENTS: AgentKind[] = AGENT_GROUPS.flatMap((g) => g.agents);
  * it is doing something.
  */
 const FILTER_THRESHOLD = 6;
+
+/**
+ * What was last known about each agent's CLI.
+ *
+ * Module-level so the list can be right on the first paint. Availability is a
+ * round trip to main, and a popup that opens with four rows and then drops to
+ * two has already shown you the wrong answer -- so the last poll is what the
+ * list is built from, and a fresh answer only corrects it.
+ *
+ * Unknown means shown. A missing entry is "we have not asked yet", never
+ * "absent": failing open costs a row that cannot start and says why, while
+ * failing closed hides an agent that works.
+ */
+const availability = new Map<AgentKind, boolean>();
+
+/** Feeds the cache from the status the app already polls. */
+export function noteAgentAvailability(status: AdapterStatus): void {
+  availability.set('claude', status.claude.binaryFound);
+  availability.set('codex', status.codex.binaryFound);
+  availability.set('grok', status.grok.binaryFound);
+  // A shell is whatever the environment already is, so there is nothing to
+  // find and nothing that could be missing.
+  availability.set('shell', true);
+}
 
 export interface AgentPickerOptions {
   /** Ticked in the list, and where the keyboard cursor starts. */
@@ -83,6 +107,17 @@ export function openAgentPicker(
     list.className = 'agent-list';
     menu.append(list);
 
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'ctx-item agent-more';
+    more.hidden = true;
+    more.title = 'Show the agents whose CLI could not be found';
+    more.onclick = () => {
+      showAll = true;
+      draw();
+    };
+    menu.append(more);
+
     if (opts.onManage) {
       const sep = document.createElement('div');
       sep.className = 'ctx-sep';
@@ -98,19 +133,35 @@ export function openAgentPicker(
       menu.append(sep, manage);
     }
 
-    /** agent -> whether its CLI was found. Absent until main answers. */
-    const found = new Map<AgentKind, boolean>();
     let rows: Array<{ agent: AgentKind; el: HTMLButtonElement }> = [];
     let cursor = 0;
+    /** Set by the footer, to see the agents that are not installed. */
+    let showAll = false;
+
+    /**
+     * Whether an agent belongs in the list as it currently stands.
+     *
+     * The default list is what this machine can actually run. Three things
+     * override that, and each is the user asking: a filter is an explicit
+     * search and must not pretend a named agent does not exist; the agent
+     * already chosen stays visible so the row and the list cannot disagree;
+     * and the footer reveals the rest.
+     */
+    const visible = (agent: AgentKind, needle: string): boolean => {
+      if (needle || showAll || agent === opts.current) return true;
+      return availability.get(agent) !== false;
+    };
 
     const draw = () => {
       list.replaceChildren();
       rows = [];
       const needle = filter.toLowerCase();
+      const missing = ALL_AGENTS.filter((a) => availability.get(a) === false);
 
       for (const group of AGENT_GROUPS) {
-        const matches = group.agents.filter((a) =>
-          agentName(a).toLowerCase().includes(needle),
+        const matches = group.agents.filter(
+          (a) =>
+            agentName(a).toLowerCase().includes(needle) && visible(a, needle),
         );
         if (matches.length === 0) continue;
 
@@ -138,7 +189,7 @@ export function openAgentPicker(
           // Availability is the one thing a picker can say that a button row
           // cannot. A missing CLI stays selectable: the honest next step is
           // Settings, not a dead row with no explanation.
-          if (found.get(agent) === false) {
+          if (availability.get(agent) === false) {
             const warn = document.createElement('span');
             warn.className = 'ctx-accel agent-missing';
             warn.textContent = 'not found';
@@ -157,9 +208,15 @@ export function openAgentPicker(
       if (rows.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'agent-empty';
-        empty.textContent = 'No agent matches';
+        empty.textContent = needle ? 'No agent matches' : 'No agent installed';
         list.append(empty);
       }
+
+      // The way back to what was left out. Without it, an agent installed
+      // later would be invisible with nothing to say it could exist.
+      const hiddenNow = showAll || filter ? 0 : missing.length;
+      more.hidden = hiddenNow === 0;
+      more.textContent = hiddenNow + ' not installed — show';
 
       cursor = Math.min(cursor, Math.max(0, rows.length - 1));
       highlight();
@@ -264,9 +321,7 @@ export function openAgentPicker(
     void api
       .adapterStatus()
       .then((status) => {
-        found.set('claude', status.claude.binaryFound);
-        found.set('codex', status.codex.binaryFound);
-        found.set('grok', status.grok.binaryFound);
+        noteAgentAvailability(status);
         if (open === menu) draw();
       })
       .catch(() => {

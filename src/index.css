@@ -1045,6 +1045,9 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .agent-missing { color: var(--warn); }
 .ctx-item.cursor .agent-missing { color: #ffffffd0; }
 .agent-empty { padding: 8px 9px; font-size: 12px; color: var(--muted); }
+/* The way back to agents that are not installed: quiet, because the list
+   above it is the answer in the ordinary case. */
+.agent-more { color: var(--muted); font-size: 12px; }
 .agent-filter {
   padding: 5px 9px; margin-bottom: 2px;
   border-bottom: 1px solid var(--line-soft);
