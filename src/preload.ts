@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ManagedAgent,
+  MenuState,
   SertumApi,
   PtyDataEvent,
   PtyExitEvent,
@@ -34,7 +36,7 @@ const api: SertumApi = {
   pickDirectory: (startIn?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', startIn),
   pickFile: (startIn?: string) => ipcRenderer.invoke('dialog:pick-file', startIn),
-  detectAgentBinary: (agent: 'claude' | 'codex') =>
+  detectAgentBinary: (agent: ManagedAgent) =>
     ipcRenderer.invoke('agent:detect', agent),
   defaultCwd: () => ipcRenderer.invoke('workspace:default-cwd'),
   inspectDirectory: (dir: string) =>
@@ -62,4 +64,6 @@ contextBridge.exposeInMainWorld('sertum', api);
 /** Menu commands arrive as fire-and-forget signals. */
 contextBridge.exposeInMainWorld('sertumMenu', {
   on: (channel: string, cb: () => void) => on(`menu:${channel}`, cb),
+  /** Tells main which menu items can currently do anything. */
+  setState: (state: MenuState) => ipcRenderer.send('menu:state', state),
 });

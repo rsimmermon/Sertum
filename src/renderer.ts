@@ -6,7 +6,10 @@ import type { SertumApi } from './shared/types';
 declare global {
   interface Window {
     sertum: SertumApi;
-    sertumMenu: { on(channel: string, cb: () => void): () => void };
+    sertumMenu: {
+      on(channel: string, cb: () => void): () => void;
+      setState(state: import('./shared/types').MenuState): void;
+    };
   }
 }
 

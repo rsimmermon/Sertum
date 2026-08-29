@@ -51,9 +51,21 @@
             </span>
           </div>
           <div id="sidebar-list"></div>
-          <button class="sidebar-new" id="sidebar-new" type="button">
-            <span aria-hidden="true">＋</span> New session
-          </button>
+          <!-- Split button: the face starts a session with the agent you
+               used last, the caret chooses a different one. -->
+          <div class="sidebar-new-split">
+            <button class="sidebar-new" id="sidebar-new" type="button">
+              <span aria-hidden="true">＋</span> New session
+            </button>
+            <button
+              class="sidebar-new-caret"
+              id="sidebar-new-agent"
+              type="button"
+              aria-haspopup="menu"
+              aria-label="Choose an agent"
+              title="Start a session with a different agent"
+            >⌄</button>
+          </div>
         </aside>
 
         <div
@@ -80,7 +92,7 @@
               >▢ Single</button>
               <button class="btn ghost" disabled>Info</button>
               <button class="btn ghost" disabled>Diff</button>
-              <button class="btn ghost" disabled>Stop</button>
+              <button class="btn ghost" id="pane-stop" type="button">Stop</button>
               <button class="btn ghost" id="open-settings" type="button">
                 Settings…
               </button>

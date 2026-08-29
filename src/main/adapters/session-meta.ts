@@ -45,6 +45,7 @@ export function readSessionMeta(
       continue;
     }
     if (agent === 'codex') applyCodex(rec, meta);
+    else if (agent === 'grok') applyGrok(rec, meta);
     else applyClaude(rec, meta);
   }
 
@@ -56,6 +57,24 @@ export function readSessionMeta(
 
 function isComplete(m: SessionMeta): boolean {
   return m.model !== null && m.effort !== null && m.contextTokens !== null;
+}
+
+/**
+ * Grok stamps the model and effort on every assistant turn.
+ *
+ * It records no token accounting anywhere -- not in the transcript, not in the
+ * event log -- so context pressure stays null and its chip simply does not
+ * appear, which is the honest reading of "we do not know" rather than an
+ * estimate dressed up as a measurement.
+ */
+function applyGrok(rec: Record<string, unknown>, meta: SessionMeta): void {
+  if (rec.type !== 'assistant') return;
+  if (meta.model === null && typeof rec.model_id === 'string') {
+    meta.model = rec.model_id;
+  }
+  if (meta.effort === null && typeof rec.reasoning_effort === 'string') {
+    meta.effort = rec.reasoning_effort;
+  }
 }
 
 function applyClaude(rec: Record<string, unknown>, meta: SessionMeta): void {

@@ -23,9 +23,12 @@ import {
   layoutLabel,
   openLayoutPicker,
 } from './layout-picker';
+import { openAgentPicker } from './agent-picker';
 import {
   DEFAULT_SETTINGS,
   PANE_COUNT,
+  type AgentKind,
+  type MenuState,
   type PaneLayout,
   type SessionSnapshot,
   type SessionStatus,
@@ -100,6 +103,8 @@ export class App {
   private slots: Array<string | null> = [null];
   private focusedSlot = 0;
   private layout: PaneLayout = 'single';
+  /** Last menu state sent, so an unchanged answer is not resent. */
+  private lastMenuState = '';
   /**
    * A pane promoted to the full viewport. The layout is kept, not discarded,
    * so a second press restores it (design G6, note 287).
@@ -134,7 +139,9 @@ export class App {
     titlebarText: qs('#titlebar-text'),
     splitter: qs('#splitter'),
     sidebarNew: qs('#sidebar-new'),
+    sidebarNewAgent: qs('#sidebar-new-agent') as HTMLButtonElement,
     openSettings: qs('#open-settings'),
+    paneStop: qs('#pane-stop') as HTMLButtonElement,
     sidebarList: qs('#sidebar-list'),
     sidebarCount: qs('#sidebar-count'),
     sidebarHead: qs('#sidebar-head'),
@@ -171,8 +178,23 @@ export class App {
     setInterval(() => this.renderSidebar(), 30_000);
 
     this.el.sidebarNew.onclick = () => void this.promptNewSession();
+    // The caret names the agent up front; the button itself repeats the last
+    // one, which is the common case and stays a single click.
+    this.el.sidebarNewAgent.onclick = () => {
+      void openAgentPicker(this.el.sidebarNewAgent, {
+        current:
+          (localStorage.getItem('sertum.lastAgent') as AgentKind | null) ??
+          null,
+        onManage: () => void this.promptSettings(),
+      }).then((agent) => {
+        if (agent) void this.promptNewSession(undefined, { agent });
+      });
+    };
     this.installFilter();
     this.el.openSettings.onclick = () => void this.promptSettings();
+    this.el.paneStop.onclick = () => {
+      if (this.activeId) void api.killSession(this.activeId);
+    };
     this.el.layoutButton.onclick = () => this.openLayoutMenu(this.el.layoutButton);
 
     api.onData(({ id, data }) => this.panes.get(id)?.write(data));
@@ -259,7 +281,12 @@ export class App {
    */
   async promptNewSession(
     presetLabel?: string,
-    preset?: { cwd?: string; isolation?: 'main' | 'new' | 'existing' },
+    preset?: {
+      cwd?: string;
+      isolation?: 'main' | 'new' | 'existing';
+      /** Chosen from the split button, so the dialog does not ask again. */
+      agent?: AgentKind;
+    },
   ): Promise<void> {
     const startCwd =
       preset?.cwd ??
@@ -270,6 +297,7 @@ export class App {
       startCwd,
       presetLabel,
       presetIsolation: preset?.isolation,
+      presetAgent: preset?.agent,
     });
     if (!snapshot) return;
     this.lastCwd = snapshot.cwd;
@@ -842,6 +870,31 @@ export class App {
     this.renderSidebar();
     this.renderPane();
     this.renderStatus();
+    this.syncMenuState();
+  }
+
+  /**
+   * Tells the menu what it can currently do.
+   *
+   * Sent from here because the answer is the renderer's to give: it owns the
+   * focused session, the list order, and whether a split is up -- and while
+   * one is, the low digits address panes rather than sessions, so the reach of
+   * ⌘N is not simply the session count. Only a change is sent; render()
+   * runs on every status event and the menu must not be touched that often.
+   */
+  private syncMenuState(): void {
+    const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    const panes = this.isSplit() ? PANE_COUNT[this.layout] : 0;
+    const state: MenuState = {
+      count: this.sessions.size,
+      hasActive: Boolean(active),
+      activeRunning: Boolean(active && active.pid !== null),
+      gotoLimit: Math.max(this.sessions.size, panes),
+    };
+    const key = `${state.count}|${state.hasActive}|${state.activeRunning}|${state.gotoLimit}`;
+    if (key === this.lastMenuState) return;
+    this.lastMenuState = key;
+    menu.setState(state);
   }
 
   private renderTabs(): void {
@@ -1696,6 +1749,15 @@ export class App {
     }
     this.el.layoutButton.textContent = `${LAYOUT_GLYPH[this.layout]} ${layoutLabel(this.layout)}`;
     this.el.layoutButton.title = `Pane layout: ${layoutLabel(this.layout)}  (⌘⌥L)`;
+
+    // Ends the process and keeps the row, exactly as Session > Stop Session
+    // and the row menu do. Enabled only while there is a process to end, so
+    // the button reports whether it can act rather than failing silently.
+    const running = Boolean(active && active.pid !== null);
+    this.el.paneStop.disabled = !running;
+    this.el.paneStop.title = running
+      ? `Stop ${active?.label ?? 'session'} — ends the process, keeps the tab`
+      : 'Nothing running in this pane';
   }
 
   /**
@@ -1855,6 +1917,10 @@ export class App {
       // worth a much louder signal than a dormant hook endpoint.
       a.claude.binaryFound ? null : 'Claude Code not found',
       a.codex.binaryFound ? null : 'Codex not found',
+      // Grok has no endpoint or server to be offline: its status is read from
+      // each session's own event log, so a missing CLI is the only failure
+      // there is to report.
+      a.grok.binaryFound ? null : 'Grok not found',
     ].filter(Boolean) as string[];
 
     // "adapters" is the vocabulary the designs use throughout (E2, C14), so
@@ -1869,6 +1935,9 @@ export class App {
       ` · ${events(a.codex.events)}\n` +
       `Claude Code CLI: ${a.claude.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
       `Codex CLI: ${a.codex.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
+      `Grok event log: following ${a.grok.watching} session${a.grok.watching === 1 ? '' : 's'}` +
+      ` · ${events(a.grok.events)}\n` +
+      `Grok CLI: ${a.grok.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
       'These are the channels agents report status through. Counts are zero ' +
       'until a session does something.';
 

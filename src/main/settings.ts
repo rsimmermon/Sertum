@@ -81,6 +81,7 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
     agentBinaryPaths: {
       claude: sanitizeBinaryPath(raw.agentBinaryPaths?.claude, base.agentBinaryPaths.claude),
       codex: sanitizeBinaryPath(raw.agentBinaryPaths?.codex, base.agentBinaryPaths.codex),
+      grok: sanitizeBinaryPath(raw.agentBinaryPaths?.grok, base.agentBinaryPaths.grok),
     },
   };
 }

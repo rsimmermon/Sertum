@@ -1,16 +1,12 @@
 import type { AgentKind, DirectoryInfo, SessionSnapshot } from '../shared/types';
+import { openAgentPicker } from './agent-picker';
+import { agentName } from './chips';
 
 type Isolation = 'main' | 'new' | 'existing';
 
 const api = window.sertum;
 const RECENTS_KEY = 'sertum.recentFolders';
 const LAST_AGENT_KEY = 'sertum.lastAgent';
-
-const AGENT_LABELS: Array<{ id: AgentKind; label: string }> = [
-  { id: 'claude', label: 'Claude Code' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'shell', label: 'Shell' },
-];
 
 /**
  * Launch arguments per agent. Lives here rather than in app.ts because this
@@ -21,6 +17,9 @@ const AGENT_LABELS: Array<{ id: AgentKind; label: string }> = [
 const AGENT_ARGS: Record<AgentKind, string[]> = {
   claude: [],
   codex: [],
+  // The session id is added at spawn time, not here: main.ts generates it so
+  // it can bind the event log to this pane in the same breath.
+  grok: [],
   shell: [],
 };
 
@@ -40,15 +39,22 @@ export interface NewSessionOptions {
   presetLabel?: string;
   /** Opens with this isolation already chosen, as C9's New worktree does. */
   presetIsolation?: Isolation;
+  /**
+   * Opens with this agent already chosen -- what the sidebar's split button
+   * passes when you pick one from its list, so the choice is not made twice.
+   */
+  presetAgent?: AgentKind;
 }
 
 export function openNewSessionDialog(
   opts: NewSessionOptions,
 ): Promise<SessionSnapshot | null> {
-  const { startCwd, presetLabel, presetIsolation } = opts;
+  const { startCwd, presetLabel, presetIsolation, presetAgent } = opts;
   return new Promise((resolve) => {
     let agent: AgentKind =
-      (localStorage.getItem(LAST_AGENT_KEY) as AgentKind | null) ?? 'claude';
+      presetAgent ??
+      (localStorage.getItem(LAST_AGENT_KEY) as AgentKind | null) ??
+      'claude';
     let cwd = startCwd;
     let info: DirectoryInfo | null = null;
     let labelEdited = Boolean(presetLabel);
@@ -103,20 +109,31 @@ export function openNewSessionDialog(
     }
 
     // --- agent -------------------------------------------------------------
-    const seg = el('div', 'segmented');
-    const segButtons = AGENT_LABELS.map(({ id, label }) => {
-      const b = el('button', 'seg' + (id === agent ? ' on' : ''));
-      b.textContent = label;
-      b.onclick = () => {
-        agent = id;
-        segButtons.forEach((x, i) =>
-          x.classList.toggle('on', AGENT_LABELS[i].id === agent),
-        );
+    // One row that opens the catalogue, rather than a button per agent: the
+    // segmented row could not survive the list growing, and could not say
+    // which agents are actually installed. See agent-picker.ts.
+    const agentButton = el('button', 'field-select') as HTMLButtonElement;
+    agentButton.type = 'button';
+
+    const drawAgent = () => {
+      const dot = el('span', 'agent-dot agent-' + agent);
+      const name = el('span', 'field-select-name');
+      name.textContent = agentName(agent);
+      const caret = el('span', 'field-select-caret');
+      caret.textContent = '⌄';
+      agentButton.replaceChildren(dot, name, caret);
+      agentButton.title = 'Agent: ' + agentName(agent) + ' — click to change';
+    };
+
+    agentButton.onclick = () => {
+      void openAgentPicker(agentButton, { current: agent }).then((picked) => {
+        if (!picked || picked === agent) return;
+        agent = picked;
+        drawAgent();
         if (!labelEdited) labelInput.value = suggestLabel();
-      };
-      seg.append(b);
-      return b;
-    });
+      });
+    };
+    drawAgent();
 
     // --- label -------------------------------------------------------------
     const labelInput = document.createElement('input');
@@ -202,7 +219,7 @@ export function openNewSessionDialog(
       folderNote,
       recentsWrap,
       labelEl('AGENT'),
-      seg,
+      agentButton,
       labelEl('ISOLATION'),
       isoSeg,
       branchWrap,
@@ -441,7 +458,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? '';
 }
 function agentLabel(agent: AgentKind): string {
-  return AGENT_LABELS.find((a) => a.id === agent)?.label ?? agent;
+  return agentName(agent);
 }
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

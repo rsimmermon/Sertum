@@ -16,7 +16,16 @@ export type SessionStatus =
   | 'done'
   | 'idle';
 
-export type AgentKind = 'claude' | 'codex' | 'shell';
+export type AgentKind = 'claude' | 'codex' | 'grok' | 'shell';
+
+/**
+ * The agents with a CLI of their own to find, configure and report on.
+ *
+ * A shell is excluded because there is nothing to detect: it is whatever the
+ * environment already says it is. Naming this once keeps Settings, detection
+ * and the status bar from each spelling the union out and drifting apart.
+ */
+export type ManagedAgent = Exclude<AgentKind, 'shell'>;
 
 /** What the user asked for when starting a session. */
 export interface SessionSpec {
@@ -112,6 +121,32 @@ export interface FocusOutcome {
 export interface AdapterStatus {
   claude: { connected: boolean; port: number; events: number; binaryFound: boolean };
   codex: { connected: boolean; url: string; events: number; binaryFound: boolean };
+  /**
+   * Grok has nothing to connect to. Its status comes from tailing each
+   * session's own event log, so the only thing that can be missing is the CLI
+   * itself -- hence a count of what is being followed rather than a
+   * connection flag the other two need.
+   */
+  grok: { watching: number; events: number; binaryFound: boolean };
+}
+
+/**
+ * What the application menu needs in order to disable what cannot act.
+ *
+ * The renderer is the only honest source: it owns which session is focused,
+ * what order the list is in, and whether a split is up -- and `⌘1…9` addresses
+ * panes rather than sessions while one is. Main holds the menu but knows none
+ * of that, so the renderer states the conclusions rather than the inputs.
+ */
+export interface MenuState {
+  /** Sessions that exist. */
+  count: number;
+  /** A session is focused, so the per-session commands have a target. */
+  hasActive: boolean;
+  /** That session still has a live process to interrupt or stop. */
+  activeRunning: boolean;
+  /** Highest N that `⌘N` can actually reach — panes when a split is up. */
+  gotoLimit: number;
 }
 
 /** What auto-detection found for one agent, ignoring any saved override. */
@@ -256,7 +291,7 @@ export interface Settings {
    * means "keep auto-detecting" -- this is what Settings clears a field back
    * to, not a sentinel some other part of the app has to know about.
    */
-  agentBinaryPaths: { claude: string; codex: string };
+  agentBinaryPaths: Record<ManagedAgent, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -269,7 +304,7 @@ export const DEFAULT_SETTINGS: Settings = {
   uiFontSize: 13,
   sidebarWidth: 280,
   showChips: true,
-  agentBinaryPaths: { claude: '', codex: '' },
+  agentBinaryPaths: { claude: '', codex: '', grok: '' },
 };
 
 /**
@@ -349,7 +384,7 @@ export interface SertumApi {
    * Runs auto-detection for one agent right now, ignoring any saved override
    * -- what Settings' "Detect" button and manual-path validation both call.
    */
-  detectAgentBinary(agent: 'claude' | 'codex'): Promise<BinaryDetection>;
+  detectAgentBinary(agent: ManagedAgent): Promise<BinaryDetection>;
   /** Absolute path used when a session does not specify one. */
   defaultCwd(): Promise<string>;
   /** Validates a folder before we try to spawn an agent in it. */

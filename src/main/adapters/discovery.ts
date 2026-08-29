@@ -150,12 +150,16 @@ function socketFor(pid: number): string | null {
 // ------------------------------------------------------- process-table pass
 
 /**
- * Covers every agent that has no roster API of its own -- Codex today. Yields
- * less detail than a vendor source, but enough to list a session, summarise it
- * from its transcript, and raise the window that owns it.
+ * Covers every agent that has no roster API of its own -- Codex and Grok
+ * today. Yields less detail than a vendor source, but enough to list a
+ * session, summarise it from its transcript, and raise the window that owns
+ * it.
  *
- * When the Codex app-server adapter lands it becomes a richer discoverer
- * registered ahead of this one, and this stays as the fallback.
+ * Neither agent's own plumbing reaches backward to sessions started
+ * elsewhere: the Codex app server describes only threads we opened, and Grok
+ * names a session for us only when we spawn it. Teaching either to answer for
+ * a session it did not start would make it a richer discoverer registered
+ * ahead of this one, and this stays as the fallback.
  */
 const processDiscoverer: AgentDiscoverer = {
   agent: 'codex',
