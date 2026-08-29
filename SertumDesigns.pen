@@ -33870,7 +33870,7 @@
                   "fill": "$ink2",
                   "textGrowth": "fixed-width",
                   "width": 640,
-                  "content": "Prefilled from the diff. The message is editable and the agent's own summary is offered as a starting point rather than committed silently.",
+                  "content": "The message is typed here — Sertum never invents one. Commit and push are separate outcomes: a commit that lands with a push that fails says so rather than reading as work lost.",
                   "lineHeight": 1.4,
                   "fontFamily": "$fUI",
                   "fontSize": 11,
@@ -33969,35 +33969,6 @@
                               "fontFamily": "$fMono",
                               "fontSize": 10,
                               "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "xdKIS",
-                              "name": "Btn Review…",
-                              "fill": "#00000000",
-                              "cornerRadius": 5,
-                              "stroke": "#00000000",
-                              "strokeWidth": 1,
-                              "gap": 5,
-                              "padding": [
-                                7,
-                                13
-                              ],
-                              "justifyContent": "center",
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "lSI0y",
-                                  "name": "t",
-                                  "fill": "$ink",
-                                  "content": "Review…",
-                                  "lineHeight": 1.4,
-                                  "fontFamily": "$fUI",
-                                  "fontSize": 11,
-                                  "fontWeight": "600"
-                                }
-                              ]
                             }
                           ]
                         },
@@ -34039,10 +34010,10 @@
                                   "type": "text",
                                   "id": "r19kGB",
                                   "name": "t",
-                                  "fill": "$ink",
+                                  "fill": "$muted",
                                   "textGrowth": "fixed-width",
                                   "width": 400,
-                                  "content": "Normalize infix search terms on write\n\nAdds StripDiacritics and an infix cache, plus a backfill\nmigration over the existing 2.1M product rows.",
+                                  "content": "Summary line\n\nOptional body explaining why.",
                                   "lineHeight": 1.4,
                                   "fontFamily": "$fUI",
                                   "fontSize": 11,
@@ -34100,47 +34071,18 @@
                               "fill": "$bg",
                               "width": 13,
                               "height": 13,
-                              "stroke": "$line",
+                              "stroke": "$muted",
                               "strokeWidth": 1
                             },
                             {
                               "type": "text",
                               "id": "RmSJD",
                               "name": "t",
-                              "fill": "$ink2",
+                              "fill": "$muted",
                               "content": "Open a pull request after pushing",
                               "lineHeight": 1.4,
                               "fontFamily": "$fUI",
                               "fontSize": 11,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "IQF4m",
-                          "name": "Row",
-                          "fill": "#00000000",
-                          "gap": 7,
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "ellipse",
-                              "id": "dd1wy",
-                              "name": "Dot",
-                              "fill": "$warn",
-                              "width": 7,
-                              "height": 7
-                            },
-                            {
-                              "type": "text",
-                              "id": "jjph0",
-                              "name": "t",
-                              "fill": "$muted",
-                              "content": "Co-authored-by trailer will be added for the agent.",
-                              "lineHeight": 1.4,
-                              "fontFamily": "$fUI",
-                              "fontSize": 10,
                               "fontWeight": "normal"
                             }
                           ]
@@ -34265,7 +34207,7 @@
                           "fill": "$ink2",
                           "textGrowth": "fixed-width",
                           "width": 300,
-                          "content": "Review… → C11 with these files",
+                          "content": "Files staged and +/− are read from Git, never from the agent",
                           "lineHeight": 1.4,
                           "fontFamily": "$fUI",
                           "fontSize": 11,
@@ -34311,7 +34253,7 @@
                           "fill": "$ink2",
                           "textGrowth": "fixed-width",
                           "width": 300,
-                          "content": "Open a pull request after pushing → chains into C16 on success",
+                          "content": "Open a pull request after pushing → C16 is not built; the checkbox renders disabled carrying that reason",
                           "lineHeight": 1.4,
                           "fontFamily": "$fUI",
                           "fontSize": 11,
@@ -34357,7 +34299,7 @@
                           "fill": "$ink2",
                           "textGrowth": "fixed-width",
                           "width": 300,
-                          "content": "Commit & push → C21 success toast with the commit sha and a View on GitHub link",
+                          "content": "Commit → the sheet closes and C11 re-reads its inventory from Git",
                           "lineHeight": 1.4,
                           "fontFamily": "$fUI",
                           "fontSize": 11,
@@ -34403,7 +34345,7 @@
                           "fill": "$ink2",
                           "textGrowth": "fixed-width",
                           "width": 300,
-                          "content": "Push rejected → C21 error toast with Pull & rebase / Force push options",
+                          "content": "Push rejected → the sheet stays open: \"Committed <sha>. Not pushed — <reason>\"",
                           "lineHeight": 1.4,
                           "fontFamily": "$fUI",
                           "fontSize": 11,
