@@ -1,4 +1,9 @@
-import { DEFAULT_SETTINGS, type Settings, type TabPlacement } from '../shared/types';
+import {
+  DEFAULT_SETTINGS,
+  type ManagedAgent,
+  type Settings,
+  type TabPlacement,
+} from '../shared/types';
 
 const api = window.sertum;
 
@@ -92,9 +97,10 @@ export function openSettingsDialog(
     // -------------------------------------------------------- agents
     dlg.append(sectionHead('Agents'));
 
-    const AGENT_FIELDS: Array<{ key: 'claude' | 'codex'; label: string }> = [
+    const AGENT_FIELDS: Array<{ key: ManagedAgent; label: string }> = [
       { key: 'claude', label: 'Claude Code' },
       { key: 'codex', label: 'Codex' },
+      { key: 'grok', label: 'Grok' },
     ];
 
     for (const a of AGENT_FIELDS) {

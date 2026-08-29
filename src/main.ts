@@ -7,13 +7,18 @@ import {
   Menu,
   shell,
 } from 'electron';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { PtyManager } from './main/pty-manager';
 import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
-import { buildClaudeSettings, mapClaudeHook } from './main/adapters/claude';
+import {
+  buildClaudeSettings,
+  mapClaudeHook,
+  type StatusUpdate,
+} from './main/adapters/claude';
 import {
   CodexAppServer,
   reapStrayAppServers,
@@ -37,6 +42,11 @@ import {
   type CodexThreadStatus,
 } from './main/adapters/codex';
 import { discoverSessions } from './main/adapters/discovery';
+import { mapGrokEvent } from './main/adapters/grok';
+import {
+  GrokEventLog,
+  type GrokEventArrival,
+} from './main/adapters/grok-event-log';
 import {
   readConfiguredModel,
   readSessionMeta,
@@ -49,6 +59,8 @@ import { focusExternalSession } from './main/adapters/window-focus';
 import type {
   AgentKind,
   BinaryDetection,
+  ManagedAgent,
+  MenuState,
   DiscoveredSession,
   SessionSnapshot,
   SessionStatus,
@@ -83,6 +95,25 @@ const hooks = new HookServer();
 const codex = new CodexAppServer(
   () => getSettings().agentBinaryPaths.codex || resolveCodexBinary(),
 );
+
+/**
+ * Plane 2 wiring for Grok: it pushes nothing, but it writes a structured
+ * event log per session and lets us name the session before it starts, so
+ * following that log is attributable to exactly one pane.
+ */
+const grokEvents = new GrokEventLog();
+
+/**
+ * The Grok session id minted for a spawn that has not happened yet.
+ *
+ * The id has to be chosen while the argument list is being built, which is
+ * before node-pty is asked for a process -- so binding the log there would
+ * leave a watcher polling for a session that never started every time a spawn
+ * fails. One slot rather than a map: `create` is synchronous, so at most one
+ * spawn is ever mid-flight, and the id check on collection means a spawn that
+ * threw can never have its leftover claimed by the next session.
+ */
+let mintedGrokSession: { sessionId: string; grokSessionId: string } | null = null;
 
 /**
  * One implementation per agent of everything the UI can ask of a session.
@@ -120,7 +151,43 @@ const ptys = new PtyManager((id, spec) => {
     };
   }
 
+  // Grok has no way to be told where to report, but `--session-id` lets us
+  // name the session up front -- which is the same property the per-session
+  // hook URL buys for Claude, arrived at from the other direction.
+  if (spec.agent === 'grok') {
+    const grokSessionId = randomUUID();
+    mintedGrokSession = { sessionId: id, grokSessionId };
+    return {
+      args: [...spec.args, '--session-id', grokSessionId],
+      adapterBound: true,
+    };
+  }
+
   return {};
+});
+
+grokEvents.on('events', (arrival: GrokEventArrival) => {
+  const { sessionId, grokSessionId, events } = arrival;
+
+  // One update per batch. Grok emits hundreds of records a turn and most
+  // carry no news; more to the point, an auto-approved tool asks and is
+  // granted within the same millisecond, so applying each in turn would flash
+  // "approval needed" for a permission nobody was ever asked about. The last
+  // word in a batch is the one still true. See GrokEventArrival.
+  const folded: StatusUpdate = {};
+  let model: string | undefined;
+  for (const event of events) {
+    const update = mapGrokEvent(event);
+    if (update.status) folded.status = update.status;
+    if (update.activity) folded.activity = update.activity;
+    // turn_started opens every turn and names the model, so a Grok pane
+    // learns what it is running from the agent itself rather than from a
+    // config file that may not describe this session.
+    if (typeof event.model_id === 'string') model = event.model_id;
+  }
+
+  if (folded.status || folded.activity) ptys.applyUpdate(sessionId, folded);
+  ptys.applyMeta(sessionId, { externalId: grokSessionId, model });
 });
 
 /** Thread id -> session id, for routing later status changes. */
@@ -287,8 +354,13 @@ const broadcast = (channel: string, payload: unknown) => {
   }
 };
 
+ipcMain.on('menu:state', (_e, state: MenuState) => applyMenuState(state));
+
 ptys.on('data', (e) => broadcast('pty:data', e));
-ptys.on('exit', (e) => broadcast('pty:exit', e));
+ptys.on('exit', (e) => {
+  grokEvents.unbind(e.id);
+  broadcast('pty:exit', e);
+});
 ptys.on('session-updated', (s) => broadcast('session:updated', s));
 
 ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
@@ -299,6 +371,13 @@ ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
     ...spec,
     command: resolvedCommand(spec.agent, spec.command),
   });
+  // The spawn succeeded, so there is now a process whose log is worth
+  // following. See mintedGrokSession.
+  if (mintedGrokSession?.sessionId === snapshot.id) {
+    grokEvents.bind(snapshot.id, mintedGrokSession.grokSessionId);
+    mintedGrokSession = null;
+  }
+
   // Claude never reports its model on a live session, so record what its
   // configuration says it will use.
   const model = readConfiguredModel(snapshot.agent);
@@ -429,10 +508,15 @@ ipcMain.handle('adapters:status', () => ({
     events: codex.eventCount,
     binaryFound: binaryFound('codex'),
   },
+  grok: {
+    watching: grokEvents.watching,
+    events: grokEvents.eventCount,
+    binaryFound: binaryFound('grok'),
+  },
 }));
 ipcMain.handle(
   'agent:detect',
-  (_e, agent: 'claude' | 'codex'): BinaryDetection => {
+  (_e, agent: ManagedAgent): BinaryDetection => {
     // Auto-detection only -- a saved override is deliberately not consulted
     // here, so this always answers "what would Sertum find on its own?",
     // which is what both the Settings "Detect" button and validating a
@@ -571,7 +655,7 @@ function resolvedCommand(
   if (!agent) return undefined;
   // A saved override always wins over auto-detection: it exists precisely for
   // the case where detection guessed wrong, so it must not be second-guessed.
-  if (agent === 'claude' || agent === 'codex') {
+  if (agent !== 'shell') {
     const override = getSettings().agentBinaryPaths[agent];
     if (override) return override;
   }
@@ -584,7 +668,7 @@ function resolvedCommand(
  * status bar (`adapters:status`) and the Settings "Detect" affordance
  * (`agent:detect`), so both report exactly the same fact.
  */
-function binaryFound(agent: 'claude' | 'codex'): boolean {
+function binaryFound(agent: ManagedAgent): boolean {
   const cmd = resolvedCommand(agent);
   if (!cmd) return false;
   try {
@@ -626,6 +710,7 @@ function shutdown(): void {
   // possible from inside a dying process, so the next launch verifies and
   // reaps whatever actually survived -- and drops the record when nothing did.
   codex.stop();
+  grokEvents.stopAll();
 }
 
 app.on('before-quit', shutdown);
@@ -661,7 +746,7 @@ function buildMenu() {
       {
         label: 'Settings…',
         accelerator: 'CmdOrCtrl+,',
-        click: send('settings'),
+        click: send('menu:settings'),
       },
       { type: 'separator' },
       { role: 'services' },
@@ -698,11 +783,25 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+Shift+W',
           click: send('menu:worktrees'),
         },
+        // macOS keeps Settings in the app menu; every other platform has no
+        // app menu, so File is where it belongs and where Ctrl+, is bound.
+        ...(isMac
+          ? []
+          : ([
+              { type: 'separator' },
+              {
+                label: 'Settings…',
+                accelerator: 'CmdOrCtrl+,',
+                click: send('menu:settings'),
+              },
+            ] as Electron.MenuItemConstructorOptions[])),
         { type: 'separator' },
         {
+          id: 'file-close-tab',
           label: 'Close Tab',
           accelerator: 'CmdOrCtrl+W',
           click: send('menu:close-tab'),
+          enabled: false,
         },
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
@@ -713,33 +812,53 @@ function buildMenu() {
         // No accelerator: D2 draws this as Enter, but that is Enter on a
         // focused sidebar row, and a menu accelerator would swallow every
         // Enter in the app -- including keystrokes meant for the terminal.
-        { label: 'Rename…', click: send('menu:rename') },
+        {
+          id: 'session-rename',
+          label: 'Rename…',
+          click: send('menu:rename'),
+          enabled: false,
+        },
         { type: 'separator' },
         {
+          id: 'session-interrupt',
           label: 'Interrupt Turn',
           accelerator: 'CmdOrCtrl+.',
           click: send('menu:interrupt'),
+          enabled: false,
         },
-        { label: 'Stop Session', click: send('menu:stop') },
+        {
+          id: 'session-stop',
+          label: 'Stop Session',
+          click: send('menu:stop'),
+          enabled: false,
+        },
         { type: 'separator' },
         // Moving between sessions is a property of the list, not of any
         // agent, so these behave identically for Claude, Codex and a shell.
         {
+          id: 'session-next',
           label: 'Next Session',
           accelerator: 'CmdOrCtrl+Shift+]',
           click: send('menu:next-session'),
+          enabled: false,
         },
         {
+          id: 'session-prev',
           label: 'Previous Session',
           accelerator: 'CmdOrCtrl+Shift+[',
           click: send('menu:prev-session'),
+          enabled: false,
         },
         {
+          id: 'session-goto',
           label: 'Go to Session',
+          enabled: false,
           submenu: Array.from({ length: 9 }, (_, i) => ({
+            id: `session-goto-${i + 1}`,
             label: `Session ${i + 1}`,
             accelerator: `CmdOrCtrl+${i + 1}`,
             click: send(`menu:goto-session-${i + 1}`),
+            enabled: false,
           })),
         },
         { type: 'separator' },
@@ -866,4 +985,37 @@ function buildMenu() {
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * Greys out the commands that have nothing to act on.
+ *
+ * Every session command is a no-op without a session, and the renderer's
+ * handlers already guard on that -- so before this the whole Session menu
+ * looked live with nothing open and silently did nothing when clicked, which
+ * is the one thing a menu must never do. Items are built disabled and enabled
+ * from here, so there is no flash of a live-looking menu at startup either.
+ *
+ * Toggling the built items rather than rebuilding the menu: a rebuild on every
+ * session event would run hundreds of times during a single turn, and the
+ * renderer only sends this when the answer actually changes.
+ */
+function applyMenuState(state: MenuState): void {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return;
+  const set = (id: string, enabled: boolean) => {
+    const item = menu.getMenuItemById(id);
+    if (item) item.enabled = enabled;
+  };
+
+  set('file-close-tab', state.hasActive);
+  set('session-rename', state.hasActive);
+  // Interrupting or stopping needs a live process, not merely a selected row.
+  set('session-interrupt', state.activeRunning);
+  set('session-stop', state.activeRunning);
+  // With one session, next and previous both land back on it.
+  set('session-next', state.count > 1);
+  set('session-prev', state.count > 1);
+  set('session-goto', state.gotoLimit > 0);
+  for (let n = 1; n <= 9; n += 1) set(`session-goto-${n}`, n <= state.gotoLimit);
 }

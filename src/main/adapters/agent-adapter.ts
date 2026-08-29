@@ -141,12 +141,46 @@ class ClaudeAdapter extends InertAgentAdapter {
   }
 }
 
+/**
+ * Grok keeps a session's name in its own store and offers no way to set one
+ * from outside -- `--resume` matches a title but nothing writes it -- so the
+ * local label is the whole truth here, exactly as it is for Claude.
+ */
+class GrokAdapter extends InertAgentAdapter {
+  constructor() {
+    super('grok');
+  }
+
+  // The installer puts Grok in its own home rather than on PATH: a fresh
+  // install is reachable as ~/.grok/bin/grok and nowhere else, so checking
+  // there first is what makes a session start at all on a default setup.
+  resolveBinary(): string {
+    const home = os.homedir();
+    if (process.platform === 'win32') {
+      return (
+        firstExecutable([path.join(home, '.grok', 'bin', 'grok.exe')]) ??
+        resolveOnWindowsPath('grok') ??
+        'grok.exe'
+      );
+    }
+    return (
+      firstExecutable([
+        path.join(home, '.grok', 'bin', 'grok'),
+        path.join(home, '.local', 'bin', 'grok'),
+        '/opt/homebrew/bin/grok',
+        '/usr/local/bin/grok',
+      ]) ?? 'grok'
+    );
+  }
+}
+
 export function createAgentAdapters(deps: {
   codex: CodexAppServer;
 }): Map<AgentKind, AgentAdapter> {
   return new Map<AgentKind, AgentAdapter>([
     ['claude', new ClaudeAdapter()],
     ['codex', new CodexAdapter(deps.codex)],
+    ['grok', new GrokAdapter()],
     ['shell', new InertAgentAdapter('shell')],
   ]);
 }

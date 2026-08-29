@@ -17,6 +17,7 @@ import type { AgentKind } from '../shared/types';
 const AGENT_NAMES: Record<AgentKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  grok: 'Grok',
   shell: 'Shell',
 };
 
@@ -31,6 +32,7 @@ export type ModelFamily =
   | 'haiku'
   | 'gpt'
   | 'gemini'
+  | 'grok'
   | 'other';
 
 /** Effort levels, ordered. Index doubles as the meter fill count. */
@@ -43,6 +45,7 @@ export function modelFamily(model: string): ModelFamily {
   if (m.includes('sonnet')) return 'sonnet';
   if (m.includes('haiku')) return 'haiku';
   if (m.includes('gemini')) return 'gemini';
+  if (m.includes('grok')) return 'grok';
   if (m.includes('gpt') || m.includes('codex') || m.startsWith('o')) return 'gpt';
   return 'other';
 }
@@ -62,6 +65,7 @@ export function modelMark(model: string): string {
     haiku: 'Ha',
     gpt: 'Gp',
     gemini: 'Gm',
+    grok: 'Gr',
     other: '··',
   };
   // Bracketed annotations carry context-window sizes, not versions: without

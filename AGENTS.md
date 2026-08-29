@@ -23,8 +23,8 @@ When changing the project:
 
 One window for every coding agent you have running.
 
-A desktop GUI that manages multiple AI coding agents — Claude Code and Codex —
-across separate working folders and git worktrees, with a live embedded
+A desktop GUI that manages multiple AI coding agents — Claude Code, Codex and
+Grok — across separate working folders and git worktrees, with a live embedded
 terminal per session and status you can trust at a glance.
 
 Design source of truth: `SertumDesigns.pen`, tracked at the repo root and
@@ -39,7 +39,7 @@ job:
 | Plane | Owns | Implementation |
 |---|---|---|
 | **1 — pixels** | Characters in, characters out | `node-pty` per session, rendered by `@xterm/xterm`. Never parsed for meaning. |
-| **2 — truth** | What each agent is actually doing | Adapter events. Claude Code hooks and Codex app-server JSON-RPC: **both done**. |
+| **2 — truth** | What each agent is actually doing | Adapter events. Claude Code hooks, Codex app-server JSON-RPC, Grok per-session event log: **all three done**. |
 
 A tab badge turns amber because the agent *said* it needs input — not because
 its pixels stopped moving.
@@ -62,6 +62,9 @@ What's built and verified so far:
       driven over JSON-RPC (`thread/status/changed`, mapped by
       `mapCodexStatus`); the TUI still renders for real while status arrives
       out-of-band
+- [x] **Plane 2 for Grok** — the session is named with `--session-id` at spawn,
+      then its own `events.jsonl` is tailed and mapped by `mapGrokEvent`;
+      verified end to end against a real turn
 - [x] **Adopting sessions started elsewhere** — discovery, transcript
       summaries, and raising the owning OS window
 - [x] **Worktree management** (wireframe C9) — inventory of what exists on
@@ -111,6 +114,55 @@ The dot moves because the agent said so — never because output went quiet.
 Late events for an exited process are ignored, so a dead session's dot cannot
 be resurrected.
 
+### Plane 2 for Grok: name the session, then read its log
+
+Grok offers neither of the other two routes -- there is no `--settings` to
+point at an endpoint, and its hooks come from project files rather than
+per-session configuration. What it does offer is `--session-id`, which names a
+*new* session up front, and a structured event log per session on disk:
+
+```
+~/.grok/sessions/<uri-encoded cwd>/<session-id>/events.jsonl
+```
+
+Choosing the id at spawn buys exactly what the per-session hook URL buys for
+Claude: an arriving event belongs to one pane, with no correlation guesswork.
+The session is located by scanning for that id rather than by rebuilding the
+encoded folder name, so a change in how Grok names the folder above it cannot
+break the binding.
+
+Reading that log is not the thing the two planes forbid. What is forbidden is
+inferring state from the pixels a TUI draws; `events.jsonl` is the agent's own
+account of what it is doing, the same class of source as a hook payload.
+
+Observed transitions for one real turn ("what is 2 plus 2"), all log-driven:
+
+| Event | Status | Activity |
+|---|---|---|
+| `mcp_init_completed` | `idle` | ready |
+| `turn_started` (carries `model_id`) | `working` | thinking |
+| `phase_changed: streaming_reasoning` | `working` | reasoning |
+| `phase_changed: streaming_text` | `working` | responding |
+| `tool_started` / `tool_completed` | `working` | `list_dir…` / `list_dir` |
+| `permission_requested` | `needs-input` | approve `list_dir`? |
+| `turn_ended` | `idle` | turn finished |
+
+**A poll, and one update per batch.** The log is followed on a 300ms poll
+rather than with `fs.watch`: the file does not exist for a beat after spawn,
+watch semantics differ by platform, and a turn is enormously chatty -- one
+recorded turn wrote 1776 records, of which 1736 were `phase_changed`.
+Coalescing is the point, not a compromise. Replaying that turn one event at a
+time turns the tab amber nine times for `permission_prompt`, every one of them
+a tool auto-approved in the same millisecond that it was requested; folding
+each batch to its last word yields ten honest updates and no false "needs
+you". A prompt genuinely waiting has no resolution behind it, so it survives
+the fold.
+
+Grok records no token accounting anywhere, so the context chip stays empty for
+its sessions rather than showing an estimate. Model comes from
+`turn_started`; effort from the transcript, where it is stamped on every
+assistant turn.
+
 ## Adopting sessions started outside the app
 
 A PTY's master file descriptor belongs to whoever spawned it. A session started
@@ -125,6 +177,7 @@ What is possible splits in two, and the UI says which you are getting:
 | `claude --bg` (daemon-hosted) | ✓ | ✓ | ✓ | ✓ `claude attach` | n/a |
 | Interactive claude in another terminal | ✓ | ✓ | ✓ polled | ✗ | ✓ |
 | Codex in another terminal | ✓ | ✓ | ✓ polled | ✗ | ✓ |
+| Grok in another terminal | ✓ | ✓ | ✓ polled | ✗ | ✓ |
 | Started inside tmux | ✓ | ✓ | ✓ | ✓ (planned) | ✓ |
 
 Clicking a monitored row raises the exact terminal tab that owns it. On macOS
@@ -168,12 +221,13 @@ are tried richest-first and merged by pid:
 
 - **claude** — `claude agents --json` gives session id, name and live status
 - **process scan** — walks the process table for any known agent binary, so
-  Codex works today with no vendor API; adding an agent is one row in
+  Codex and Grok work today with no vendor API; adding an agent is one row in
   `AGENT_COMMANDS`
 
 Summaries come from each agent's own transcript, which is on disk regardless of
-who owns the process — `~/.claude/projects/**/<id>.jsonl` and
-`~/.codex/sessions/**/rollout-*.jsonl`. Only the tail is read.
+who owns the process — `~/.claude/projects/**/<id>.jsonl`,
+`~/.codex/sessions/**/rollout-*.jsonl` and
+`~/.grok/sessions/**/<id>/chat_history.jsonl`. Only the tail is read.
 
 Codex's own app-server already drives live status for sessions Sertum starts
 (Plane 2, above), but that connection doesn't yet reach backward to describe
@@ -384,6 +438,14 @@ fixed along the way:
   error vanish. Settings > Agents (Detect / Browse... / a manual per-agent
   path override) and a status-bar "Claude Code not found" / "Codex not
   found" readout make a missing binary diagnosable rather than mysterious.
+- **Grok installs outside PATH entirely.** `where grok` finds nothing on a
+  default install: the CLI lives at `~/.grok/bin/grok.exe` and the installer
+  does not add it to PATH, so the PATH × PATHEXT search every other agent
+  relies on has nothing to find. `GrokAdapter.resolveBinary()` therefore
+  checks that location first and keeps the PATH walk as the fallback, which is
+  the same shape as the Claude and Codex resolvers with the candidate list
+  carrying the weight. Verified on Windows 11: a session spawns from that
+  location with no PATH entry for the command present at all.
 - **`npm start` in dev mode shows Electron's own icon, not Sertum's.**
   `npm start` runs the bare `electron.exe`/`Electron.app` binary, which
   carries Electron's generic icon; a packaged build is its own icon-bearing
@@ -455,6 +517,8 @@ src/
   main/adapters/claude.ts     Hook settings builder + event to status mapping
   main/adapters/codex.ts      Codex thread status/summary mapping
   main/adapters/codex-app-server.ts  Codex's private app-server: spawn, JSON-RPC, reap
+  main/adapters/grok.ts       Grok event to status mapping, session-dir lookup
+  main/adapters/grok-event-log.ts  Plane 2 ingress for Grok: tails events.jsonl
   main/adapters/discovery.ts  Agent-agnostic discoverer registry
   main/adapters/process-scan.ts  Universal agent-process scanner
   main/adapters/session-meta.ts  Model/effort/context read from a live transcript

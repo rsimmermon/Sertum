@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentKind } from '../../shared/types';
+import { findGrokSessionDir, findGrokSessionDirForCwd } from './grok';
 
 /** Only the tail is read: transcripts reach megabytes. */
 const TAIL_BYTES = 96 * 1024;
@@ -24,23 +25,20 @@ const EMPTY: TranscriptSummary = {
  * Describes what a session is doing by reading its own transcript.
  *
  * This is what lets a session we did not spawn still be summarised: the
- * transcript is on disk regardless of which terminal owns the process. Both
- * agents write JSONL, so only the record shape and file location differ.
+ * transcript is on disk regardless of which terminal owns the process. Every
+ * agent writes JSONL, so only the record shape and file location differ.
  */
 export function summarizeSession(
   agent: AgentKind,
   opts: { sessionId?: string | null; cwd?: string | null },
 ): TranscriptSummary {
-  const file =
-    agent === 'codex'
-      ? findCodexTranscript(opts.sessionId ?? null, opts.cwd ?? null)
-      : findClaudeTranscript(opts.sessionId ?? null, opts.cwd ?? null);
+  const file = findTranscript(agent, opts.sessionId ?? null, opts.cwd ?? null);
   if (!file) return EMPTY;
 
   const tail = readTail(file);
   if (!tail) return EMPTY;
 
-  const extract = agent === 'codex' ? extractCodex : extractClaude;
+  const extract = EXTRACTORS[agent] ?? extractClaude;
   let lastAssistant: string | null = null;
   let lastUser: string | null = null;
 
@@ -92,6 +90,39 @@ function extractCodex(rec: Record<string, unknown>): Extracted {
   return { role, text: joinText(payload.content) };
 }
 
+/**
+ * Grok writes the role as the record's own `type`, and marks the context it
+ * injects rather than leaving it to be recognised: `synthetic_reason` covers
+ * its system reminders, and the environment preamble is the one unmarked
+ * injection, identified by the tag it opens with.
+ */
+function extractGrok(rec: Record<string, unknown>): Extracted {
+  const type = rec.type;
+  if (type !== 'user' && type !== 'assistant') return null;
+  if (typeof rec.synthetic_reason === 'string' && rec.synthetic_reason) return null;
+
+  const text = joinText(rec.content).trim();
+  if (type === 'assistant') return { role: 'assistant', text };
+  if (text.startsWith('<user_info>')) return null;
+  return { role: 'user', text: unwrapUserQuery(text) };
+}
+
+/** Grok wraps what the user typed; the tags are ours to strip, not to show. */
+function unwrapUserQuery(text: string): string {
+  const open = '<user_query>';
+  const close = '</user_query>';
+  if (!text.startsWith(open)) return text;
+  const end = text.lastIndexOf(close);
+  const inner = end === -1 ? text.slice(open.length) : text.slice(open.length, end);
+  return inner.trim();
+}
+
+const EXTRACTORS: Partial<Record<AgentKind, (rec: Record<string, unknown>) => Extracted>> = {
+  claude: extractClaude,
+  codex: extractCodex,
+  grok: extractGrok,
+};
+
 function joinText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -106,6 +137,42 @@ function joinText(content: unknown): string {
 }
 
 // -------------------------------------------------------------- locating
+
+/** One place that knows which agent keeps its transcripts where. */
+function findTranscript(
+  agent: AgentKind,
+  sessionId: string | null,
+  cwd: string | null,
+): string | null {
+  switch (agent) {
+    case 'codex':
+      return findCodexTranscript(sessionId, cwd);
+    case 'grok':
+      return findGrokTranscript(sessionId, cwd);
+    default:
+      return findClaudeTranscript(sessionId, cwd);
+  }
+}
+
+/**
+ * Grok files are `sessions/<uri-encoded cwd>/<session-id>/chat_history.jsonl`,
+ * one directory per session rather than one file. Both lookups are directory
+ * lookups in grok.ts, which finds a session by id without reproducing the
+ * encoding of the folder above it.
+ */
+function findGrokTranscript(
+  sessionId: string | null,
+  cwd: string | null,
+): string | null {
+  const dir = sessionId
+    ? findGrokSessionDir(sessionId)
+    : cwd
+      ? findGrokSessionDirForCwd(cwd)
+      : null;
+  if (!dir) return null;
+  const file = path.join(dir, 'chat_history.jsonl');
+  return isFile(file) ? file : null;
+}
 
 function findClaudeTranscript(
   sessionId: string | null,
@@ -313,9 +380,7 @@ export function findTranscriptForSession(
   sessionId: string | null,
   cwd: string | null,
 ): string | null {
-  return agent === 'codex'
-    ? findCodexTranscript(sessionId, cwd)
-    : findClaudeTranscript(sessionId, cwd);
+  return findTranscript(agent, sessionId, cwd);
 }
 
 export function findTranscriptForCwd(
@@ -324,10 +389,7 @@ export function findTranscriptForCwd(
   startedAt?: number,
 ): string | null {
   if (!cwd) return null;
-  const file =
-    agent === 'codex'
-      ? findCodexTranscript(null, cwd)
-      : findClaudeTranscript(null, cwd);
+  const file = findTranscript(agent, null, cwd);
   if (!file) return null;
 
   // A transcript last written before this session began belongs to a previous

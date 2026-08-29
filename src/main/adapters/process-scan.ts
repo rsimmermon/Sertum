@@ -27,6 +27,9 @@ const AGENT_COMMANDS: Array<{
   // `codex app-server` is the JSON-RPC plumbing this app spawns for itself
   // (see codex-app-server.ts), not a session anyone opened.
   { agent: 'codex', match: /(^|\/)codex$/, reject: /^app-server(\s|$)/ },
+  // Grok's subagents run as a separate `agent` binary in the same folder, so
+  // they never reach this list -- only sessions a user opened do.
+  { agent: 'grok', match: /(^|\/)grok$/ },
 ];
 
 /**
@@ -115,7 +118,7 @@ async function scanWindows(): Promise<ScannedProcess[]> {
       [
         '-NoProfile',
         '-Command',
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(claude|codex)(\\.exe)?$' -and $_.CommandLine -notmatch '\\bapp-server\\b' } | Select-Object ProcessId,Name | ConvertTo-Json -Compress",
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(claude|codex|grok)(\\.exe)?$' -and $_.CommandLine -notmatch '\\bapp-server\\b' } | Select-Object ProcessId,Name | ConvertTo-Json -Compress",
       ],
       { timeout: 8000 },
     );
@@ -126,7 +129,11 @@ async function scanWindows(): Promise<ScannedProcess[]> {
       const pid = Number(o.ProcessId);
       const name = String(o.Name ?? '').toLowerCase();
       if (!pid) return [];
-      const agent: AgentKind = name.startsWith('codex') ? 'codex' : 'claude';
+      const agent: AgentKind = name.startsWith('codex')
+        ? 'codex'
+        : name.startsWith('grok')
+          ? 'grok'
+          : 'claude';
       return [{ pid, agent, cwd: null, tty: null, startedAt: null }];
     });
   } catch {

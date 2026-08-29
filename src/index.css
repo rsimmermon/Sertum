@@ -38,6 +38,7 @@
   --m-haiku: #14b8a6;
   --m-gpt: #10b981;
   --m-gemini: #f59e0b;
+  --m-grok: #f43f5e;
   --m-other: #8b949e;
 
   /* Agent kind (which tool is driving the session), independent of the model
@@ -45,6 +46,7 @@
      above, so it deliberately avoids reusing their hues. */
   --agent-claude: #cc785c;
   --agent-codex: #4f46e5;
+  --agent-grok: #a21caf;
   --agent-shell: #6b7280;
 }
 
@@ -71,6 +73,7 @@
     --term-bg: #080c0e;
     --agent-claude: #e0916f;
     --agent-codex: #8583f5;
+    --agent-grok: #dd7fe8;
     --agent-shell: #8b96a3;
   }
 }
@@ -647,6 +650,7 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .chip.model.haiku { background: var(--m-haiku); }
 .chip.model.gpt { background: var(--m-gpt); }
 .chip.model.gemini { background: var(--m-gemini); }
+.chip.model.grok { background: var(--m-grok); }
 .chip.model.other { background: var(--m-other); }
 
 /* Effort reads as a level, so it is a meter rather than a word. */
@@ -747,6 +751,33 @@ input.field:focus { outline: none; border-color: var(--accent); }
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .sb-row.active .activity { color: var(--ink-2); }
+
+.sidebar-new-split { display: flex; margin: 8px; }
+.sidebar-new-split .sidebar-new {
+  margin: 0;
+  flex: 1;
+  border-right-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.sidebar-new-caret {
+  width: 28px;
+  flex: none;
+  border: 1px dashed var(--line);
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--size-list);
+  line-height: 1;
+  cursor: default;
+}
+.sidebar-new-caret:hover { border-color: var(--accent); color: var(--accent); }
+.sidebar-new-caret:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Hovering either half lights both, so the pair reads as one control. */
+.sidebar-new-split:hover .sidebar-new,
+.sidebar-new-split:hover .sidebar-new-caret { border-color: var(--accent); }
 
 .sidebar-new {
   margin: 8px;
@@ -983,6 +1014,59 @@ input.field:focus { outline: none; border-color: var(--accent); }
 }
 .ctx-sep { height: 1px; margin: 4px 5px; background: var(--line-soft); }
 
+/* ---------- agent picker ----------
+   Grouped, filterable, and honest about which CLIs are actually installed --
+   the segmented button row it replaces could express none of that, and ran
+   out of width at four agents. */
+.agent-picker { min-width: 248px; max-height: 60vh; overflow-y: auto; }
+.agent-list { display: flex; flex-direction: column; }
+.agent-group {
+  padding: 6px 9px 3px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.agent-row { width: 100%; }
+.agent-row-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The same hue the tab and sidebar stripes use, so an agent is recognisable
+   by colour before its name is read. */
+.agent-dot {
+  width: 8px; height: 8px; flex: none;
+  border-radius: 50%; background: var(--agent-shell);
+}
+.agent-dot.agent-claude { background: var(--agent-claude); }
+.agent-dot.agent-codex { background: var(--agent-codex); }
+.agent-dot.agent-grok { background: var(--agent-grok); }
+.agent-dot.agent-shell { background: var(--agent-shell); }
+.agent-row.on .agent-row-name { font-weight: 700; }
+/* Keyboard cursor, drawn like hover so both readings agree. */
+.ctx-item.cursor:not(:disabled) { background: var(--accent); color: #fff; }
+.ctx-item.cursor:not(:disabled) .ctx-accel { color: #ffffffb8; }
+.agent-missing { color: var(--warn); }
+.ctx-item.cursor .agent-missing { color: #ffffffd0; }
+.agent-empty { padding: 8px 9px; font-size: 12px; color: var(--muted); }
+.agent-filter {
+  padding: 5px 9px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+}
+.agent-filter-text.empty { color: var(--muted); font-family: var(--font-ui, inherit); }
+
+/* A field that opens a picker rather than taking typing. Sized like input.field
+   so the dialog's rows stay on one grid. */
+.field-select {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--bg); color: var(--ink);
+  font: inherit; font-size: var(--size-ui);
+  cursor: default; text-align: left;
+}
+.field-select:hover { border-color: var(--accent); }
+.field-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.field-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-select-caret { flex: none; color: var(--muted); }
+
 /* ---------- sidebar filter (wireframe B10) ---------- */
 .sb-find {
   margin-left: auto; flex: none;
@@ -1208,4 +1292,5 @@ select.field {
 .tab, .sb-row { border-left: 3px solid transparent; }
 .tab.agent-claude, .sb-row.agent-claude { border-left-color: var(--agent-claude); }
 .tab.agent-codex, .sb-row.agent-codex { border-left-color: var(--agent-codex); }
+.tab.agent-grok, .sb-row.agent-grok { border-left-color: var(--agent-grok); }
 .tab.agent-shell, .sb-row.agent-shell { border-left-color: var(--agent-shell); }
