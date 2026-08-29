@@ -28,6 +28,7 @@ import { noteAgentAvailability, openAgentPicker } from './agent-picker';
 import {
   DEFAULT_SETTINGS,
   PANE_COUNT,
+  type AgentCapabilities,
   type AgentKind,
   type MenuState,
   type PaneLayout,
@@ -131,6 +132,13 @@ export class App {
   /** A one-click way out of whatever `notice` is complaining about. */
   private noticeFix: { label: string; run: () => void } | null = null;
   private adapters: import('../shared/types').AdapterStatus | null = null;
+  /**
+   * Every agent's answer to every capability, read once at startup. The UI
+   * consults these before offering an action, so a declined capability is
+   * shown as declined -- with the adapter's own reason -- rather than found
+   * out by calling something that does nothing.
+   */
+  private capabilities: Record<AgentKind, AgentCapabilities> | null = null;
   private settings: Settings = { ...DEFAULT_SETTINGS };
 
   private el = {
@@ -268,6 +276,14 @@ export class App {
     };
     void pollAdapters();
     setInterval(() => void pollAdapters(), 4000);
+
+    // Capabilities are declared by the adapters and fixed for the app's life,
+    // unlike adapter health above, so one read is enough.
+    try {
+      this.capabilities = await api.agentCapabilities();
+    } catch {
+      this.capabilities = null;
+    }
 
     for (const s of await api.listSessions()) this.sessions.set(s.id, s);
     // Sessions outlive the renderer (reload, devtools). Re-select one, or the
@@ -1085,8 +1101,13 @@ export class App {
 
         const top = div('sb-top');
         top.append(agentBadge(s.agent, s.status));
+        // While the name is being edited, the activity line below says how
+        // far the new name will reach -- the one moment that answer matters.
+        const scope = this.renaming === s.id ? this.renameScope(s) : null;
         if (this.renaming === s.id) {
-          top.append(this.renameField(s));
+          const field = this.renameField(s);
+          if (scope) field.setAttribute('aria-describedby', `rename-scope-${s.id}`);
+          top.append(field);
         } else {
           top.append(text('span', s.label, 'name'));
         }
@@ -1122,7 +1143,13 @@ export class App {
         top.append(close);
 
         const bottom = div('sb-bottom');
-        bottom.append(text('span', s.activity ?? shortCwd(s.cwd), 'activity'));
+        if (scope) {
+          const hint = text('span', scope, 'activity rename-scope');
+          hint.id = `rename-scope-${s.id}`;
+          bottom.append(hint);
+        } else {
+          bottom.append(text('span', s.activity ?? shortCwd(s.cwd), 'activity'));
+        }
         const ctx = contextInfo(s);
         if (ctx) {
           const badge = text('span', `ctx ${ctx.label}`, `tm-ctx ${ctx.band}`);
@@ -1351,6 +1378,17 @@ export class App {
       onNewWorktree: (root) =>
         void this.promptNewSession(undefined, { cwd: root, isolation: 'new' }),
     });
+  }
+
+  /**
+   * How far a rename reaches, for the hint shown while editing -- or null
+   * when the agent mirrors the name too and there is nothing to warn about.
+   * The reason is the adapter's own; nothing here knows which agents decline.
+   */
+  private renameScope(s: SessionSnapshot): string | null {
+    const answer = this.capabilities?.[s.agent]['rename-remote'];
+    if (!answer || answer.ok) return null;
+    return `Renames here only — ${answer.reason}`;
   }
 
   /** Starts the inline rename from wireframe C3. */

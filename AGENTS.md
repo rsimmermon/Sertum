@@ -164,6 +164,37 @@ its sessions rather than showing an estimate. Model comes from
 `turn_started`; effort from the transcript, where it is stamped on every
 assistant turn.
 
+## Agent capabilities are declared, not discovered
+
+Everything the UI can do to a session that depends on which agent runs it
+goes through `AgentAdapter` (`src/main/adapters/agent-adapter.ts`), and each
+adapter answers every capability up front:
+
+```ts
+readonly capabilities: AgentCapabilities; // Record<AgentCapability, CapabilityAnswer>
+```
+
+`AgentCapability` is a union in `shared/types.ts`. Adding a name to it fails
+to compile until every adapter has answered `{ ok: true }` or
+`{ ok: false, reason }`, and two things follow from that:
+
+- **Declined is an answer, not an omission.** The reason is user-facing copy,
+  written once in the adapter, and the UI shows it at the moment it matters:
+  the sidebar's rename field says "Renames here only -- Claude Code has no
+  way to set a session's name from outside" before you type. Nothing in the
+  renderer branches on `AgentKind` to know this; it reads the answers once at
+  startup (`agentCapabilities`).
+- **A method is only called for a capability answered `ok`.** The
+  `session:rename` handler asks `renameRemote` of Codex, which declared it,
+  and never of Claude or Grok, which declined. A declining adapter keeps the
+  inert implementation and is never asked.
+
+The alternative -- optional fields on a per-agent record, or a `switch` that
+answers `null` for the agents nobody revisited -- is how a capability quietly
+stops working for most of a fleet with nobody noticing. Adding an agent means
+writing its answers and implementations here; adding a capability means
+adding one name and answering it for each agent.
+
 ## Adopting sessions started outside the app
 
 A PTY's master file descriptor belongs to whoever spawned it. A session started
@@ -514,7 +545,7 @@ src/
   main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
-  main/adapters/agent-adapter.ts   Per-agent capabilities: resolveBinary, renameRemote
+  main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search
   main/adapters/claude.ts     Hook settings builder + event to status mapping
   main/adapters/codex.ts      Codex thread status/summary mapping

@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentKind } from '../../shared/types';
+import type { AgentCapabilities, AgentKind } from '../../shared/types';
 import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
 import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 
@@ -26,10 +26,23 @@ export interface AgentSessionRef {
  * cannot.
  *
  * Adding an agent means adding one implementation here; adding a capability
- * means adding one method and answering it for each agent.
+ * means adding one name to `AgentCapability`, answering it in every adapter's
+ * `capabilities` record, and implementing it where the answer is yes.
  */
 export interface AgentAdapter {
   readonly agent: AgentKind;
+
+  /**
+   * What this agent can do, answered up front.
+   *
+   * The methods below are the implementations; this record is the
+   * declaration the UI reads before calling any of them, so a declined
+   * capability can be shown as declined -- with its reason -- rather than
+   * discovered by calling a method that does nothing. A method is only called
+   * for a capability answered `ok` here, which is what lets a declining
+   * adapter keep the inert implementation and never be asked.
+   */
+  readonly capabilities: AgentCapabilities;
 
   /**
    * Where this agent's executable actually lives.
@@ -48,9 +61,10 @@ export interface AgentAdapter {
    * Mirror a session's new name into the agent's own records.
    *
    * Sertum has already renamed the session locally by the time this runs, so
-   * the result only reports whether the agent now agrees. False means this
-   * agent has nowhere to keep a name — wireframe C3's "both stay in sync"
-   * simply does not apply to it.
+   * the result only reports whether the agent now agrees. Only called when
+   * `capabilities['rename-remote']` is ok; an agent with nowhere to keep a
+   * name says so there instead, and wireframe C3's "both stay in sync" simply
+   * does not apply to it.
    */
   renameRemote(session: AgentSessionRef, label: string): Promise<boolean>;
 }
@@ -58,10 +72,14 @@ export interface AgentAdapter {
 /**
  * An agent that holds no session state of its own, so every capability
  * declines. A plain shell is the pure case, and it is also the right base for
- * an agent that happens to support none of these yet.
+ * an agent that happens to support none of these yet. The answers are still
+ * passed in rather than assumed, so each agent's reasons are its own.
  */
 class InertAgentAdapter implements AgentAdapter {
-  constructor(readonly agent: AgentKind) {}
+  constructor(
+    readonly agent: AgentKind,
+    readonly capabilities: AgentCapabilities,
+  ) {}
 
   /** A shell is already an absolute path in the environment we inherited. */
   resolveBinary(): string {
@@ -80,6 +98,9 @@ class InertAgentAdapter implements AgentAdapter {
  */
 class CodexAdapter implements AgentAdapter {
   readonly agent: AgentKind = 'codex';
+  readonly capabilities: AgentCapabilities = {
+    'rename-remote': { ok: true },
+  };
 
   constructor(private server: CodexAppServer) {}
 
@@ -114,7 +135,12 @@ class CodexAdapter implements AgentAdapter {
  */
 class ClaudeAdapter extends InertAgentAdapter {
   constructor() {
-    super('claude');
+    super('claude', {
+      'rename-remote': {
+        ok: false,
+        reason: 'Claude Code has no way to set a session’s name from outside.',
+      },
+    });
   }
 
   resolveBinary(): string {
@@ -148,7 +174,12 @@ class ClaudeAdapter extends InertAgentAdapter {
  */
 class GrokAdapter extends InertAgentAdapter {
   constructor() {
-    super('grok');
+    super('grok', {
+      'rename-remote': {
+        ok: false,
+        reason: 'Grok has no way to set a session’s name from outside.',
+      },
+    });
   }
 
   // The installer puts Grok in its own home rather than on PATH: a fresh
@@ -181,6 +212,14 @@ export function createAgentAdapters(deps: {
     ['claude', new ClaudeAdapter()],
     ['codex', new CodexAdapter(deps.codex)],
     ['grok', new GrokAdapter()],
-    ['shell', new InertAgentAdapter('shell')],
+    [
+      'shell',
+      new InertAgentAdapter('shell', {
+        'rename-remote': {
+          ok: false,
+          reason: 'A shell has no session name of its own.',
+        },
+      }),
+    ],
   ]);
 }

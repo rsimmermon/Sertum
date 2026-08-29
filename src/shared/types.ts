@@ -27,6 +27,28 @@ export type AgentKind = 'claude' | 'codex' | 'grok' | 'shell';
  */
 export type ManagedAgent = Exclude<AgentKind, 'shell'>;
 
+/**
+ * What an agent can do beyond running in a terminal, one name per capability
+ * the UI offers.
+ *
+ * Every adapter answers every one of these, explicitly, in its `capabilities`
+ * record -- adding a name here fails to compile until each agent has said yes
+ * or no. That is the point: a declined capability is a deliberate answer with
+ * a reason the UI can show, distinct from one nobody thought about. The UI
+ * reads the answers up front and renders honestly, instead of calling a
+ * method to find out that it does nothing.
+ */
+export type AgentCapability =
+  /** Mirror a session's Sertum label into the agent's own records (C3). */
+  'rename-remote';
+
+/** Yes, or no with the reason in user-facing words. */
+export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
+
+export type AgentCapabilities = Readonly<
+  Record<AgentCapability, CapabilityAnswer>
+>;
+
 /** What the user asked for when starting a session. */
 export interface SessionSpec {
   label: string;
@@ -331,6 +353,11 @@ export interface SertumApi {
    * empty name falls back to the folder.
    */
   renameSession(id: string, label: string): Promise<string | null>;
+  /**
+   * Every agent's answer to every capability, declared once by its adapter.
+   * Fixed for the life of the app, so one read at startup is enough.
+   */
+  agentCapabilities(): Promise<Record<AgentKind, AgentCapabilities>>;
   /**
    * End a session and forget it. Resolves false if the process survived even
    * SIGKILL, in which case the session is kept rather than stranded.

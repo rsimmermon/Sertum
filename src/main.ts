@@ -438,15 +438,16 @@ ipcMain.handle(
     const stored = ptys.rename(id, label);
     if (stored === null) return null;
     const session = ptys.get(id);
-    if (session) {
+    const adapter = session && agentAdapters.get(session.agent);
+    // Only an agent that declared the capability is asked. A declining one
+    // has already said why, and the sidebar showed it before the edit began.
+    if (session && adapter?.capabilities['rename-remote'].ok) {
       // Not awaited: the local name is authoritative and already applied, so
       // the rename must not wait on an agent that may be slow or gone.
-      void agentAdapters
-        .get(session.agent)
-        ?.renameRemote(
-          { externalId: session.externalId, cwd: session.cwd },
-          stored,
-        );
+      void adapter.renameRemote(
+        { externalId: session.externalId, cwd: session.cwd },
+        stored,
+      );
     }
     return stored;
   },
@@ -495,6 +496,13 @@ ipcMain.handle('discovery:monitor', (_e, d: DiscoveredSession) =>
   }),
 );
 
+// Declared once per adapter and fixed for the app's life; the renderer reads
+// them at startup so the UI can say what an agent cannot do before trying.
+ipcMain.handle('agent:capabilities', () =>
+  Object.fromEntries(
+    [...agentAdapters].map(([agent, adapter]) => [agent, adapter.capabilities]),
+  ),
+);
 ipcMain.handle('adapters:status', () => ({
   claude: {
     connected: hooks.port > 0,

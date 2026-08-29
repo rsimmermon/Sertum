@@ -729,6 +729,13 @@ input.field:focus { outline: none; border-color: var(--accent); }
   color: var(--muted);
   font-size: 0.88em;
 }
+/* How far a rename reaches, shown in place of the activity while the C3
+   field is open. Allowed to wrap: it has to be read in full, and the row is
+   only this tall for as long as the edit lasts. */
+.sb-bottom .activity.rename-scope {
+  white-space: normal;
+  line-height: 1.3;
+}
 
 /* The selected session must be unmistakable: a tinted fill alone reads as
    hover, so it also carries an accent edge and a weight change. */

@@ -32,6 +32,7 @@ const api: SertumApi = {
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
+  agentCapabilities: () => ipcRenderer.invoke('agent:capabilities'),
   removeSession: (id: string) => ipcRenderer.invoke('session:remove', id),
   pickDirectory: (startIn?: string) =>
     ipcRenderer.invoke('dialog:pick-directory', startIn),
