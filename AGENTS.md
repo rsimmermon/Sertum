@@ -594,6 +594,10 @@ fixed along the way:
   roughly one pixel. `assets/icon-windows.svg` uses a 40px safe area and 54px
   square-ended segments; `scripts/make-ico.js` renders every ICO entry from
   that vector so the 16–32px variants keep defined edges and visible gaps.
+  Those embedded PNGs must be PNG32 at 8-bit channel depth. ImageMagick's
+  Q16 default produces valid-looking 16-bit PNG entries that Electron Packager
+  accepts, but Squirrel's install-time execution-stub resource step terminates
+  while copying them and leaves the setup log at `Rigging execution stub`.
 - **`node-pty`'s ConPTY `kill()` can throw a benign but scary-looking
   uncaught exception.** On the non-DLL ConPTY path, `kill()` forks a helper
   (`conpty_console_list_agent.js`) to enumerate and force-kill the shell's

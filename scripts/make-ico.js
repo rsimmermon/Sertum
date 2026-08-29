@@ -24,7 +24,8 @@ const images = SIZES.map((px) => {
     src,
     '-resize', `${px}x${px}`,
     '-unsharp', '0x0.55+0.7+0.01',
-    out,
+    '-depth', '8',
+    `PNG32:${out}`,
   ], { stdio: 'ignore' });
   return { px, data: fs.readFileSync(out) };
 });
