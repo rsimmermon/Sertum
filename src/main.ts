@@ -119,7 +119,7 @@ let mintedGrokSession: { sessionId: string; grokSessionId: string } | null = nul
  * One implementation per agent of everything the UI can ask of a session.
  * Callers below look an agent up here rather than switching on its kind.
  */
-const agentAdapters = createAgentAdapters({ codex });
+const agentAdapters = createAgentAdapters({ codex, claudeControl: hooks });
 
 /**
  * Codex sessions awaiting their thread, oldest first.
@@ -199,6 +199,8 @@ grokEvents.on('events', (arrival: GrokEventArrival) => {
 
 /** Thread id -> session id, for routing later status changes. */
 const threadToSession = new Map<string, string>();
+/** Sertum session id -> active Codex turn id. */
+const activeCodexTurns = new Map<string, string>();
 
 codex.on('notification', ({ method, params }) => {
   if (method === 'thread/started') {
@@ -221,6 +223,17 @@ codex.on('notification', ({ method, params }) => {
   const threadId = typeof params.threadId === 'string' ? params.threadId : null;
   const sessionId = threadId ? threadToSession.get(threadId) : undefined;
   if (!sessionId) return;
+
+  if (method === 'turn/started') {
+    const turn = (params.turn ?? {}) as { id?: unknown };
+    if (typeof turn.id === 'string') activeCodexTurns.set(sessionId, turn.id);
+    return;
+  }
+
+  if (method === 'turn/completed') {
+    activeCodexTurns.delete(sessionId);
+    return;
+  }
 
   if (method === 'thread/status/changed') {
     const update = mapCodexStatus(params.status as CodexThreadStatus | undefined);
@@ -366,6 +379,11 @@ ipcMain.on('menu:state', (_e, state: MenuState) => applyMenuState(state));
 ptys.on('data', (e) => broadcast('pty:data', e));
 ptys.on('exit', (e) => {
   grokEvents.unbind(e.id);
+  hooks.clearControl(e.id);
+  activeCodexTurns.delete(e.id);
+  for (const [threadId, sessionId] of threadToSession) {
+    if (sessionId === e.id) threadToSession.delete(threadId);
+  }
   broadcast('pty:exit', e);
 });
 ptys.on('session-updated', (s) => broadcast('session:updated', s));
@@ -440,6 +458,46 @@ ipcMain.handle('shell:automation-settings', () =>
 );
 ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
 ipcMain.handle(
+  'session:steer',
+  async (_e, { id, text }: { id: string; text: string }) => {
+    const session = ptys.get(id);
+    const adapter = session && agentAdapters.get(session.agent);
+    const guidance = text.trim();
+    if (!session || !adapter?.capabilities['turn-steer'].ok || !guidance) {
+      return false;
+    }
+    const accepted = await adapter.steerTurn(
+      {
+        id,
+        externalId: session.externalId,
+        activeTurnId: activeCodexTurns.get(id) ?? null,
+        cwd: session.cwd,
+      },
+      guidance,
+    );
+    if (accepted) {
+      ptys.applyUpdate(id, { activity: 'guidance accepted' });
+    } else {
+      ptys.applyUpdate(id, { activity: 'could not steer — no active turn' });
+    }
+    return accepted;
+  },
+);
+ipcMain.handle('session:interrupt-turn', async (_e, id: string) => {
+  const session = ptys.get(id);
+  const adapter = session && agentAdapters.get(session.agent);
+  if (!session || !adapter?.capabilities['turn-interrupt'].ok) return false;
+  const accepted = await adapter.interruptTurn({
+    id,
+    externalId: session.externalId,
+    activeTurnId: activeCodexTurns.get(id) ?? null,
+    cwd: session.cwd,
+  });
+  if (accepted) ptys.applyUpdate(id, { activity: 'interrupting…' });
+  else ptys.applyUpdate(id, { activity: 'could not interrupt — no active turn' });
+  return accepted;
+});
+ipcMain.handle(
   'session:rename',
   (_e, { id, label }: { id: string; label: string }) => {
     const stored = ptys.rename(id, label);
@@ -452,7 +510,12 @@ ipcMain.handle(
       // Not awaited: the local name is authoritative and already applied, so
       // the rename must not wait on an agent that may be slow or gone.
       void adapter.renameRemote(
-        { externalId: session.externalId, cwd: session.cwd },
+        {
+          id,
+          externalId: session.externalId,
+          activeTurnId: activeCodexTurns.get(id) ?? null,
+          cwd: session.cwd,
+        },
         stored,
       );
     }

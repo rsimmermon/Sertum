@@ -78,6 +78,9 @@ What's built and verified so far:
 - [x] **Claude Remote Control publish** — an opt-in control in C1 starts a
       Claude session with `--remote-control <label>` so it can be steered from
       claude.ai or the Claude app; published panes carry a REMOTE chip
+- [x] **Structured turn steer and interrupt** — Claude through command-hook
+      JSON responses, Codex through app-server `turn/steer` and
+      `turn/interrupt`; Grok and shell explicitly decline
 - [ ] Diff review (wireframe C11)
 - [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
       beyond today's display/agent panes
@@ -231,6 +234,37 @@ The generated protocol is implementation evidence, not a documented public
 OpenAI contract. Keep the generated method names behind `AgentAdapter` rather
 than leaking them into renderer branches, and re-run the schema probe when the
 installed Codex version changes.
+
+### Structured turn control
+
+Steering and interruption never write synthetic keystrokes into a terminal.
+They are declared `turn-steer` and `turn-interrupt` capabilities and dispatched
+through `AgentAdapter`:
+
+- Claude queues a per-session response in `HookServer`. An interrupt returns
+  `{ continue: false }` at the next hook boundary; guidance is returned as
+  `UserPromptSubmit` `additionalContext` when that session next submits a
+  prompt. The command hook's curl prints the HTTP response body to stdout,
+  which is Claude's structured hook-response channel rather than terminal
+  output.
+- Codex tracks the active turn id from `turn/started` and clears it on
+  `turn/completed` when those notifications are present. TUI-owned turns
+  connected through `--remote` currently emit thread status but not those turn
+  notifications, so the adapter falls back to `thread/read(includeTurns:
+  true)` and accepts only a turn the server marks `inProgress`. Steering calls
+  `turn/steer` with `expectedTurnId`, so a stale request is rejected instead of
+  landing in the wrong turn; interrupt calls `turn/interrupt` with the thread
+  and turn ids.
+- Grok's event log is read-only and a shell has no agent turn, so both decline
+  with user-facing reasons. Their row-menu actions remain visible but disabled
+  with that reason.
+
+These controls are available from a session's row menu and from the command
+palette for the focused session. Claude guidance may wait for the next prompt;
+Codex guidance requires an active turn. A failed active-turn precondition is
+reported in the session activity rather than silently ignored. Pending Claude
+control words and Codex turn ids are cleared when the owning PTY exits, so a
+later session cannot inherit them.
 
 ## Adopting sessions started outside the app
 

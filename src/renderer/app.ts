@@ -10,6 +10,7 @@ import {
   type PaletteAction,
 } from './command-palette';
 import { openWorktreeDialog } from './worktree-dialog';
+import { openTextPrompt } from './text-prompt-dialog';
 import {
   buildPaneGrid,
   SESSION_DND_TYPE,
@@ -1196,6 +1197,8 @@ export class App {
    */
   private openRowMenu(s: SessionSnapshot, x: number, y: number): void {
     const running = s.origin === 'owned' && s.exitCode === null;
+    const steer = this.capabilities?.[s.agent]['turn-steer'];
+    const interrupt = this.capabilities?.[s.agent]['turn-interrupt'];
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1234,6 +1237,21 @@ export class App {
       { label: 'Remove worktree…', destructive: true },
       SEPARATOR,
       {
+        label: 'Steer turn…',
+        accel: steer && !steer.ok ? steer.reason : undefined,
+        onSelect:
+          running && steer?.ok ? () => void this.promptSteer(s) : undefined,
+      },
+      {
+        label: 'Interrupt turn',
+        accel: interrupt && !interrupt.ok ? interrupt.reason : undefined,
+        onSelect:
+          running && s.status === 'working' && interrupt?.ok
+            ? () => void this.interruptTurn(s)
+            : undefined,
+      },
+      SEPARATOR,
+      {
         // Ends the process but keeps the row, which is wireframe C7.
         label: 'Stop session',
         onSelect: running ? () => void api.killSession(s.id) : undefined,
@@ -1244,6 +1262,22 @@ export class App {
         onSelect: () => void this.closeTab(s.id),
       },
     ]);
+  }
+
+  private async promptSteer(s: SessionSnapshot): Promise<void> {
+    const guidance = await openTextPrompt({
+      title: `Steer ${s.label}`,
+      description:
+        'Send guidance through the agent’s structured control channel. No terminal input is generated.',
+      placeholder: 'What should the agent account for next?',
+      submitLabel: 'Send guidance',
+    });
+    if (!guidance) return;
+    await api.steerSession(s.id, guidance);
+  }
+
+  private async interruptTurn(s: SessionSnapshot): Promise<void> {
+    await api.interruptTurn(s.id);
   }
 
   private filter = '';
@@ -1309,6 +1343,13 @@ export class App {
    * disabled, matching the application menu and the C5 row menu.
    */
   private openPalette(): void {
+    const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    const activeSteer = active
+      ? this.capabilities?.[active.agent]['turn-steer']
+      : undefined;
+    const activeInterrupt = active
+      ? this.capabilities?.[active.agent]['turn-interrupt']
+      : undefined;
     const actions: PaletteAction[] = [
       {
         glyph: '＋',
@@ -1326,6 +1367,26 @@ export class App {
         glyph: '⌥',
         label: 'Worktree manager…',
         run: () => void this.promptWorktrees(),
+      },
+      {
+        glyph: '↪',
+        label: 'Steer focused turn…',
+        run:
+          active && active.origin === 'owned' && active.exitCode === null && activeSteer?.ok
+            ? () => void this.promptSteer(active)
+            : undefined,
+      },
+      {
+        glyph: '■',
+        label: 'Interrupt focused turn',
+        run:
+          active &&
+          active.origin === 'owned' &&
+          active.exitCode === null &&
+          active.status === 'working' &&
+          activeInterrupt?.ok
+            ? () => void this.interruptTurn(active)
+            : undefined,
       },
       {
         glyph: '⚙',

@@ -50,7 +50,11 @@ export type AgentCapability =
    * nowhere a program can read, and reading it off the TUI would be plane 1
    * pretending to be plane 2.
    */
-  | 'remote-control';
+  | 'remote-control'
+  /** Add structured guidance without writing characters into the PTY. */
+  | 'turn-steer'
+  /** Stop an active turn through the agent's structured control plane. */
+  | 'turn-interrupt';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -366,6 +370,10 @@ export interface SertumApi {
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
   listSessions(): Promise<SessionSnapshot[]>;
   killSession(id: string): Promise<void>;
+  /** Add structured guidance to a turn without automating terminal input. */
+  steerSession(id: string, text: string): Promise<boolean>;
+  /** Interrupt the active turn through its adapter, not with PTY bytes. */
+  interruptTurn(id: string): Promise<boolean>;
   /**
    * Rename a session. The label is Sertum's own, so this works for every
    * agent -- including a plain shell, which has no notion of a session name.

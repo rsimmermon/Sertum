@@ -6,9 +6,18 @@ import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 
 /** The part of a session an adapter needs in order to act on it. */
 export interface AgentSessionRef {
+  /** Sertum's own id, used by per-session control channels such as hooks. */
+  id: string;
   /** The agent's own id for this session — a Codex thread, a Claude uuid. */
   externalId: string | null;
+  /** The active provider turn, when its event plane exposes one. */
+  activeTurnId: string | null;
   cwd: string;
+}
+
+interface ClaudeTurnControl {
+  queueSteer(sessionId: string, text: string): void;
+  queueInterrupt(sessionId: string): void;
 }
 
 /**
@@ -77,6 +86,12 @@ export interface AgentAdapter {
    * guesswork. Only called when `capabilities['remote-control']` is ok.
    */
   remoteControlArgs(label: string): string[];
+
+  /** Add guidance through the agent's structured control plane. */
+  steerTurn(session: AgentSessionRef, text: string): Promise<boolean>;
+
+  /** Stop an active turn through the agent's structured control plane. */
+  interruptTurn(session: AgentSessionRef): Promise<boolean>;
 }
 
 /**
@@ -104,6 +119,17 @@ class InertAgentAdapter implements AgentAdapter {
   remoteControlArgs(_label: string): string[] {
     return [];
   }
+
+  async steerTurn(
+    _session: AgentSessionRef,
+    _text: string,
+  ): Promise<boolean> {
+    return false;
+  }
+
+  async interruptTurn(_session: AgentSessionRef): Promise<boolean> {
+    return false;
+  }
 }
 
 /**
@@ -123,6 +149,8 @@ class CodexAdapter implements AgentAdapter {
       reason:
         'Codex is steered remotely by its own app-server daemon, which Sertum does not run yet.',
     },
+    'turn-steer': { ok: true },
+    'turn-interrupt': { ok: true },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -152,6 +180,59 @@ class CodexAdapter implements AgentAdapter {
   remoteControlArgs(_label: string): string[] {
     return [];
   }
+
+  async steerTurn(session: AgentSessionRef, text: string): Promise<boolean> {
+    const threadId = session.externalId;
+    if (!threadId || !this.server.connected) return false;
+    const turnId =
+      session.activeTurnId ?? (await this.readActiveTurn(threadId));
+    if (!turnId) return false;
+    try {
+      await this.server.request('turn/steer', {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: 'text', text }],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async interruptTurn(session: AgentSessionRef): Promise<boolean> {
+    const threadId = session.externalId;
+    if (!threadId || !this.server.connected) return false;
+    const turnId =
+      session.activeTurnId ?? (await this.readActiveTurn(threadId));
+    if (!turnId) return false;
+    try {
+      await this.server.request('turn/interrupt', { threadId, turnId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * TUI-owned turns do not currently emit `turn/started` on the remote
+   * connection. `thread/read` is the structured fallback: an id is usable
+   * only when the server itself says that exact turn is still in progress.
+   */
+  private async readActiveTurn(threadId: string): Promise<string | null> {
+    try {
+      const result = (await this.server.request('thread/read', {
+        threadId,
+        includeTurns: true,
+      })) as { thread?: { turns?: Array<{ id?: unknown; status?: unknown }> } };
+      const active = result.thread?.turns
+        ?.slice()
+        .reverse()
+        .find((turn) => turn.status === 'inProgress');
+      return typeof active?.id === 'string' ? active.id : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 /**
@@ -161,13 +242,15 @@ class CodexAdapter implements AgentAdapter {
  * a silent no-op.
  */
 class ClaudeAdapter extends InertAgentAdapter {
-  constructor() {
+  constructor(private control: ClaudeTurnControl) {
     super('claude', {
       'rename-remote': {
         ok: false,
         reason: 'Claude Code has no way to set a session’s name from outside.',
       },
       'remote-control': { ok: true },
+      'turn-steer': { ok: true },
+      'turn-interrupt': { ok: true },
     });
   }
 
@@ -186,6 +269,19 @@ class ClaudeAdapter extends InertAgentAdapter {
     return name && !name.startsWith('-')
       ? ['--remote-control', name]
       : ['--remote-control'];
+  }
+
+  override async steerTurn(
+    session: AgentSessionRef,
+    text: string,
+  ): Promise<boolean> {
+    this.control.queueSteer(session.id, text);
+    return true;
+  }
+
+  override async interruptTurn(session: AgentSessionRef): Promise<boolean> {
+    this.control.queueInterrupt(session.id);
+    return true;
   }
 
   resolveBinary(): string {
@@ -228,6 +324,14 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok has no remote-control surface.',
       },
+      'turn-steer': {
+        ok: false,
+        reason: 'Grok’s event log reports turns but cannot control them.',
+      },
+      'turn-interrupt': {
+        ok: false,
+        reason: 'Grok’s event log reports turns but cannot control them.',
+      },
     });
   }
 
@@ -256,9 +360,10 @@ class GrokAdapter extends InertAgentAdapter {
 
 export function createAgentAdapters(deps: {
   codex: CodexAppServer;
+  claudeControl: ClaudeTurnControl;
 }): Map<AgentKind, AgentAdapter> {
   return new Map<AgentKind, AgentAdapter>([
-    ['claude', new ClaudeAdapter()],
+    ['claude', new ClaudeAdapter(deps.claudeControl)],
     ['codex', new CodexAdapter(deps.codex)],
     ['grok', new GrokAdapter()],
     [
@@ -271,6 +376,14 @@ export function createAgentAdapters(deps: {
         'remote-control': {
           ok: false,
           reason: 'A shell has no agent to steer from another device.',
+        },
+        'turn-steer': {
+          ok: false,
+          reason: 'A shell has no structured turn to steer.',
+        },
+        'turn-interrupt': {
+          ok: false,
+          reason: 'A shell has no structured turn to interrupt.',
         },
       }),
     ],

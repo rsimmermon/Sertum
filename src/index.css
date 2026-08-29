@@ -492,6 +492,13 @@ input.field {
   border: 1px solid var(--line); border-radius: 5px;
 }
 input.field:focus { outline: none; border-color: var(--accent); }
+textarea.field {
+  resize: vertical; min-height: 92px; width: 100%; padding: 8px 10px;
+  font-family: var(--font-ui); font-size: 13px; line-height: 1.45;
+  color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px;
+}
+textarea.field:focus { outline: none; border-color: var(--accent); }
 
 .dialog .row { display: flex; gap: 8px; align-items: center; }
 .dialog .row input.field { flex: 1; min-width: 0; }

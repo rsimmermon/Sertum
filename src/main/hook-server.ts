@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { EventEmitter } from 'node:events';
 
 /** A hook payload, keyed to the Sertum session that produced it. */
@@ -19,12 +19,17 @@ export interface HookEvent {
  * maintain, while an HTTP POST is identical on macOS, Linux and Windows.
  *
  * Bound to loopback only. The path segment is a UUID, so other local
- * processes cannot guess a session's endpoint.
+ * processes cannot guess a session's endpoint. Claude Code currently reaches
+ * it through command hooks whose curl stdout carries the structured response;
+ * the server remains HTTP even though the hook declaration is not.
  */
 export class HookServer extends EventEmitter {
   private server: http.Server | null = null;
   private boundPort = 0;
   private received = 0;
+  /** Control replies waiting for the next attributable hook boundary. */
+  private pendingInterrupts = new Set<string>();
+  private pendingSteers = new Map<string, string>();
 
   async start(): Promise<number> {
     if (this.server) return this.boundPort;
@@ -48,20 +53,28 @@ export class HookServer extends EventEmitter {
       });
       req.on('end', () => {
         if (tooLarge) return;
-        // Always answer 2xx: a hook that errors can block the agent's turn.
-        // 204 with no body also keeps the posting curl's stdout empty, so the
-        // hook contributes nothing to what the agent sees.
-        res.writeHead(204).end();
-
         let payload: Record<string, unknown> = {};
         try {
           payload = body ? (JSON.parse(body) as Record<string, unknown>) : {};
         } catch {
+          res.writeHead(204).end();
           return;
         }
         this.received += 1;
         const event = String(payload.hook_event_name ?? 'Unknown');
         this.emit('hook', { sessionId, event, payload } satisfies HookEvent);
+
+        const reply = this.controlReply(sessionId, event);
+        if (reply) {
+          // A command hook's stdout is its structured reply. curl writes this
+          // body to stdout, so no shell or PTY interpretation is involved.
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(reply));
+        } else {
+          // Always answer 2xx: a hook error can block the agent's turn. An
+          // empty 204 keeps curl's stdout empty when there is no control word.
+          res.writeHead(204).end();
+        }
       });
     });
 
@@ -86,9 +99,50 @@ export class HookServer extends EventEmitter {
     return `http://127.0.0.1:${this.boundPort}/hook/${sessionId}`;
   }
 
+  /** Stop the session's current turn at its next structured hook boundary. */
+  queueInterrupt(sessionId: string): void {
+    this.pendingInterrupts.add(sessionId);
+  }
+
+  /** Add application context when this session next submits a user prompt. */
+  queueSteer(sessionId: string, text: string): void {
+    this.pendingSteers.set(sessionId, text);
+  }
+
+  /** Forget control words for a session that no longer exists. */
+  clearControl(sessionId: string): void {
+    this.pendingInterrupts.delete(sessionId);
+    this.pendingSteers.delete(sessionId);
+  }
+
+  private controlReply(
+    sessionId: string,
+    event: string,
+  ): Record<string, unknown> | null {
+    if (this.pendingInterrupts.delete(sessionId)) {
+      return {
+        continue: false,
+        stopReason: 'Turn interrupted from Sertum.',
+      };
+    }
+
+    if (event !== 'UserPromptSubmit') return null;
+    const steer = this.pendingSteers.get(sessionId);
+    if (!steer) return null;
+    this.pendingSteers.delete(sessionId);
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: steer,
+      },
+    };
+  }
+
   async stop(): Promise<void> {
     if (!this.server) return;
     await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     this.server = null;
+    this.pendingInterrupts.clear();
+    this.pendingSteers.clear();
   }
 }

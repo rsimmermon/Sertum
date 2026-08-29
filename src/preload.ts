@@ -30,6 +30,10 @@ const api: SertumApi = {
     ipcRenderer.invoke('worktree:provision', { cwd, branch, copyIncludes }),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
+  steerSession: (id: string, text: string) =>
+    ipcRenderer.invoke('session:steer', { id, text }),
+  interruptTurn: (id: string) =>
+    ipcRenderer.invoke('session:interrupt-turn', id),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
   agentCapabilities: () => ipcRenderer.invoke('agent:capabilities'),
