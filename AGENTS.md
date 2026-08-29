@@ -75,6 +75,9 @@ What's built and verified so far:
       Agents shows each agent's resolved path, a Detect button re-runs
       discovery, Browse... sets a manual override; the status bar calls out a
       binary that can't be found at all
+- [x] **Claude Remote Control publish** — an opt-in control in C1 starts a
+      Claude session with `--remote-control <label>` so it can be steered from
+      claude.ai or the Claude app; published panes carry a REMOTE chip
 - [ ] Diff review (wireframe C11)
 - [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
       beyond today's display/agent panes
@@ -194,6 +197,20 @@ answers `null` for the agents nobody revisited -- is how a capability quietly
 stops working for most of a fleet with nobody noticing. Adding an agent means
 writing its answers and implementations here; adding a capability means
 adding one name and answering it for each agent.
+
+Remote Control is deliberately the publish half only. Claude declares
+`remote-control` and contributes `--remote-control <label>` to a session's
+spawn arguments; Codex, Grok and shell decline with a reason. The C1 toggle is
+shown from that declared answer and defaults off every time because publishing
+stores the transcript on Anthropic's servers while devices stay in sync. The
+chosen value lives on `SessionSpec`/`SessionSnapshot`, which lets both the
+single-pane and split-pane headers render the REMOTE chip without inspecting
+terminal output.
+
+Sertum does not enumerate Remote Control sessions running on other machines.
+Claude currently exposes that account roster only through an interactive slash
+command, so reading it would require parsing TUI pixels and violate the two
+planes. This is separate from publishing a session Sertum owns.
 
 ## Adopting sessions started outside the app
 

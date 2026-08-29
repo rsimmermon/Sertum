@@ -316,6 +316,7 @@ export class App {
       (await api.defaultCwd());
     const snapshot = await openNewSessionDialog({
       startCwd,
+      capabilities: this.capabilities,
       presetLabel,
       presetIsolation: preset?.isolation,
       presetAgent: preset?.agent,
@@ -1667,6 +1668,9 @@ export class App {
     left.append(text('span', String(slot + 1), 'pane-num'));
     if (s) {
       left.append(dot(s.status), text('span', s.label, 'pane-chrome-label'));
+      if (s.remoteControl) {
+        left.append(text('span', 'REMOTE', 'pane-remote-chip'));
+      }
     } else {
       left.append(text('span', 'Empty pane', 'pane-chrome-label empty'));
     }
@@ -1790,6 +1794,9 @@ export class App {
         text('span', '·'),
         text('span', active.cwd, 'branch'),
       );
+      if (active.remoteControl) {
+        this.el.paneTitle.append(text('span', 'REMOTE', 'pane-remote-chip'));
+      }
     } else {
       this.el.paneTitle.append(text('span', 'Empty pane', 'repo'));
     }

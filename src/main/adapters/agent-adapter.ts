@@ -67,6 +67,16 @@ export interface AgentAdapter {
    * does not apply to it.
    */
   renameRemote(session: AgentSessionRef, label: string): Promise<boolean>;
+
+  /**
+   * Extra argv that publishes a session for Remote Control, named `label`.
+   *
+   * Naming the remote session at spawn is the same move `--session-id` buys
+   * for Grok: we choose the name, so a row that later appears in an account's
+   * session list belongs to a known pane instead of having to be matched by
+   * guesswork. Only called when `capabilities['remote-control']` is ok.
+   */
+  remoteControlArgs(label: string): string[];
 }
 
 /**
@@ -90,6 +100,10 @@ class InertAgentAdapter implements AgentAdapter {
   async renameRemote(): Promise<boolean> {
     return false;
   }
+
+  remoteControlArgs(_label: string): string[] {
+    return [];
+  }
 }
 
 /**
@@ -100,6 +114,14 @@ class CodexAdapter implements AgentAdapter {
   readonly agent: AgentKind = 'codex';
   readonly capabilities: AgentCapabilities = {
     'rename-remote': { ok: true },
+    // Codex does have a remote surface, but it is a separate `app-server
+    // daemon` with its own control socket rather than a flag on the TUI, and
+    // it is POSIX-only. Declined until Sertum actually runs that daemon.
+    'remote-control': {
+      ok: false,
+      reason:
+        'Codex is steered remotely by its own app-server daemon, which Sertum does not run yet.',
+    },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -125,6 +147,10 @@ class CodexAdapter implements AgentAdapter {
       return false;
     }
   }
+
+  remoteControlArgs(_label: string): string[] {
+    return [];
+  }
 }
 
 /**
@@ -140,7 +166,25 @@ class ClaudeAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Claude Code has no way to set a session’s name from outside.',
       },
+      'remote-control': { ok: true },
     });
+  }
+
+  /**
+   * `--remote-control [name]` both enables Remote Control and names the
+   * session that appears in the account's list, which is why the label goes
+   * in here rather than being left to the hostname-derived default: with
+   * several sessions published at once, "which machine" is not enough to tell
+   * them apart.
+   *
+   * A label that starts with a dash would be read as another flag, so the
+   * bare flag is used instead and Claude Code names the session itself.
+   */
+  override remoteControlArgs(label: string): string[] {
+    const name = label.trim();
+    return name && !name.startsWith('-')
+      ? ['--remote-control', name]
+      : ['--remote-control'];
   }
 
   resolveBinary(): string {
@@ -178,6 +222,10 @@ class GrokAdapter extends InertAgentAdapter {
       'rename-remote': {
         ok: false,
         reason: 'Grok has no way to set a session’s name from outside.',
+      },
+      'remote-control': {
+        ok: false,
+        reason: 'Grok has no remote-control surface.',
       },
     });
   }
@@ -218,6 +266,10 @@ export function createAgentAdapters(deps: {
         'rename-remote': {
           ok: false,
           reason: 'A shell has no session name of its own.',
+        },
+        'remote-control': {
+          ok: false,
+          reason: 'A shell has no agent to steer from another device.',
         },
       }),
     ],

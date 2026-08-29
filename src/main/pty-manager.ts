@@ -55,6 +55,7 @@ export class PtyManager extends EventEmitter {
       cwd: spec.cwd ?? os.homedir(),
       command: spec.command ?? defaultShell(),
       args: spec.args ?? [],
+      remoteControl: spec.remoteControl ?? false,
     };
 
     const id = randomUUID();
@@ -218,6 +219,7 @@ export class PtyManager extends EventEmitter {
       cwd: input.cwd,
       command: '',
       args: [],
+      remoteControl: false,
       status: input.status,
       pid: input.pid,
       startedAt: Date.now(),

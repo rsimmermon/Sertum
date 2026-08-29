@@ -133,9 +133,16 @@ const agentAdapters = createAgentAdapters({ codex });
 const awaitingThread: Array<{ id: string; cwd: string }> = [];
 
 const ptys = new PtyManager((id, spec) => {
+  const adapter = agentAdapters.get(spec.agent);
+  const remoteArgs =
+    spec.remoteControl && adapter?.capabilities['remote-control'].ok
+      ? adapter.remoteControlArgs(spec.label)
+      : [];
+  const args = [...spec.args, ...remoteArgs];
+
   if (spec.agent === 'claude' && hooks.port) {
     return {
-      args: [...spec.args, '--settings', buildClaudeSettings(hooks.urlFor(id))],
+      args: [...args, '--settings', buildClaudeSettings(hooks.urlFor(id))],
       adapterBound: true,
     };
   }
@@ -146,7 +153,7 @@ const ptys = new PtyManager((id, spec) => {
   if (spec.agent === 'codex' && codex.connected) {
     awaitingThread.push({ id, cwd: spec.cwd });
     return {
-      args: [...spec.args, '--remote', codex.remoteUrl, '-C', spec.cwd],
+      args: [...args, '--remote', codex.remoteUrl, '-C', spec.cwd],
       adapterBound: true,
     };
   }
@@ -158,12 +165,12 @@ const ptys = new PtyManager((id, spec) => {
     const grokSessionId = randomUUID();
     mintedGrokSession = { sessionId: id, grokSessionId };
     return {
-      args: [...spec.args, '--session-id', grokSessionId],
+      args: [...args, '--session-id', grokSessionId],
       adapterBound: true,
     };
   }
 
-  return {};
+  return remoteArgs.length ? { args } : {};
 });
 
 grokEvents.on('events', (arrival: GrokEventArrival) => {

@@ -1,4 +1,9 @@
-import type { AgentKind, DirectoryInfo, SessionSnapshot } from '../shared/types';
+import type {
+  AgentCapabilities,
+  AgentKind,
+  DirectoryInfo,
+  SessionSnapshot,
+} from '../shared/types';
 import { openAgentPicker } from './agent-picker';
 import { agentIcon } from './agent-icon';
 import { agentName } from './chips';
@@ -33,6 +38,8 @@ const AGENT_ARGS: Record<AgentKind, string[]> = {
  */
 export interface NewSessionOptions {
   startCwd: string;
+  /** Declared adapter answers, used to show only supported controls. */
+  capabilities: Record<AgentKind, AgentCapabilities> | null;
   /**
    * Seeds the name field and counts as user-edited, so the folder-derived
    * suggestion does not overwrite it.
@@ -50,7 +57,8 @@ export interface NewSessionOptions {
 export function openNewSessionDialog(
   opts: NewSessionOptions,
 ): Promise<SessionSnapshot | null> {
-  const { startCwd, presetLabel, presetIsolation, presetAgent } = opts;
+  const { capabilities, startCwd, presetLabel, presetIsolation, presetAgent } =
+    opts;
   return new Promise((resolve) => {
     let agent: AgentKind =
       presetAgent ??
@@ -59,6 +67,7 @@ export function openNewSessionDialog(
     let cwd = startCwd;
     let info: DirectoryInfo | null = null;
     let labelEdited = Boolean(presetLabel);
+    let remoteControl = false;
 
     const overlay = el('div', 'overlay');
     const dlg = el('div', 'dialog');
@@ -130,6 +139,7 @@ export function openNewSessionDialog(
         if (!picked || picked === agent) return;
         agent = picked;
         drawAgent();
+        syncRemoteControl();
         if (!labelEdited) labelInput.value = suggestLabel();
       });
     };
@@ -144,6 +154,35 @@ export function openNewSessionDialog(
     labelInput.oninput = () => {
       labelEdited = true;
     };
+
+    // --- remote control ----------------------------------------------------
+    // Publishing is opt-in per session: it stores the transcript on
+    // Anthropic's servers so the user's other signed-in devices can steer it.
+    const remoteWrap = el('label', 'remote-control-check');
+    const remoteBox = document.createElement('input');
+    remoteBox.type = 'checkbox';
+    const remoteCopy = el('span', 'remote-control-copy');
+    const remoteTitle = el('span', 'remote-control-title');
+    remoteTitle.textContent = 'Remote Control';
+    const remoteNote = el('span', 'remote-control-note');
+    remoteNote.textContent =
+      'Steer this session from claude.ai or the Claude app. Its transcript is stored on Anthropic’s servers while connected.';
+    remoteCopy.append(remoteTitle, remoteNote);
+    remoteWrap.append(remoteBox, remoteCopy);
+    remoteBox.onchange = () => {
+      remoteControl = remoteBox.checked;
+    };
+
+    function syncRemoteControl(): void {
+      const supported =
+        capabilities?.[agent]['remote-control'].ok === true;
+      remoteWrap.hidden = !supported;
+      if (!supported) {
+        remoteBox.checked = false;
+        remoteControl = false;
+      }
+    }
+    syncRemoteControl();
 
     // --- isolation (C1) ----------------------------------------------------
     // Defaults to the plain checkout. The wireframe draws New worktree
@@ -220,6 +259,7 @@ export function openNewSessionDialog(
       recentsWrap,
       labelEl('AGENT'),
       agentButton,
+      remoteWrap,
       labelEl('ISOLATION'),
       isoSeg,
       branchWrap,
@@ -389,6 +429,7 @@ export function openNewSessionDialog(
           label: labelInput.value.trim() || suggestLabel(),
           cwd: chosen,
           args: AGENT_ARGS[agent],
+          remoteControl,
         });
       } catch (err) {
         creating = false;

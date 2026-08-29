@@ -40,7 +40,17 @@ export type ManagedAgent = Exclude<AgentKind, 'shell'>;
  */
 export type AgentCapability =
   /** Mirror a session's Sertum label into the agent's own records (C3). */
-  'rename-remote';
+  | 'rename-remote'
+  /**
+   * Publish a session we own so it can be steered from another device.
+   *
+   * Publish only. Listing the sessions an account has running on *other*
+   * machines is a separate capability nobody can implement yet: Claude Code
+   * exposes that roster to a slash command inside a connected session and
+   * nowhere a program can read, and reading it off the TUI would be plane 1
+   * pretending to be plane 2.
+   */
+  | 'remote-control';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -57,6 +67,16 @@ export interface SessionSpec {
   /** Executable to spawn. */
   command: string;
   args: string[];
+  /**
+   * Start this session published for Remote Control, so it can be steered
+   * from claude.ai or the Claude app.
+   *
+   * Opt-in per session and never inferred: while it is on, the transcript is
+   * stored on Anthropic servers to keep devices in step, which is the user's
+   * call to make rather than a default to inherit. Ignored for an agent whose
+   * adapter declines `remote-control`.
+   */
+  remoteControl: boolean;
 }
 
 /** A session as the renderer sees it. */
