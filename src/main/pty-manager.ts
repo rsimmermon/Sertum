@@ -445,6 +445,19 @@ export class PtyManager extends EventEmitter {
  *
  * A session started here is always a fresh top-level agent, so inheriting the
  * launcher's agent identity is never correct.
+ *
+ * The prefix is deliberately narrow. A launching session also exports
+ * CLAUDECODE, CLAUDE_PID, CLAUDE_EFFORT and AI_AGENT, which survive this
+ * filter, and they were checked against a real interactive child (Claude Code
+ * 2.1.251): a child spawned with only CLAUDE_CODE_* removed behaves exactly
+ * like one spawned from a clean environment -- transcript written, --resume
+ * offered, no banner. CLAUDE_CODE_CHILD_SESSION is the only marker with an
+ * effect, and only on interactive sessions (-p mode persists regardless;
+ * CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 overrides it). CLAUDECODE is
+ * consulted only behind CLAUDE_CODE_ENTRYPOINT checks for the IDE and desktop
+ * hosts, which this filter already removes; CLAUDE_EFFORT is exported to
+ * hooks and Bash but never read as input; CLAUDE_PID only feeds a pkill guard
+ * in the child's own Bash environment.
  */
 function agentSafeEnv(): Record<string, string> {
   return Object.fromEntries(
