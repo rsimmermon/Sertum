@@ -40,14 +40,6 @@
   --m-gemini: #f59e0b;
   --m-grok: #f43f5e;
   --m-other: #8b949e;
-
-  /* Agent kind (which tool is driving the session), independent of the model
-     it happens to be running. A different axis from the model-family colours
-     above, so it deliberately avoids reusing their hues. */
-  --agent-claude: #cc785c;
-  --agent-codex: #4f46e5;
-  --agent-grok: #a21caf;
-  --agent-shell: #6b7280;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -71,10 +63,6 @@
     --ok: #6bc07e;
     --ok-soft: #16301c;
     --term-bg: #080c0e;
-    --agent-claude: #e0916f;
-    --agent-codex: #8583f5;
-    --agent-grok: #dd7fe8;
-    --agent-shell: #8b96a3;
   }
 }
 
@@ -1028,16 +1016,10 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .agent-row { width: 100%; }
 .agent-row-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .agent-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The same hue the tab and sidebar stripes use, so an agent is recognisable
-   by colour before its name is read. */
-.agent-dot {
-  width: 8px; height: 8px; flex: none;
-  border-radius: 50%; background: var(--agent-shell);
-}
-.agent-dot.agent-claude { background: var(--agent-claude); }
-.agent-dot.agent-codex { background: var(--agent-codex); }
-.agent-dot.agent-grok { background: var(--agent-grok); }
-.agent-dot.agent-shell { background: var(--agent-shell); }
+/* The agent's own mark. currentColor on purpose: a highlighted row inverts to
+   the accent, and a brand-tinted glyph left behind on it would be the one
+   thing that did not follow. */
+.agent-icon { width: 15px; height: 15px; flex: none; }
 .agent-row.on .agent-row-name { font-weight: 700; }
 /* Keyboard cursor, drawn like hover so both readings agree. */
 .ctx-item.cursor:not(:disabled) { background: var(--accent); color: #fff; }
@@ -1045,6 +1027,13 @@ input.field:focus { outline: none; border-color: var(--accent); }
 .agent-missing { color: var(--warn); }
 .ctx-item.cursor .agent-missing { color: #ffffffd0; }
 .agent-empty { padding: 8px 9px; font-size: 12px; color: var(--muted); }
+/* The way back to agents that are not installed: quiet, because the list
+   above it is the answer in the ordinary case. */
+.agent-more { color: var(--muted); font-size: 12px; }
+/* .ctx-item sets display: flex, which outranks the UA sheet's [hidden] rule --
+   so the footer stayed on screen reading "0 not installed" whenever there was
+   nothing to reveal. Scoped here rather than fought at every call site. */
+.agent-picker [hidden] { display: none; }
 .agent-filter {
   padding: 5px 9px; margin-bottom: 2px;
   border-bottom: 1px solid var(--line-soft);
@@ -1284,13 +1273,30 @@ select.field {
 }
 
 /* ---------- agent-kind indicator ----------
-   A persistent left-edge stripe naming which tool drives the session, on
-   both the top tab strip and the sidebar row. It is a border rather than a
-   box-shadow so it sits outside the sidebar's own inset accent edge (see
-   .sb-row.active above) instead of fighting it for the same pixels: an
-   active row shows agent colour, then accent, as two adjacent stripes. */
-.tab, .sb-row { border-left: 3px solid transparent; }
-.tab.agent-claude, .sb-row.agent-claude { border-left-color: var(--agent-claude); }
-.tab.agent-codex, .sb-row.agent-codex { border-left-color: var(--agent-codex); }
-.tab.agent-grok, .sb-row.agent-grok { border-left-color: var(--agent-grok); }
-.tab.agent-shell, .sb-row.agent-shell { border-left-color: var(--agent-shell); }
+   Which tool drives a session, and what that session needs, in one mark.
+   This replaced a coloured left-edge stripe plus a separate status dot: the
+   stripe asked colour to name one of a growing list of agents, which stops
+   working once the hues run out of distance from each other, and the dot
+   repeated in miniature what the row's grouping already said. A
+   filled square rather than a bare glyph so it reads as a badge at the small
+   size a tab strip allows, and holds its shape against the label beside it. */
+.agent-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex: none;
+  border-radius: 4px;
+  color: var(--ink-2);
+  /* Mixed from whatever it sits on rather than a fixed token: an inactive tab
+     is already --surface-2, so a --surface-2 square vanished into it and only
+     the active tab showed one. */
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.agent-badge .agent-icon { width: 12px; height: 12px; }
+.tab.active .agent-badge { color: var(--ink); }
+
+/* Status lives in the tint, since this square stands where the dot stood.
+   Same five colours the dot used, so nothing has to be relearned. */
+.agent-badge.st-working { color: var(--run); }
+.agent-badge.st-needs-input { color: var(--warn); }
+.agent-badge.st-attention { color: var(--err); }
+.agent-badge.st-done { color: var(--ok); }
+.agent-badge.st-idle { color: var(--idle); }
