@@ -51,7 +51,8 @@ What's built and verified so far:
 - [x] Electron 44 + Vite + TypeScript, strict mode clean
 - [x] `node-pty` rebuilt against Electron's ABI; PTY spawn / write / read / resize / kill
 - [x] Real agent TUIs render correctly (Claude Code and Codex draw their
-      full-screen UI, on macOS and Windows)
+      full-screen UI on macOS and Windows; Grok is verified end to end on
+      Windows)
 - [x] Keystrokes reach the PTY from the renderer
 - [x] Tab strip, sidebar grouped by status, pane header, status bar
 - [x] New Session dialog (wireframe C1) with a **native folder picker**, live
@@ -436,8 +437,9 @@ fixed along the way:
   nothing happens." `new-session-dialog.ts` now performs session creation
   itself and reports a failure inline instead of closing and letting the
   error vanish. Settings > Agents (Detect / Browse... / a manual per-agent
-  path override) and a status-bar "Claude Code not found" / "Codex not
-  found" readout make a missing binary diagnosable rather than mysterious.
+  path override) and status-bar "Claude Code not found" / "Codex not found" /
+  "Grok not found" readouts make a missing binary diagnosable rather than
+  mysterious.
 - **Grok installs outside PATH entirely.** `where grok` finds nothing on a
   default install: the CLI lives at `~/.grok/bin/grok.exe` and the installer
   does not add it to PATH, so the PATH × PATHEXT search every other agent

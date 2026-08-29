@@ -2,7 +2,7 @@
 
 One window for every coding agent you have running.
 
-Sertum is a desktop app for managing Claude Code and Codex sessions across
+Sertum is a desktop app for managing Claude Code, Codex, and Grok sessions across
 different projects and Git worktrees. Every session gets a real embedded
 terminal, while agent events provide reliable at-a-glance status such as
 working, idle, or waiting for input.
@@ -11,7 +11,7 @@ working, idle, or waiting for input.
 
 ## What you can do
 
-- Run Claude Code and Codex side by side in one desktop window.
+- Run Claude Code, Codex, and Grok side by side in one desktop window.
 - Keep sessions organized by project, folder, and worktree.
 - See which agents are working or need attention without reading terminal
   output heuristically.
@@ -25,11 +25,14 @@ Before starting Sertum, install:
 - [Node.js](https://nodejs.org/) with npm
 - [Git](https://git-scm.com/)
 - At least one supported coding agent:
-  [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or
-  [Codex](https://developers.openai.com/codex/)
+  [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+  [Codex](https://developers.openai.com/codex/), or
+  [Grok](https://docs.x.ai/docs/grok-cli)
 
-Make sure each agent you intend to use is installed, available on your
-`PATH`, and authenticated in your normal terminal.
+Make sure each agent you intend to use is installed and authenticated in your
+normal terminal. Sertum searches your `PATH` and known installation locations;
+Grok's default `~/.grok/bin` installation is supported even when it is not on
+`PATH`.
 
 Sertum's terminal and agent integrations are currently verified on macOS and
 Windows.
@@ -53,7 +56,7 @@ The Electron Forge startup process rebuilds native dependencies such as
 1. Launch Sertum with `npm start`.
 2. Choose **New Session**.
 3. Select a working folder with the native folder picker.
-4. Choose Claude Code or Codex.
+4. Choose Claude Code, Codex, or Grok.
 5. Select the desired isolation option. Use the existing folder for ordinary
    work, or create a worktree when the task should be isolated.
 6. Start the session and interact with the agent in its embedded terminal.
@@ -73,17 +76,18 @@ npm run make    # Create platform-specific distributables
 
 ## Current scope
 
-Core terminal sessions, live status for Claude Code and Codex, external
-session discovery, binary configuration, and worktree management are working.
-Diff review, additional settings, and split-pane layouts are still planned.
+Core terminal sessions and live status for Claude Code, Codex, and Grok,
+external session discovery, binary configuration, and worktree management are
+working. Diff review, additional settings, and split-pane layouts are still
+planned.
 
 ## Contributing and architecture
 
 The canonical technical guide is [AGENTS.md](AGENTS.md). It documents the
 two-plane architecture, process lifecycle, agent adapters, external-session
 discovery, worktree behavior, platform details, design references, and known
-implementation constraints. Both Codex and Claude Code are directed to that
-same file so their project context stays consistent.
+implementation constraints. It provides shared project context for Claude
+Code, Codex, and Grok.
 
 The UI source of truth is `SertumDesigns.pen` at the repository root. Frame
 identifiers in source comments refer to frames in that file.
