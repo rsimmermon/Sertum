@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type {
+  DiffCommitRequest,
+  DiffCommitResult,
   DiffDiscardResult,
   DiffFileInfo,
   DiffFilePatch,
@@ -37,9 +39,12 @@ export async function readDiff(cwd: string): Promise<DiffInventory | null> {
     }),
   );
   files.sort((a, b) => a.path.localeCompare(b.path));
+  const push = await resolvePushTarget(root, branch || null);
   return {
     root,
     branch: branch || null,
+    pushTarget: push.target,
+    pushReason: push.reason ?? null,
     files,
     additions: files.reduce((n, f) => n + (f.additions ?? 0), 0),
     deletions: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
@@ -142,6 +147,130 @@ export async function discardDiff(root: string): Promise<DiffDiscardResult> {
     }
   }
   return { ok: true };
+}
+
+/**
+ * Commits the selected paths, and pushes when asked (wireframe C15).
+ *
+ * Written with the same discipline as `discardDiff`: the renderer's inventory
+ * is display only, so the repository is resolved and its changes re-read here
+ * before anything is written. A path the user ticked that Git no longer
+ * reports as changed fails the whole commit rather than being dropped
+ * silently -- a commit missing a file the user chose is worse than one that
+ * did not happen.
+ *
+ * The commit is pathspec-limited, so a file staged outside Sertum is left in
+ * the index untouched instead of being swept into this commit. C11 has no
+ * hunk selection, so a chosen path is committed whole.
+ */
+export async function commitDiff(
+  request: DiffCommitRequest,
+): Promise<DiffCommitResult> {
+  const message = request.message.trim();
+  if (!message) return { ok: false, reason: 'A commit message is required.' };
+  if (!request.paths.length) {
+    return { ok: false, reason: 'Select at least one file to commit.' };
+  }
+
+  const inventory = await readDiff(request.root);
+  if (!inventory || !samePath(inventory.root, request.root)) {
+    return { ok: false, reason: 'The worktree could not be verified.' };
+  }
+
+  const changed = new Set(inventory.files.map((file) => file.path));
+  const selected: string[] = [];
+  for (const relative of request.paths) {
+    if (!safePath(inventory.root, relative)) {
+      return { ok: false, reason: `Refused unsafe path: ${relative}` };
+    }
+    if (!changed.has(relative)) {
+      return { ok: false, reason: `${relative} is no longer changed.` };
+    }
+    selected.push(relative);
+  }
+
+  // Untracked paths are unknown to Git until staged, and a pathspec commit
+  // only accepts paths it knows. Staging first also records deletions.
+  const staged = await gitOk(inventory.root, ['add', '-A', '--', ...selected]);
+  if (!staged) return { ok: false, reason: 'Git refused to stage the selection.' };
+
+  const committed = await gitOk(inventory.root, [
+    'commit',
+    '--message',
+    message,
+    '--',
+    ...selected,
+  ]);
+  if (!committed) return { ok: false, reason: 'Git refused to create the commit.' };
+
+  const commit = (await git(inventory.root, ['rev-parse', '--short', 'HEAD'])) ?? undefined;
+  if (!request.push) return { ok: true, commit };
+  return { ok: true, commit, push: await pushBranch(inventory.root, inventory.branch) };
+}
+
+/**
+ * Pushes the current branch to the target `resolvePushTarget` named, so the
+ * push goes exactly where C15's checkbox said it would.
+ */
+async function pushBranch(
+  root: string,
+  branch: string | null,
+): Promise<{ ok: boolean; reason?: string }> {
+  const target = await resolvePushTarget(root, branch);
+  if (!target.target) {
+    return { ok: false, reason: target.reason ?? 'There is nowhere to push.' };
+  }
+  const args = target.setUpstream
+    ? ['push', '--set-upstream', target.remote as string, branch as string]
+    : ['push'];
+  return (await gitOk(root, args))
+    ? { ok: true }
+    : { ok: false, reason: `Git could not push to ${target.target}.` };
+}
+
+/**
+ * Where a push would land, resolved before anything is written so the sheet
+ * can name the destination instead of promising "origin" and discovering
+ * otherwise. An upstream wins; failing that a lone remote is adopted
+ * explicitly, and anything less certain is declined with a reason rather than
+ * guessed at.
+ */
+async function resolvePushTarget(
+  root: string,
+  branch: string | null,
+): Promise<{
+  target: string | null;
+  remote?: string;
+  setUpstream?: boolean;
+  reason?: string;
+}> {
+  if (!branch) {
+    return { target: null, reason: 'Detached HEAD has no branch to push.' };
+  }
+
+  const upstream = await git(root, [
+    'rev-parse',
+    '--abbrev-ref',
+    '--symbolic-full-name',
+    '@{upstream}',
+  ]);
+  if (upstream) return { target: upstream };
+
+  const remotes =
+    (await git(root, ['remote']))?.split('\n').filter(Boolean) ?? [];
+  if (remotes.length !== 1) {
+    return {
+      target: null,
+      reason: remotes.length
+        ? `${branch} has no upstream and this repository has several remotes.`
+        : `${branch} has no upstream and this repository has no remote.`,
+    };
+  }
+  return {
+    target: `${remotes[0]}/${branch}`,
+    remote: remotes[0],
+    setUpstream: true,
+  };
 }
 
 function parseStatus(raw: string): Array<{ path: string; status: DiffFileInfo['status'] }> {

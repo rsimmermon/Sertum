@@ -84,11 +84,16 @@ What's built and verified so far:
 - [x] **Claude tool gating** — Pause tool use persistently denies
       `PreToolUse` through structured hook responses until resumed; the pane
       carries a TOOLS PAUSED chip and no terminal bytes are synthesized
-- [ ] Diff review (wireframe C11) — changed-file inventory, per-file unified
-      diff and types-to-confirm discard are built; the C15 commit sheet remains
+- [x] **Diff review and commit** (wireframes C11, C15) — changed-file
+      inventory, per-file unified diff, types-to-confirm discard, and a commit
+      sheet that commits the reviewed paths and optionally pushes. The
+      pull-request half (C16) is not built and its checkbox says so
 - [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
       beyond today's display/agent panes
-- [ ] Split views (wireframes G1–G8)
+- [x] **Split views** (wireframes G1–G8) — Single, Columns, Rows and Grid,
+      each pane sized to its own PTY; gutters clamp at a readable terminal,
+      focus moves spatially, and a session dropped on a pane moves rather
+      than duplicates. See "Pane layouts" below.
 
 ## How status actually works
 
@@ -429,6 +434,38 @@ Two things that cost time and are not obvious from the types:
   wide `FileNameW` the Win32 docs point at), and the uri-list body is a plain
   `file:///C:/...` URL. A bitmap arrives as `image/png`.
 
+## Committing from the review
+
+C15 is reached from C11's Commit & push button and writes through Git alone
+(`main/diff-review.ts`). Four decisions are worth keeping:
+
+- **The inventory on screen never authorises the write.** `commitDiff`
+  re-resolves the repository and re-reads its changes before touching
+  anything, exactly as `discardDiff` does. A path the user chose that Git no
+  longer reports as changed fails the whole commit rather than being dropped
+  quietly -- a commit silently missing a file someone selected is worse than
+  one that did not happen.
+- **The commit is pathspec-limited.** `git commit -- <paths>` means a file
+  staged outside Sertum stays in the index instead of being swept in. C11 has
+  no hunk selection, so a chosen path is committed whole. Untracked paths are
+  staged first, since a pathspec commit only accepts paths Git already knows.
+- **Committing and pushing are reported independently.** `DiffCommitResult`
+  carries the commit and the push outcome separately, so a commit that lands
+  behind a push that fails is shown as exactly that. The sheet stays open
+  saying "Committed <sha>. Not pushed -- <reason>" instead of implying the
+  work was lost.
+- **The push destination is resolved before it is offered, not assumed.**
+  `resolvePushTarget` prefers the branch's upstream, adopts a lone remote
+  explicitly, and otherwise declines with a reason; the same answer labels the
+  checkbox and performs the push, so the control names where the push will
+  actually land rather than promising `origin`. Verified against real repos in
+  all six states, including detached HEAD and two remotes with no upstream.
+
+Sertum does not compose the commit message. The sheet opens with an empty
+field and a placeholder: an invented summary would be committed under the
+user's name, and inferring one from a terminal is what the two planes forbid.
+No trailer of any kind is appended.
+
 ## Pane layouts
 
 Design section 07. A window shows one terminal by default; splitting is opt-in
@@ -674,6 +711,7 @@ src/
   main/settings.ts            Display/agent-path preferences, JSON in userData
   main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
+  main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search
@@ -699,6 +737,8 @@ src/
   renderer/worktree-dialog.ts     Worktree manager — wireframe C9
   renderer/new-session-dialog.ts  Wireframe C1
   renderer/adopt-dialog.ts        Wireframe C18
+  renderer/diff-review-dialog.ts  Changes review — wireframe C11
+  renderer/commit-dialog.ts       Commit & push sheet — wireframe C15
 scripts/
   smoke-pty.js                Headless PTY test
   drive.js                    CDP driver for headless verification

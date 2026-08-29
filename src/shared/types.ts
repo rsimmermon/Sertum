@@ -293,6 +293,13 @@ export interface DiffFileInfo {
 export interface DiffInventory {
   root: string;
   branch: string | null;
+  /**
+   * Where a push would land, e.g. `origin/main`, resolved by reading Git
+   * rather than assuming a remote name. Null when there is nowhere to push.
+   */
+  pushTarget: string | null;
+  /** Why `pushTarget` is null, as user-facing copy. */
+  pushReason: string | null;
   files: DiffFileInfo[];
   additions: number;
   deletions: number;
@@ -307,6 +314,56 @@ export interface DiffFilePatch {
 
 export interface DiffDiscardResult {
   ok: boolean;
+  reason?: string;
+}
+
+/**
+ * What C15 asks Git to do. Paths are the rows ticked in C11's inventory, so
+ * an empty list is a caller error rather than "commit everything".
+ */
+export interface DiffCommitRequest {
+  root: string;
+  message: string;
+  paths: string[];
+  push: boolean;
+}
+
+/**
+ * Committing and pushing succeed independently, so they are reported
+ * independently: a commit that lands and a push that cannot is a real state
+ * the sheet has to show without implying the work was lost.
+ */
+export interface DiffCommitResult {
+  ok: boolean;
+  /** Abbreviated hash of the commit that was written, when one was. */
+  commit?: string;
+  /** Absent when no push was asked for. */
+  push?: { ok: boolean; reason?: string };
+  reason?: string;
+}
+
+/**
+ * What C15 asks Git to do. Paths are the rows ticked in C11's inventory, so
+ * an empty list is a caller error rather than "commit everything".
+ */
+export interface DiffCommitRequest {
+  root: string;
+  message: string;
+  paths: string[];
+  push: boolean;
+}
+
+/**
+ * Committing and pushing succeed independently, so they are reported
+ * independently: a commit that lands and a push that cannot is a real state
+ * the sheet has to show without implying the work was lost.
+ */
+export interface DiffCommitResult {
+  ok: boolean;
+  /** Abbreviated hash of the commit that was written, when one was. */
+  commit?: string;
+  /** Absent when no push was asked for. */
+  push?: { ok: boolean; reason?: string };
   reason?: string;
 }
 
@@ -473,6 +530,16 @@ export interface SertumApi {
   readDiffFile(root: string, path: string): Promise<DiffFilePatch>;
   /** Permanently discard the currently reported worktree changes. */
   discardDiff(root: string): Promise<DiffDiscardResult>;
+  /**
+   * Commit the selected paths, optionally pushing (wireframe C15). Git is
+   * asked directly; no agent is involved and no terminal is written to.
+   */
+  commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
+  /**
+   * Commit the selected paths, optionally pushing (wireframe C15). Git is
+   * asked directly; no agent is involved and no terminal is written to.
+   */
+  commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
   /** Show a folder in the OS file manager. */
   revealPath(target: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */

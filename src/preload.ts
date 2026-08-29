@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  DiffCommitRequest,
   ManagedAgent,
   MenuState,
   SertumApi,
@@ -32,6 +33,8 @@ const api: SertumApi = {
   readDiffFile: (root: string, path: string) =>
     ipcRenderer.invoke('diff:file', { root, path }),
   discardDiff: (root: string) => ipcRenderer.invoke('diff:discard', root),
+  commitDiff: (request: DiffCommitRequest) =>
+    ipcRenderer.invoke('diff:commit', request),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   steerSession: (id: string, text: string) =>

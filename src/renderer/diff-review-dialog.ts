@@ -1,4 +1,5 @@
 import type { DiffFileInfo, DiffInventory } from '../shared/types';
+import { openCommitDialog } from './commit-dialog';
 import { openConfirmDialog } from './confirm-dialog';
 
 const api = window.sertum;
@@ -6,9 +7,9 @@ const api = window.sertum;
 /**
  * Git-backed changes review — wireframe C11 (frame eeoMn).
  *
- * This first slice is intentionally read-only. It makes the review useful
- * without quietly bundling destructive discard or network-affecting push
- * behavior into the same surface.
+ * Discard and commit both re-read Git before acting, so what this dialog
+ * shows is never what authorises a write -- the inventory on screen is
+ * display only.
  */
 export async function openDiffReviewDialog(cwd: string): Promise<void> {
   const overlay = document.createElement('div');
@@ -75,10 +76,18 @@ function render(inv: DiffInventory, dlg: HTMLElement, close: () => void): void {
     const refreshed = await api.readDiff(inv.root);
     if (refreshed) render(refreshed, dlg, close);
   };
-  actions.append(
-    discard,
-    disabled('Commit & push', 'The C15 commit sheet is not built yet.', 'primary'),
-  );
+  const commit = actionButton('Commit & push', 'primary');
+  commit.disabled = !inv.files.length;
+  if (!inv.files.length) commit.title = 'There is nothing to commit.';
+  commit.onclick = async () => {
+    // C15 commits the inventory this dialog is showing, so a commit sends us
+    // back to Git for a fresh one rather than trusting what is on screen.
+    if (!(await openCommitDialog(inv))) return;
+    dlg.textContent = 'Reading changes…';
+    const refreshed = await api.readDiff(inv.root);
+    if (refreshed) render(refreshed, dlg, close);
+  };
+  actions.append(discard, commit);
   head.append(actions);
 
   if (!inv.files.length) {
@@ -182,13 +191,6 @@ function message(text: string): HTMLElement {
   el.className = 'diff-message';
   el.textContent = text;
   return el;
-}
-
-function disabled(label: string, title: string, tone: string): HTMLButtonElement {
-  const button = actionButton(label, tone);
-  button.title = title;
-  button.disabled = true;
-  return button;
 }
 
 function actionButton(label: string, tone: string): HTMLButtonElement {

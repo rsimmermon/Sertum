@@ -32,7 +32,12 @@ import {
   readWorktrees,
   removeWorktree,
 } from './main/worktrees';
-import { discardDiff, readDiff, readDiffFile } from './main/diff-review';
+import {
+  commitDiff,
+  discardDiff,
+  readDiff,
+  readDiffFile,
+} from './main/diff-review';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import {
@@ -60,6 +65,7 @@ import { focusExternalSession } from './main/adapters/window-focus';
 import type {
   AgentKind,
   BinaryDetection,
+  DiffCommitRequest,
   ManagedAgent,
   MenuState,
   DiscoveredSession,
@@ -449,6 +455,9 @@ ipcMain.handle(
     readDiffFile(root, file),
 );
 ipcMain.handle('diff:discard', (_e, root: string) => discardDiff(root));
+ipcMain.handle('diff:commit', (_e, request: DiffCommitRequest) =>
+  commitDiff(request),
+);
 ipcMain.handle('shell:reveal', (_e, target: string) => {
   shell.showItemInFolder(target);
 });

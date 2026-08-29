@@ -1366,6 +1366,21 @@ select.field {
 .diff-message, .diff-empty { display: grid; flex: 1; place-items: center; padding: 24px; color: var(--muted); font-size: 12px; text-align: center; }
 .diff-error { flex: none; padding: 9px 11px; border-radius: 5px; color: var(--err); background: var(--err-soft); }
 .confirm-type { display: flex; flex-direction: column; gap: 6px; }
+/* ------------------------------------------------- C15 commit sheet */
+.commit-dialog { width: 460px; display: flex; flex-direction: column; gap: 10px; }
+.commit-dialog h3 { margin: 0; }
+.commit-dialog .field-label { margin-top: 2px; }
+.commit-dialog textarea.field { resize: vertical; font: 12px/1.5 var(--font-mono); }
+.commit-check { align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+/* A control that is present so its reason can be read, not to be clicked. */
+.commit-check.is-declined { color: var(--muted); cursor: help; }
+.commit-status {
+  padding: 8px 10px; border-radius: 5px; font-size: 12px; line-height: 1.45;
+  color: var(--ink-2); background: var(--surface);
+}
+.commit-status.is-error { color: var(--err); background: var(--err-soft); }
+.commit-status.is-warn { color: var(--warn); background: var(--warn-soft); }
+
 @media (max-width: 680px) {
   .diff-body { grid-template-columns: 160px minmax(0, 1fr); }
   .diff-actions { display: none; }
