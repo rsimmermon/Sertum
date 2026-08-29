@@ -23,7 +23,15 @@ const AGENT_COMMANDS: Array<{
   match: RegExp;
   reject?: RegExp;
 }> = [
-  { agent: 'claude', match: /(^|\/)claude$/ },
+  // Claude's helpers wear the same binary name as a session: `daemon run`
+  // hosts background sessions, and `--bg-pty-host` wraps the one it spawns.
+  // Both are plumbing for a session Claude's own roster already reports, so
+  // scanning them lists a single session three times.
+  {
+    agent: 'claude',
+    match: /(^|\/)claude$/,
+    reject: /^(daemon|--bg-pty-host)(\s|$)/,
+  },
   // `codex app-server` is the JSON-RPC plumbing this app spawns for itself
   // (see codex-app-server.ts), not a session anyone opened.
   { agent: 'codex', match: /(^|\/)codex$/, reject: /^app-server(\s|$)/ },
@@ -110,7 +118,14 @@ export async function cwdForPid(pid: number): Promise<string | null> {
   return null;
 }
 
-/** Windows has no `ps`; enumerate through PowerShell instead. */
+/**
+ * Windows has no `ps`; enumerate through PowerShell instead.
+ *
+ * `CommandLine` is selected for the same reason the POSIX pass reads `args=`
+ * rather than `comm=`: a binary name alone cannot separate a session from the
+ * agent's own plumbing. The reject rules in `AGENT_COMMANDS` are applied here
+ * too, so a helper is ruled out in one place for both platforms.
+ */
 async function scanWindows(): Promise<ScannedProcess[]> {
   try {
     const { stdout } = await run(
@@ -118,13 +133,13 @@ async function scanWindows(): Promise<ScannedProcess[]> {
       [
         '-NoProfile',
         '-Command',
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(claude|codex|grok)(\\.exe)?$' -and $_.CommandLine -notmatch '\\bapp-server\\b' } | Select-Object ProcessId,Name | ConvertTo-Json -Compress",
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(claude|codex|grok)(\\.exe)?$' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress",
       ],
-      { timeout: 8000 },
+      { timeout: 8000, maxBuffer: 8_000_000 },
     );
     const parsed: unknown = JSON.parse(stdout || '[]');
     const rows = Array.isArray(parsed) ? parsed : [parsed];
-    return rows.flatMap((r) => {
+    return rows.flatMap((r): ScannedProcess[] => {
       const o = r as Record<string, unknown>;
       const pid = Number(o.ProcessId);
       const name = String(o.Name ?? '').toLowerCase();
@@ -134,9 +149,28 @@ async function scanWindows(): Promise<ScannedProcess[]> {
         : name.startsWith('grok')
           ? 'grok'
           : 'claude';
+      const args = argsOf(String(o.CommandLine ?? ''));
+      if (AGENT_COMMANDS.find((a) => a.agent === agent)?.reject?.test(args)) {
+        return [];
+      }
       return [{ pid, agent, cwd: null, tty: null, startedAt: null }];
     });
   } catch {
     return [];
   }
+}
+
+/**
+ * Everything after argv[0] in a Windows command line. The executable path is
+ * quoted when it needs to be and bare otherwise, and both forms appear among
+ * the agents' own processes.
+ */
+function argsOf(commandLine: string): string {
+  const line = commandLine.trim();
+  if (line.startsWith('"')) {
+    const close = line.indexOf('"', 1);
+    if (close !== -1) return line.slice(close + 1).trim();
+  }
+  const gap = line.indexOf(' ');
+  return gap === -1 ? '' : line.slice(gap + 1).trim();
 }

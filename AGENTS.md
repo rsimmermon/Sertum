@@ -619,6 +619,25 @@ fixed along the way:
   log line — `using the inherited environment; login shell did not answer` —
   reads like a failure on Windows but is actually "as designed, never
   attempted."
+- **The Windows process scan listed one Claude session three times.** The
+  POSIX pass reads `args=` and applies a per-agent `reject` rule, but
+  `scanWindows()` selected only `ProcessId,Name` and pushed the
+  `app-server` exclusion into the WMI filter, so nothing else could be ruled
+  out. Claude's helpers wear the session's own binary name -- verified on
+  Windows 11, one background session is `claude.exe daemon run --origin
+  transient` (the daemon), `claude.exe --bg-pty-host \\.\pipe\cc-daemon-...`
+  (the PTY host) and `claude.exe --session-id ... --resume ...` (the session
+  Claude's roster already reports) -- so the import list offered all three,
+  two of them with an unknown folder. Fixed by selecting `CommandLine` on
+  Windows and applying the same `AGENT_COMMANDS` reject rules both platforms
+  share, with `^(daemon|--bg-pty-host)(\s|$)` added for Claude. The live scan
+  drops from five rows to two: the real session and one interactive Claude in
+  another terminal.
+- **A monitor row's folder stays unknown on Windows.** `cwdForPid` shells out
+  to `lsof` and returns `null` off POSIX; a Windows process's working
+  directory lives in its PEB, which WMI does not expose. The row still lists,
+  summarises and raises its window, so this is a missing detail rather than a
+  broken row.
 - **Closing the window quits the whole app, unlike macOS.**
   `window-all-closed` already guards on `process.platform !== 'darwin'`, so
   this is handled correctly, not a bug — but it's a real behavior difference
