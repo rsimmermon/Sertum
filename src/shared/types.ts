@@ -278,6 +278,33 @@ export interface WorktreeProvisionResult {
   reason?: string;
 }
 
+/** One changed path in C11's Git-backed review inventory. */
+export interface DiffFileInfo {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+  /** Why this path cannot be rendered, when Git has no useful text patch. */
+  reason: string | null;
+}
+
+/** Read-only summary of the worktree changes shown by wireframe C11. */
+export interface DiffInventory {
+  root: string;
+  branch: string | null;
+  files: DiffFileInfo[];
+  additions: number;
+  deletions: number;
+}
+
+/** A single file's unified diff, loaded only when its row is selected. */
+export interface DiffFilePatch {
+  path: string;
+  patch: string | null;
+  reason: string | null;
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -435,6 +462,10 @@ export interface SertumApi {
     branch: string,
     copyIncludes: boolean,
   ): Promise<WorktreeProvisionResult>;
+  /** Read changed paths directly from Git (wireframe C11). */
+  readDiff(cwd: string): Promise<DiffInventory | null>;
+  /** Load one selected path's unified diff without involving an agent. */
+  readDiffFile(root: string, path: string): Promise<DiffFilePatch>;
   /** Show a folder in the OS file manager. */
   revealPath(target: string): Promise<void>;
   /** Native folder picker. Resolves null if the user cancels. */

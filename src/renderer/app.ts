@@ -10,6 +10,7 @@ import {
   type PaletteAction,
 } from './command-palette';
 import { openWorktreeDialog } from './worktree-dialog';
+import { openDiffReviewDialog } from './diff-review-dialog';
 import { openTextPrompt } from './text-prompt-dialog';
 import {
   buildPaneGrid,
@@ -1239,7 +1240,11 @@ export class App {
         onSelect: () => void api.copyText(s.cwd),
       },
       SEPARATOR,
-      { label: 'Review changes…', accel: '⌘⇧D' },
+      {
+        label: 'Review changes…',
+        accel: '⌘⇧D',
+        onSelect: () => void openDiffReviewDialog(s.cwd),
+      },
       { label: 'Commit & push…' },
       { label: 'Open pull request…' },
       { label: 'Worktree manager…', onSelect: () => void this.promptWorktrees(s.cwd) },
@@ -1386,6 +1391,12 @@ export class App {
         glyph: '⌥',
         label: 'Worktree manager…',
         run: () => void this.promptWorktrees(),
+      },
+      {
+        glyph: '±',
+        label: 'Review changes in focused session…',
+        accel: '⌘⇧D',
+        run: active ? () => void openDiffReviewDialog(active.cwd) : undefined,
       },
       {
         glyph: '↪',

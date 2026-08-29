@@ -28,6 +28,9 @@ const api: SertumApi = {
     ipcRenderer.invoke('worktree:remove', { root, path, force }),
   provisionWorktree: (cwd: string, branch: string, copyIncludes: boolean) =>
     ipcRenderer.invoke('worktree:provision', { cwd, branch, copyIncludes }),
+  readDiff: (cwd: string) => ipcRenderer.invoke('diff:read', cwd),
+  readDiffFile: (root: string, path: string) =>
+    ipcRenderer.invoke('diff:file', { root, path }),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   steerSession: (id: string, text: string) =>

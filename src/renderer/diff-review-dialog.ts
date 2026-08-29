@@ -1,0 +1,184 @@
+import type { DiffFileInfo, DiffInventory } from '../shared/types';
+
+const api = window.sertum;
+
+/**
+ * Git-backed changes review — wireframe C11 (frame eeoMn).
+ *
+ * This first slice is intentionally read-only. It makes the review useful
+ * without quietly bundling destructive discard or network-affecting push
+ * behavior into the same surface.
+ */
+export async function openDiffReviewDialog(cwd: string): Promise<void> {
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  const dlg = document.createElement('div');
+  dlg.className = 'dialog diff-dialog';
+  overlay.append(dlg);
+  document.body.append(overlay);
+
+  const close = (): void => overlay.remove();
+  overlay.onmousedown = (e) => {
+    if (e.target === overlay) close();
+  };
+  overlay.onkeydown = (e) => {
+    if (e.key === 'Escape') close();
+  };
+
+  dlg.textContent = 'Reading changes…';
+  const inventory = await api.readDiff(cwd).catch(() => null);
+  if (!inventory) {
+    dlg.replaceChildren(
+      heading('Changes', 'This folder is not inside a Git repository.'),
+      footer(close),
+    );
+    return;
+  }
+  render(inventory, dlg, close);
+}
+
+function render(inv: DiffInventory, dlg: HTMLElement, close: () => void): void {
+  const head = document.createElement('div');
+  head.className = 'diff-head';
+  head.append(
+    heading(
+      'Changes',
+      `${inv.branch ?? 'detached HEAD'} · ${count(inv.files.length, 'file')} · +${inv.additions} −${inv.deletions}`,
+    ),
+  );
+  const actions = document.createElement('div');
+  actions.className = 'diff-actions';
+  actions.append(
+    disabled('Discard all', 'Destructive review actions are not built yet.', 'danger'),
+    disabled('Commit & push', 'The C15 commit sheet is not built yet.', 'primary'),
+  );
+  head.append(actions);
+
+  if (!inv.files.length) {
+    const empty = document.createElement('div');
+    empty.className = 'diff-empty';
+    empty.textContent = 'This worktree has no uncommitted changes.';
+    dlg.replaceChildren(head, empty, footer(close));
+    return;
+  }
+
+  const body = document.createElement('div');
+  body.className = 'diff-body';
+  const list = document.createElement('div');
+  list.className = 'diff-files';
+  const view = document.createElement('div');
+  view.className = 'diff-view';
+  body.append(list, view);
+
+  let selected: HTMLButtonElement | null = null;
+  let request = 0;
+  const choose = async (file: DiffFileInfo, row: HTMLButtonElement): Promise<void> => {
+    selected?.classList.remove('active');
+    selected = row;
+    row.classList.add('active');
+    const ticket = ++request;
+    view.replaceChildren(diffTitle(file), message('Reading diff…'));
+    const result = await api.readDiffFile(inv.root, file.path);
+    if (ticket !== request) return;
+    const content = result.patch ? patch(result.patch) : message(result.reason ?? 'No diff to show.');
+    view.replaceChildren(diffTitle(file), content);
+  };
+
+  for (const file of inv.files) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'diff-file';
+    const path = document.createElement('span');
+    path.className = 'diff-file-path';
+    path.textContent = file.path;
+    path.title = file.path;
+    const stat = document.createElement('span');
+    stat.className = 'diff-file-stat';
+    stat.textContent = file.reason
+      ? file.binary
+        ? 'binary'
+        : 'not shown'
+      : `+${file.additions ?? 0} −${file.deletions ?? 0}`;
+    row.append(path, stat);
+    row.onclick = () => void choose(file, row);
+    list.append(row);
+  }
+
+  dlg.replaceChildren(head, body, footer(close));
+  (list.firstElementChild as HTMLButtonElement | null)?.click();
+}
+
+function diffTitle(file: DiffFileInfo): HTMLElement {
+  const title = document.createElement('div');
+  title.className = 'diff-view-title';
+  const path = document.createElement('span');
+  path.textContent = file.path;
+  const status = document.createElement('span');
+  status.className = 'diff-status';
+  status.textContent = file.status.toUpperCase();
+  title.append(path, status);
+  return title;
+}
+
+function patch(value: string): HTMLElement {
+  const pre = document.createElement('pre');
+  pre.className = 'diff-patch';
+  for (const valueLine of value.split('\n')) {
+    const line = document.createElement('span');
+    line.className =
+      valueLine.startsWith('+') && !valueLine.startsWith('+++')
+        ? 'add'
+        : valueLine.startsWith('-') && !valueLine.startsWith('---')
+          ? 'del'
+          : valueLine.startsWith('@@')
+            ? 'hunk'
+            : '';
+    line.textContent = valueLine || ' ';
+    pre.append(line);
+  }
+  return pre;
+}
+
+function heading(title: string, sub: string): HTMLElement {
+  const col = document.createElement('div');
+  col.className = 'diff-heading';
+  const h = document.createElement('h2');
+  h.textContent = title;
+  const p = document.createElement('p');
+  p.textContent = sub;
+  col.append(h, p);
+  return col;
+}
+
+function message(text: string): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'diff-message';
+  el.textContent = text;
+  return el;
+}
+
+function disabled(label: string, title: string, tone: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `btn ${tone} small`;
+  button.textContent = label;
+  button.title = title;
+  button.disabled = true;
+  return button;
+}
+
+function footer(close: () => void): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'dialog-footer';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn primary';
+  button.textContent = 'Close';
+  button.onclick = close;
+  el.append(button);
+  return el;
+}
+
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
