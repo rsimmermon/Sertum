@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Packs assets/icon.png into a Windows assets/icon.ico.
+ * Packs the Windows-specific vector master into assets/icon.ico.
  *
  * Uses the PNG-payload ICO variant (Vista+), so each entry is just the resized
- * PNG bytes — no BMP/mask encoding needed. Resizing is done with sips, so this
- * is macOS-only; the committed assets/icon.ico is what Windows builds consume.
+ * PNG bytes — no BMP/mask encoding needed. ImageMagick renders each size from
+ * vector independently, keeping the square segment ends crisp at 16–32px.
  */
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -12,19 +12,20 @@ const os = require('node:os');
 const path = require('node:path');
 
 const root = path.join(__dirname, '..');
-const src = path.join(root, 'assets', 'icon.png');
+const src = path.join(root, 'assets', 'icon-windows.svg');
 const dest = path.join(root, 'assets', 'icon.ico');
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
-
-if (process.platform !== 'darwin') {
-  console.error('[make-ico] needs sips (macOS); leaving assets/icon.ico as-is');
-  process.exit(0);
-}
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sertum-ico-'));
 const images = SIZES.map((px) => {
   const out = path.join(tmp, `${px}.png`);
-  execFileSync('sips', ['-z', String(px), String(px), src, '--out', out], { stdio: 'ignore' });
+  execFileSync('magick', [
+    '-background', 'none',
+    src,
+    '-resize', `${px}x${px}`,
+    '-unsharp', '0x0.55+0.7+0.01',
+    out,
+  ], { stdio: 'ignore' });
   return { px, data: fs.readFileSync(out) };
 });
 

@@ -588,6 +588,12 @@ fixed along the way:
   `dev-app-name.js`, but nothing did the equivalent for the title bar and
   taskbar on Windows. Fixed by passing an explicit `icon:` to `BrowserWindow`
   whenever `MAIN_WINDOW_VITE_DEV_SERVER_URL` is set (i.e., only in dev).
+- **The Windows icon has its own tighter vector master.** The 88px transparent
+  margin in `assets/icon.png` is intentional for macOS, but made the same mark
+  visibly undersized in the Windows taskbar and reduced its 38px segments to
+  roughly one pixel. `assets/icon-windows.svg` uses a 40px safe area and 54px
+  square-ended segments; `scripts/make-ico.js` renders every ICO entry from
+  that vector so the 16–32px variants keep defined edges and visible gaps.
 - **`node-pty`'s ConPTY `kill()` can throw a benign but scary-looking
   uncaught exception.** On the non-DLL ConPTY path, `kill()` forks a helper
   (`conpty_console_list_agent.js`) to enumerate and force-kill the shell's

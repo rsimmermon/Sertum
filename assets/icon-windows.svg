@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#303640"/>
+      <stop offset="1" stop-color="#0b0d10"/>
+    </linearGradient>
+  </defs>
+  <!-- Windows taskbar artwork uses a smaller safe area than the macOS tile. -->
+  <rect x="40" y="40" width="944" height="944" rx="205" fill="url(#tile)"/>
+  <g fill="none" stroke="#f4f6fa" stroke-width="54" stroke-linecap="square">
+    <path d="M 580 250 L 720 331"/>
+    <path d="M 772 432 L 772 592"/>
+    <path d="M 720 693 L 580 774"/>
+    <path d="M 444 774 L 304 693"/>
+    <path d="M 252 592 L 252 432"/>
+  </g>
+  <path d="M 304 331 L 444 250" fill="none" stroke="#f2c44f" stroke-width="54" stroke-linecap="square"/>
+</svg>
