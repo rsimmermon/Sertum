@@ -212,6 +212,26 @@ Claude currently exposes that account roster only through an interactive slash
 command, so reading it would require parsing TUI pixels and violate the two
 planes. This is separate from publishing a session Sertum owns.
 
+### Verified Codex control surface
+
+Codex CLI 0.150.1's generated app-server schema and a live Windows app-server
+probe establish three answers that were previously unknown:
+
+- `turn/interrupt` is a stable request taking `threadId` and `turnId`.
+- `turn/steer` is a stable request taking `threadId`, the active turn as
+  `expectedTurnId`, and structured input; it can also carry application or
+  untrusted `additionalContext`.
+- Codex Remote Control works on Windows and exposes enable, disable, status,
+  pairing and client-management requests. These methods appear only when the
+  client initializes with `capabilities.experimentalApi: true`; without that
+  negotiation the server rejects them. Sertum therefore continues to decline
+  this capability until it deliberately adopts the experimental contract.
+
+The generated protocol is implementation evidence, not a documented public
+OpenAI contract. Keep the generated method names behind `AgentAdapter` rather
+than leaking them into renderer branches, and re-run the schema probe when the
+installed Codex version changes.
+
 ## Adopting sessions started outside the app
 
 A PTY's master file descriptor belongs to whoever spawned it. A session started

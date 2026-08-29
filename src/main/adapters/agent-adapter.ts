@@ -115,8 +115,9 @@ class CodexAdapter implements AgentAdapter {
   readonly capabilities: AgentCapabilities = {
     'rename-remote': { ok: true },
     // Codex does have a remote surface, but it is a separate `app-server
-    // daemon` with its own control socket rather than a flag on the TUI, and
-    // it is POSIX-only. Declined until Sertum actually runs that daemon.
+    // daemon` with its own control socket rather than a flag on the TUI.
+    // Its API is experimental even though it works on Windows, so decline
+    // until Sertum deliberately opts into and owns that unstable contract.
     'remote-control': {
       ok: false,
       reason:
