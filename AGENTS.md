@@ -486,6 +486,14 @@ Development so far has mostly happened on macOS. Running on Windows 11
 surfaced a handful of differences, some already handled in code and some
 fixed along the way:
 
+- **Run Forge packaging under Node 20 LTS, not Node 26.** Verified with Node
+  26.7.0 and Forge 7.11.2 / Electron Packager 18.4.4: `npm run make` reaches
+  Electron ZIP extraction, then the process exits with code 0 before producing
+  a packaged directory or refreshing any maker artifact. The same checkout
+  invoked with the installed Node 20.20.2 and npm 10.8.2 completes packaging
+  and the Squirrel maker normally. This does not require changing the global
+  nvm selection; prepend the Node 20 directory to PATH for the build process
+  and invoke that version's npm CLI directly.
 - **Forge's rebuild step wants a full native toolchain it doesn't need.**
   `node-pty` ships its own prebuilt N-API binaries per platform/arch
   (`node_modules/node-pty/prebuilds/win32-x64/…`), and N-API is ABI-stable
