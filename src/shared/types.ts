@@ -367,6 +367,43 @@ export interface DiffCommitResult {
   reason?: string;
 }
 
+/**
+ * What C16 can offer for the current branch, resolved before the sheet is
+ * shown. `ok: false` always carries a `reason` the user can act on.
+ */
+export interface PullRequestContext {
+  ok: boolean;
+  reason: string | null;
+  /** owner/name, as GitHub knows it. */
+  repo: string | null;
+  base: string | null;
+  head: string | null;
+  /** A pull request this branch already has, if any. */
+  existing: {
+    url: string;
+    number: number;
+    state: string;
+    title: string;
+  } | null;
+  /** Commit subjects on the branch but not on base, newest first. */
+  commits: string[];
+  /**
+   * The branch has commits GitHub has not seen. The sheet says so on its
+   * button and pushes before creating, rather than refusing.
+   */
+  needsPush: boolean;
+  /** Seeded from a lone commit's own words; empty when there are several. */
+  title: string;
+  body: string;
+}
+
+export interface PullRequestResult {
+  ok: boolean;
+  /** The new pull request, or the existing one that blocked it. */
+  url?: string;
+  reason?: string;
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -535,6 +572,15 @@ export interface SertumApi {
    * asked directly; no agent is involved and no terminal is written to.
    */
   commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
+  /** What a pull request for the current branch would need (wireframe C16). */
+  readPullRequest(root: string): Promise<PullRequestContext>;
+  /** Open the pull request through the GitHub CLI. */
+  createPullRequest(request: {
+    root: string;
+    title: string;
+    body: string;
+    draft: boolean;
+  }): Promise<PullRequestResult>;
   /**
    * Commit the selected paths, optionally pushing (wireframe C15). Git is
    * asked directly; no agent is involved and no terminal is written to.
@@ -542,6 +588,8 @@ export interface SertumApi {
   commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
   /** Show a folder in the OS file manager. */
   revealPath(target: string): Promise<void>;
+  /** Open an http(s) URL in the browser. Any other scheme is refused. */
+  openExternal(url: string): Promise<boolean>;
   /** Native folder picker. Resolves null if the user cancels. */
   pickDirectory(startIn?: string): Promise<string | null>;
   /** Native file picker, for browsing to an agent's CLI. Resolves null if the user cancels. */

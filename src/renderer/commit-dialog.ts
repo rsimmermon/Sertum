@@ -1,4 +1,5 @@
 import type { DiffCommitResult, DiffInventory } from '../shared/types';
+import { openPullRequestDialog } from './pull-request-dialog';
 
 const api = window.sertum;
 
@@ -63,17 +64,15 @@ export function openCommitDialog(inv: DiffInventory): Promise<boolean> {
     }
     pushRow.append(pushBox, pushCopy);
 
-    // The pull-request half of C15 chains into C16, which is not built. Shown
-    // disabled with the reason rather than hidden, matching how a declined
-    // agent capability reads elsewhere in the app.
+    // C15 note 131: this chains into C16 once the push has landed. It follows
+    // the push rather than standing alone, because a pull request needs the
+    // branch on the remote first.
     const prRow = document.createElement('label');
-    prRow.className = 'check commit-check is-declined';
+    prRow.className = 'check commit-check';
     const prBox = document.createElement('input');
     prBox.type = 'checkbox';
-    prBox.disabled = true;
     const prCopy = document.createElement('span');
     prCopy.textContent = 'Open a pull request after pushing';
-    prRow.title = 'The C16 pull-request sheet is not built yet.';
     prRow.append(prBox, prCopy);
 
     const status = document.createElement('div');
@@ -85,9 +84,14 @@ export function openCommitDialog(inv: DiffInventory): Promise<boolean> {
     submit.disabled = true;
 
     const syncSubmit = (): void => {
-      submit.textContent =
-        pushBox.checked && !pushBox.disabled ? 'Commit & push' : 'Commit';
+      const pushing = pushBox.checked && !pushBox.disabled;
+      submit.textContent = pushing ? 'Commit & push' : 'Commit';
       submit.disabled = message.value.trim().length === 0;
+      // Without a push there is nothing for GitHub to open a request against.
+      prBox.disabled = !pushing;
+      if (!pushing) prBox.checked = false;
+      prRow.classList.toggle('is-declined', !pushing);
+      prRow.title = pushing ? '' : 'A pull request needs the branch pushed first.';
     };
     message.oninput = syncSubmit;
     pushBox.onchange = syncSubmit;
@@ -127,7 +131,10 @@ export function openCommitDialog(inv: DiffInventory): Promise<boolean> {
         );
         return;
       }
+
+      const chain = prBox.checked && !prBox.disabled;
       finish();
+      if (chain) await openPullRequestDialog(inv.root);
     }
 
     function show(text: string, tone: 'error' | 'warn' | null): void {

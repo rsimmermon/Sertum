@@ -38,6 +38,10 @@ import {
   readDiff,
   readDiffFile,
 } from './main/diff-review';
+import {
+  createPullRequest,
+  readPullRequestContext,
+} from './main/pull-request';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import {
@@ -458,8 +462,35 @@ ipcMain.handle('diff:discard', (_e, root: string) => discardDiff(root));
 ipcMain.handle('diff:commit', (_e, request: DiffCommitRequest) =>
   commitDiff(request),
 );
+ipcMain.handle('pr:read', (_e, root: string) => readPullRequestContext(root));
+ipcMain.handle(
+  'pr:create',
+  (
+    _e,
+    request: { root: string; title: string; body: string; draft: boolean },
+  ) => createPullRequest(request),
+);
 ipcMain.handle('shell:reveal', (_e, target: string) => {
   shell.showItemInFolder(target);
+});
+/**
+ * Opens a web URL in the user's browser.
+ *
+ * Deliberately restricted to http(s). `shell.openExternal` hands any other
+ * scheme to whatever the OS registered for it, which is how a renderer bug or
+ * a hostile string turns into launching a local program -- and the URLs that
+ * reach here come from `gh`'s output, not from us.
+ */
+ipcMain.handle('shell:open-external', (_e, url: string) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  void shell.openExternal(parsed.toString());
+  return true;
 });
 /**
  * Deep link to the pane holding our Apple events grant.

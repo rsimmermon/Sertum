@@ -210,9 +210,10 @@ export async function commitDiff(
 
 /**
  * Pushes the current branch to the target `resolvePushTarget` named, so the
- * push goes exactly where C15's checkbox said it would.
+ * push goes exactly where C15's checkbox said it would. Exported because C16
+ * pushes an unpushed branch on the same terms before opening a pull request.
  */
-async function pushBranch(
+export async function pushBranch(
   root: string,
   branch: string | null,
 ): Promise<{ ok: boolean; reason?: string }> {

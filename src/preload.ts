@@ -35,7 +35,16 @@ const api: SertumApi = {
   discardDiff: (root: string) => ipcRenderer.invoke('diff:discard', root),
   commitDiff: (request: DiffCommitRequest) =>
     ipcRenderer.invoke('diff:commit', request),
+  readPullRequest: (root: string) => ipcRenderer.invoke('pr:read', root),
+  createPullRequest: (request: {
+    root: string;
+    title: string;
+    body: string;
+    draft: boolean;
+  }) => ipcRenderer.invoke('pr:create', request),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
+  openExternal: (url: string) =>
+    ipcRenderer.invoke('shell:open-external', url),
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   steerSession: (id: string, text: string) =>
     ipcRenderer.invoke('session:steer', { id, text }),

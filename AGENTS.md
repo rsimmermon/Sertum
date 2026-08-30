@@ -84,10 +84,10 @@ What's built and verified so far:
 - [x] **Claude tool gating** — Pause tool use persistently denies
       `PreToolUse` through structured hook responses until resumed; the pane
       carries a TOOLS PAUSED chip and no terminal bytes are synthesized
-- [x] **Diff review and commit** (wireframes C11, C15) — changed-file
-      inventory, per-file unified diff, types-to-confirm discard, and a commit
-      sheet that commits the reviewed paths and optionally pushes. The
-      pull-request half (C16) is not built and its checkbox says so
+- [x] **Diff review, commit and pull request** (wireframes C11, C15, C16) —
+      changed-file inventory, per-file unified diff, types-to-confirm discard,
+      a commit sheet that commits the reviewed paths and optionally pushes,
+      and a pull-request sheet driven by the GitHub CLI
 - [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
       beyond today's display/agent panes
 - [x] **Split views** (wireframes G1–G8) — Single, Columns, Rows and Grid,
@@ -466,6 +466,40 @@ field and a placeholder: an invented summary would be committed under the
 user's name, and inferring one from a terminal is what the two planes forbid.
 No trailer of any kind is appended.
 
+### C16 goes through the GitHub CLI
+
+`main/pull-request.ts` shells out to `gh` rather than calling the REST API,
+for one reason: **`gh` already owns the credential**. Reimplementing auth here
+would mean discovering, storing or prompting for a token the user has already
+handed to a tool built to hold it.
+
+Two things the CLI's contract dictates, both verified against gh 2.89.0:
+
+- **`gh pr view` exits 1 when a branch has no pull request**, printing to
+  stderr, so it cannot distinguish "none" from "failed". Existence detection
+  uses `gh pr list --head <branch> --json ...`, which exits 0 and returns `[]`.
+- **`gh pr create` cannot open a request for commits GitHub has never seen**,
+  and running it non-interactively means its own offer to push simply fails.
+  Rather than refuse, the sheet says so on its button -- "Push and create pull
+  request" -- and performs the push first, reusing the same `pushBranch` and
+  the same resolved target C15 uses.
+
+Every other precondition is answered before the sheet offers anything, in the
+same spirit as a declined agent capability: no `gh`, signed out, detached
+HEAD, sitting on the default branch, or a branch that already has a pull
+request each produce a reason the user can act on rather than a button that
+fails when pressed.
+
+Title and body are seeded only from a **lone** commit's own subject and body.
+Those are the user's words. Several commits have no such answer, so the fields
+stay empty rather than being invented -- the same rule the commit message
+follows.
+
+`shell:open-external` was added for the resulting URL and is restricted to
+http(s). `shell.openExternal` hands any other scheme to whatever the OS
+registered for it, which is how a renderer bug or a hostile string turns into
+launching a local program -- and these URLs come from `gh`'s output.
+
 ## Pane layouts
 
 Design section 07. A window shows one terminal by default; splitting is opt-in
@@ -712,6 +746,7 @@ src/
   main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
   main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)
+  main/pull-request.ts        Pull requests through the GitHub CLI (C16)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search
@@ -739,6 +774,7 @@ src/
   renderer/adopt-dialog.ts        Wireframe C18
   renderer/diff-review-dialog.ts  Changes review — wireframe C11
   renderer/commit-dialog.ts       Commit & push sheet — wireframe C15
+  renderer/pull-request-dialog.ts Open pull request — wireframe C16
 scripts/
   smoke-pty.js                Headless PTY test
   drive.js                    CDP driver for headless verification
