@@ -201,6 +201,17 @@ export function openSettingsDialog(
         pane.append(field(a.label, stack, 'Leave blank to auto-detect.', true));
       }
 
+      pane.append(sectionHead('Approvals'));
+      pane.append(
+        toggle(
+          'Answer permission requests in Sertum',
+          working.approvalsInApp,
+          (v) => apply({ approvalsInApp: v }),
+          'Shows an approval bar above the terminal. The agent’s turn waits ' +
+            'for you, and falls back to its own prompt after two minutes.',
+        ),
+      );
+
       pane.append(sectionHead('Permission rules'));
       pane.append(
         note(

@@ -1449,6 +1449,27 @@ select.field {
   .diff-actions { display: none; }
 }
 
+/* ------------------------------------------------- B5 approval bar */
+/*
+ * Above the terminal, never over it: answering the question means reading the
+ * output that led to it.
+ */
+.approval-bar {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 9px 12px; margin: 0 0 1px;
+  background: var(--warn-soft); border-top: 1px solid var(--warn);
+  border-bottom: 1px solid var(--warn);
+}
+.approval-bar[hidden] { display: none; }
+.approval-icon { flex: none; color: var(--warn); font-size: 14px; }
+.approval-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.approval-title { font-size: 12px; font-weight: 600; color: var(--warn); }
+.approval-subject {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.approval-actions { flex: none; display: flex; gap: 6px; }
+
 /* --------------------------------------------- E2 permission rules */
 .rule-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
 .rule-row {

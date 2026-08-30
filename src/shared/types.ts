@@ -399,6 +399,31 @@ export interface DiffCommitResult {
 }
 
 /**
+ * What C15 asks Git to do. Paths are the rows ticked in C11's inventory, so
+ * an empty list is a caller error rather than "commit everything".
+ */
+export interface DiffCommitRequest {
+  root: string;
+  message: string;
+  paths: string[];
+  push: boolean;
+}
+
+/**
+ * Committing and pushing succeed independently, so they are reported
+ * independently: a commit that lands and a push that cannot is a real state
+ * the sheet has to show without implying the work was lost.
+ */
+export interface DiffCommitResult {
+  ok: boolean;
+  /** Abbreviated hash of the commit that was written, when one was. */
+  commit?: string;
+  /** Absent when no push was asked for. */
+  push?: { ok: boolean; reason?: string };
+  reason?: string;
+}
+
+/**
  * What C16 can offer for the current branch, resolved before the sheet is
  * shown. `ok: false` always carries a `reason` the user can act on.
  */
@@ -432,6 +457,30 @@ export interface PullRequestResult {
   ok: boolean;
   /** The new pull request, or the existing one that blocked it. */
   url?: string;
+  reason?: string;
+}
+
+/**
+ * A tool call held open waiting for a person — wireframe B5.
+ *
+ * The agent's turn is genuinely blocked while one of these is outstanding,
+ * which is why every one of them is answered: by a person, by the timeout, or
+ * by the session ending.
+ */
+export interface PendingApproval {
+  id: string;
+  sessionId: string;
+  tool: string;
+  /** The command or path the call is about, as the rules would match it. */
+  subject: string;
+}
+
+/** How far an approval reaches, from B5's four buttons. */
+export type ApprovalScope = 'once' | 'session' | 'always';
+
+export interface ApprovalAnswer {
+  decision: 'allow' | 'deny';
+  scope: ApprovalScope;
   reason?: string;
 }
 
@@ -541,6 +590,14 @@ export interface Settings {
   worktreeBootstrap: string;
 
   // --------------------------------------------- E6 · Appearance
+  /**
+   * Answer tool calls in Sertum's own bar (wireframe B5) instead of letting
+   * the agent ask in its terminal. This holds the agent's turn open while the
+   * bar is up, which is the whole feature and also its only cost, so it is
+   * switchable.
+   */
+  approvalsInApp: boolean;
+
   // -------------------------------------------- E5 · Notifications
   /**
    * Which transitions are worth interrupting for. The defaults are narrow on
@@ -605,6 +662,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalRenderer: 'webgl',
   worktreeBase: 'fresh',
   worktreeBootstrap: '',
+  approvalsInApp: true,
   notifyNeedsInput: true,
   notifyFailed: true,
   notifyFinished: false,
@@ -712,6 +770,11 @@ export interface SertumApi {
    * asked directly; no agent is involved and no terminal is written to.
    */
   commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
+  /**
+   * Commit the selected paths, optionally pushing (wireframe C15). Git is
+   * asked directly; no agent is involved and no terminal is written to.
+   */
+  commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
   /** What a pull request for the current branch would need (wireframe C16). */
   readPullRequest(root: string): Promise<PullRequestContext>;
   /** Open the pull request through the GitHub CLI. */
@@ -730,6 +793,15 @@ export interface SertumApi {
   revealPath(target: string): Promise<void>;
   /** Open an http(s) URL in the browser. Any other scheme is refused. */
   openExternal(url: string): Promise<boolean>;
+  /** Answer a tool call B5 is holding open. */
+  answerApproval(
+    request: { id: string; sessionId: string; tool: string; subject: string },
+    answer: ApprovalAnswer,
+  ): Promise<void>;
+  /** A call is waiting on a person (wireframe B5). */
+  onApprovalNeeded(fn: (request: PendingApproval) => void): () => void;
+  /** That call no longer has a turn behind it; take the bar down. */
+  onApprovalGone(fn: (id: string) => void): () => void;
   /** Permission rules, as E2 lists and edits them. */
   getPermissionRules(): Promise<PermissionRule[]>;
   addPermissionRule(rule: Omit<PermissionRule, 'id'>): Promise<PermissionRule[]>;

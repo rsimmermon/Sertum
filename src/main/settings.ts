@@ -128,6 +128,7 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
       typeof raw.worktreeBootstrap === 'string'
         ? raw.worktreeBootstrap.trim().slice(0, 500)
         : base.worktreeBootstrap,
+    approvalsInApp: bool(raw.approvalsInApp, base.approvalsInApp),
     notifyNeedsInput: bool(raw.notifyNeedsInput, base.notifyNeedsInput),
     notifyFailed: bool(raw.notifyFailed, base.notifyFailed),
     notifyFinished: bool(raw.notifyFinished, base.notifyFinished),

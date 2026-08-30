@@ -1,6 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { EventEmitter } from 'node:events';
+import type { PendingApproval, ApprovalAnswer } from '../shared/types';
 
 /** A hook payload, keyed to the Sertum session that produced it. */
 export interface HookEvent {
@@ -41,7 +42,35 @@ export class HookServer extends EventEmitter {
   evaluatePermission?: (
     sessionId: string,
     payload: Record<string, unknown>,
-  ) => { decision: 'allow' | 'deny'; reason: string } | { decision: 'ask' } | null;
+  ) =>
+    | { decision: 'allow' | 'deny'; reason: string }
+    | { decision: 'ask'; subject: string }
+    | null;
+
+  /**
+   * Announces a tool call waiting on B5's approval bar. Absent means in-app
+   * approval is off and an unruled call goes straight to the agent's prompt.
+   */
+  onApprovalNeeded?: (request: PendingApproval) => void;
+
+  /** Tells the UI to take a bar down that no longer has a turn behind it. */
+  onApprovalGone?: (id: string) => void;
+
+  /** Calls held open waiting for a person, keyed by request id. */
+  private pendingApprovals = new Map<
+    string,
+    { sessionId: string; settle: (answer: ApprovalAnswer | null) => void }
+  >();
+
+  /**
+   * How long a turn may sit blocked on Sertum's UI.
+   *
+   * Holding the hook response is what makes B5 possible, and it is also the
+   * one thing here that can stall an agent. On expiry the call is released
+   * with no decision, so Claude falls back to asking in its own TUI: a person
+   * who walked away costs a delay, never a wedged session.
+   */
+  approvalTimeoutMs = 120_000;
 
   async start(): Promise<number> {
     if (this.server) return this.boundPort;
@@ -76,17 +105,27 @@ export class HookServer extends EventEmitter {
         const event = String(payload.hook_event_name ?? 'Unknown');
         this.emit('hook', { sessionId, event, payload } satisfies HookEvent);
 
-        const reply = this.controlReply(sessionId, event, payload);
-        if (reply) {
-          // A command hook's stdout is its structured reply. curl writes this
-          // body to stdout, so no shell or PTY interpretation is involved.
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(reply));
-        } else {
-          // Always answer 2xx: a hook error can block the agent's turn. An
-          // empty 204 keeps curl's stdout empty when there is no control word.
-          res.writeHead(204).end();
-        }
+        void this.controlReply(sessionId, event, payload).then(
+          (reply) => {
+            if (res.writableEnded) return;
+            if (reply) {
+              // A command hook's stdout is its structured reply. curl writes
+              // this body to stdout, so no shell or PTY interpretation is
+              // involved.
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(reply));
+            } else {
+              // Always answer 2xx: a hook error can block the agent's turn. An
+              // empty 204 keeps curl's stdout empty when there is no control
+              // word.
+              res.writeHead(204).end();
+            }
+          },
+          () => {
+            // A thrown reply must still answer, or the turn never resumes.
+            if (!res.writableEnded) res.writeHead(204).end();
+          },
+        );
       });
     });
 
@@ -131,13 +170,57 @@ export class HookServer extends EventEmitter {
     this.pendingInterrupts.delete(sessionId);
     this.pendingSteers.delete(sessionId);
     this.toolGates.delete(sessionId);
+    this.cancelApprovals(sessionId);
   }
 
-  private controlReply(
+  /**
+   * Answers a call that B5 is showing. `null` releases it with no decision,
+   * which is what a timeout and a dead session both do.
+   */
+  resolveApproval(id: string, answer: ApprovalAnswer | null): void {
+    this.pendingApprovals.get(id)?.settle(answer);
+  }
+
+  /** Releases every call a session is holding, so a dead PTY leaves none. */
+  cancelApprovals(sessionId: string): void {
+    for (const entry of [...this.pendingApprovals.values()]) {
+      if (entry.sessionId === sessionId) entry.settle(null);
+    }
+  }
+
+  private awaitApproval(
+    sessionId: string,
+    payload: Record<string, unknown>,
+    subject: string,
+  ): Promise<ApprovalAnswer | null> {
+    const id = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      let done = false;
+      const settle = (answer: ApprovalAnswer | null): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        this.pendingApprovals.delete(id);
+        this.onApprovalGone?.(id);
+        resolve(answer);
+      };
+      const timer = setTimeout(() => settle(null), this.approvalTimeoutMs);
+      timer.unref?.();
+      this.pendingApprovals.set(id, { sessionId, settle });
+      this.onApprovalNeeded?.({
+        id,
+        sessionId,
+        tool: String(payload.tool_name ?? 'a tool'),
+        subject,
+      });
+    });
+  }
+
+  private async controlReply(
     sessionId: string,
     event: string,
     payload: Record<string, unknown>,
-  ): Record<string, unknown> | null {
+  ): Promise<Record<string, unknown> | null> {
     if (this.pendingInterrupts.delete(sessionId)) {
       return {
         continue: false,
@@ -171,6 +254,32 @@ export class HookServer extends EventEmitter {
           },
         };
       }
+
+      // Nothing decided it, so ask a person -- wireframe B5. The turn is held
+      // here, which is precisely why `awaitApproval` always settles.
+      if (this.onApprovalNeeded) {
+        const answer = await this.awaitApproval(
+          sessionId,
+          payload,
+          decision?.decision === 'ask'
+            ? decision.subject
+            : String(payload.tool_name ?? ''),
+        );
+        if (answer) {
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: answer.decision,
+              permissionDecisionReason:
+                answer.reason ??
+                (answer.decision === 'deny'
+                  ? 'Denied in Sertum.'
+                  : 'Approved in Sertum.'),
+            },
+          };
+        }
+        // Released with no decision: fall through so Claude asks in its TUI.
+      }
     }
 
     if (event !== 'UserPromptSubmit') return null;
@@ -187,7 +296,19 @@ export class HookServer extends EventEmitter {
 
   async stop(): Promise<void> {
     if (!this.server) return;
-    await new Promise<void>((resolve) => this.server!.close(() => resolve()));
+
+    // Release held calls *before* closing. `server.close()` waits for
+    // in-flight requests to finish, and a B5 approval is deliberately an
+    // in-flight request with no response yet -- settling afterwards is a
+    // deadlock that hangs the quit forever.
+    for (const entry of [...this.pendingApprovals.values()]) entry.settle(null);
+
+    await new Promise<void>((resolve) => {
+      this.server!.close(() => resolve());
+      // A keep-alive socket can outlive its request, so close() alone is not
+      // enough to guarantee the callback runs.
+      this.server!.closeAllConnections?.();
+    });
     this.server = null;
     this.pendingInterrupts.clear();
     this.pendingSteers.clear();

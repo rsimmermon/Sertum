@@ -94,9 +94,9 @@ What's built and verified so far:
       end to end; E2 keeps the agent-path resolver. Controls whose subsystem
       does not exist — shortcut remapping, session restore, storage — render
       disabled carrying the reason
-- [x] **Permission rules** (wireframe E2) — stored allow/deny/ask rules
-      answered at Claude's `PreToolUse`, deny winning over allow and an
-      unmatched call falling through to the agent's own prompt
+- [x] **Permission rules and in-app approval** (wireframes E2, B5) — stored
+      allow/deny/ask rules answered at Claude's `PreToolUse`, and an approval
+      bar that holds the turn open for calls no rule decides
 - [x] **System notifications** (wireframes C20, E5) — fired from adapter
       events on a status transition, only when the window is unfocused, with
       per-session mute and snooze
@@ -641,6 +641,46 @@ covers.
 and shell decline with reasons, so E2 can say the rules are Claude-only rather
 than implying a fleet-wide policy.
 
+## B5 holds the turn open
+
+Everything else here answers a hook immediately. B5 does not: when no rule
+decides a call, the HTTP response is held while a person looks at it. That
+hold *is* the feature -- it is what lets you answer without switching to the
+terminal, and what lets "Always allow" write a rule from the moment it
+matters -- and it is also the only thing in Sertum that can stall an agent.
+So every path out of it answers:
+
+| Ending | Response | Result |
+|---|---|---|
+| Someone chooses | `200` with the decision | the call proceeds or is refused |
+| Two minutes pass | `204` empty | Claude asks in its own TUI |
+| The session exits | `204` empty | nothing is left waiting |
+| The app quits | released, then closed | quit is not blocked |
+
+That last row was a real deadlock before it was tested. `server.close()` waits
+for in-flight requests to finish, and a held approval is deliberately an
+in-flight request with no response yet, so settling *after* the close
+completed meant the close never completed. Pending calls are now released
+before the server closes, with `closeAllConnections()` as a backstop for
+keep-alive sockets that outlive their request.
+
+The bar sits above the terminal rather than over it, because deciding means
+reading the output that led to the request. It is never dismissed by clicking
+away: every route off it answers the call.
+
+The four choices differ only in reach. **Allow once** answers this call.
+**Allow this session** is remembered in memory and dropped when the session
+ends, so an approval given to one run cannot silently govern the next.
+**Always allow** writes a permission rule scoped to that session's repository
+and matched literally -- a rule written by pressing a button should cover what
+was on screen and nothing broader. **Deny** offers an optional reason, which
+goes back to the agent so it can try something else rather than guess why it
+was stopped.
+
+The whole feature is switchable in E2, and the switch is the presence of the
+handler: with none, the hook server never holds a call at all, so turning it
+off cannot leave a turn waiting on a bar that will not appear.
+
 ## Pane layouts
 
 Design section 07. A window shows one terminal by default; splitting is opt-in
@@ -780,7 +820,7 @@ fixed along the way:
   including the `claude.exe` bug above, looked identical to "click the button,
   nothing happens." `new-session-dialog.ts` now performs session creation
   itself and reports a failure inline instead of closing and letting the
-  error vanish. Settings > Agents (Detect / Browse... / a manual per-agent
+  error vanish. Settings > Agents & permissions (Detect / Browse... / a manual per-agent
   path override) and status-bar "Claude Code not found" / "Codex not found" /
   "Grok not found" readouts make a missing binary diagnosable rather than
   mysterious.
@@ -931,6 +971,7 @@ src/
   renderer/diff-review-dialog.ts  Changes review — wireframe C11
   renderer/commit-dialog.ts       Commit & push sheet — wireframe C15
   renderer/pull-request-dialog.ts Open pull request — wireframe C16
+  renderer/approval-bar.ts        Tool-call approval bar — wireframe B5
 scripts/
   smoke-pty.js                Headless PTY test
   drive.js                    CDP driver for headless verification

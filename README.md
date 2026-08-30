@@ -15,6 +15,13 @@ working, idle, or waiting for input.
 - Keep sessions organized by project, folder, and worktree.
 - See which agents are working or need attention without reading terminal
   output heuristically.
+- Split the window into two or four panes, each sized to its own terminal.
+- Review changed files, read per-file diffs, then commit and open a pull
+  request without leaving the app.
+- Approve or refuse a Claude tool call from a bar above the terminal, and turn
+  a decision you keep repeating into a stored permission rule.
+- Get a system notification when a session needs you, fired from agent events
+  rather than from output going quiet.
 - Create isolated worktree sessions from the New Session dialog.
 - Discover supported agent sessions that were started outside Sertum.
 
@@ -28,6 +35,11 @@ Before starting Sertum, install:
   [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
   [Codex](https://developers.openai.com/codex/), or
   [Grok](https://docs.x.ai/docs/grok-cli)
+
+Optionally, install the [GitHub CLI](https://cli.github.com/) and sign in with
+`gh auth login`. Sertum opens pull requests through it, because `gh` already
+holds the credential; without it, that one button explains what is missing and
+everything else works normally.
 
 Make sure each agent you intend to use is installed and authenticated in your
 normal terminal. Sertum searches your `PATH` and known installation locations;
@@ -62,7 +74,7 @@ The Electron Forge startup process rebuilds native dependencies such as
 6. Start the session and interact with the agent in its embedded terminal.
 
 Sertum resolves installed agent binaries automatically. If an agent is not
-found, open **Settings > Agents** to detect it again or select its executable
+found, open **Settings > Agents & permissions** to detect it again or select its executable
 manually.
 
 ## Useful commands
@@ -74,12 +86,21 @@ npm run package # Build an unpacked application bundle
 npm run make    # Create platform-specific distributables
 ```
 
+On Windows, run `npm run make` under Node 20 LTS. Node 26 exits partway
+through packaging without producing an installer and without reporting an
+error.
+
 ## Current scope
 
-Core terminal sessions and live status for Claude Code, Codex, and Grok,
-external session discovery, binary configuration, and worktree management are
-working. Diff review, additional settings, and split-pane layouts are still
-planned.
+Working: terminal sessions and live status for Claude Code, Codex, and Grok,
+external session discovery, binary configuration, worktree management,
+split-pane layouts, diff review with commit and pull request, permission rules
+and in-app tool approval, system notifications, and settings.
+
+Still planned: remapping keyboard shortcuts, restoring sessions on launch, and
+per-repository worktree defaults. Settings shows each of these as a disabled
+control explaining what is missing, rather than as a switch that does
+nothing.
 
 ## Contributing and architecture
 

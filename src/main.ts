@@ -48,6 +48,7 @@ import {
   evaluate,
   getRules,
   removeRule,
+  subjectOf,
 } from './main/permission-rules';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
@@ -77,6 +78,7 @@ import type {
   AgentKind,
   BinaryDetection,
   DiffCommitRequest,
+  ApprovalAnswer,
   PermissionRule,
   ManagedAgent,
   MenuState,
@@ -114,6 +116,13 @@ const hooks = new HookServer();
  * has to know which one asked -- and sessions are owned by the PTY manager,
  * not by the hook plumbing.
  */
+/**
+ * "Allow this session" from B5. Deliberately not a rule: it is remembered
+ * only while this process lives, and is dropped with the session, so an
+ * approval given to one run cannot silently govern the next.
+ */
+const sessionAllows = new Map<string, Set<string>>();
+
 hooks.evaluatePermission = (sessionId, payload) => {
   const session = ptys.get(sessionId);
   if (!session) return null;
@@ -121,13 +130,75 @@ hooks.evaluatePermission = (sessionId, payload) => {
     payload.tool_input && typeof payload.tool_input === 'object'
       ? (payload.tool_input as Record<string, unknown>)
       : {};
-  const result = evaluate(String(payload.tool_name ?? ''), input, session.cwd);
-  if (result.decision === 'ask') return { decision: 'ask' };
+  const tool = String(payload.tool_name ?? '');
+  const subject = subjectOf(tool, input);
+
+  if (sessionAllows.get(sessionId)?.has(`${tool}\u0000${subject}`)) {
+    return { decision: 'allow', reason: 'Allowed for this session in Sertum.' };
+  }
+
+  const result = evaluate(tool, input, session.cwd);
+  if (result.decision === 'ask') return { decision: 'ask', subject };
   return {
     decision: result.decision,
     reason: `${result.decision === 'deny' ? 'Denied' : 'Allowed'} by a Sertum permission rule: ${result.rule?.pattern ?? '*'}`,
   };
 };
+
+// B5's bar lives in the renderer; the turn is held in the hook server until
+// one of these comes back, the timeout fires, or the session ends.
+hooks.onApprovalGone = (id) => broadcast('approval:gone', id);
+
+/**
+ * B5 is opt-outable, and the switch is the presence of the handler: with no
+ * handler the hook server never holds a call at all, so turning it off cannot
+ * leave a turn waiting on a bar that will not appear.
+ */
+function syncApprovalHandler(): void {
+  hooks.onApprovalNeeded = getSettings().approvalsInApp
+    ? (request) => broadcast('approval:needed', request)
+    : undefined;
+}
+syncApprovalHandler();
+
+ipcMain.handle(
+  'approval:answer',
+  (
+    _e,
+    {
+      id,
+      sessionId,
+      tool,
+      subject,
+      answer,
+    }: {
+      id: string;
+      sessionId: string;
+      tool: string;
+      subject: string;
+      answer: ApprovalAnswer;
+    },
+  ) => {
+    if (answer.decision === 'allow' && answer.scope === 'session') {
+      const set = sessionAllows.get(sessionId) ?? new Set<string>();
+      set.add(`${tool}\u0000${subject}`);
+      sessionAllows.set(sessionId, set);
+    }
+    if (answer.decision === 'allow' && answer.scope === 'always') {
+      // Scoped to the session's own repository rather than everywhere, and
+      // matched literally: a rule written by pressing a button should cover
+      // what was on screen and nothing broader.
+      const session = ptys.get(sessionId);
+      addRule({
+        tool: tool || '*',
+        pattern: subject,
+        scope: session?.cwd ?? '*',
+        decision: 'allow',
+      });
+    }
+    hooks.resolveApproval(id, answer);
+  },
+);
 
 ipcMain.handle('rules:get', () => getRules());
 ipcMain.handle('rules:add', (_e, rule: Omit<PermissionRule, 'id'>) => addRule(rule));
@@ -432,6 +503,7 @@ ptys.on('exit', (e) => {
   }
   // A mute lasted "until it finishes", and it just did.
   notifier.forget(e.id);
+  sessionAllows.delete(e.id);
   broadcast('pty:exit', e);
 });
 /**
@@ -660,6 +732,7 @@ ipcMain.handle('settings:get', () => getSettings());
 ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
   const before = getSettings().paneLayout;
   const stored = setSettings(patch);
+  syncApprovalHandler();
   // The View menu carries the layout radio set, so it has to be rebuilt when
   // the layout is changed from anywhere else -- the picker, a shortcut, or a
   // pane close collapsing back to Single.

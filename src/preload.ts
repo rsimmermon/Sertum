@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ApprovalAnswer,
   DiffCommitRequest,
+  PendingApproval,
   PermissionRule,
   ManagedAgent,
   MenuState,
@@ -46,6 +48,20 @@ const api: SertumApi = {
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   openExternal: (url: string) =>
     ipcRenderer.invoke('shell:open-external', url),
+  answerApproval: (
+    request: { id: string; sessionId: string; tool: string; subject: string },
+    answer: ApprovalAnswer,
+  ) => ipcRenderer.invoke('approval:answer', { ...request, answer }),
+  onApprovalNeeded: (fn: (request: PendingApproval) => void) => {
+    const handler = (_e: unknown, request: PendingApproval) => fn(request);
+    ipcRenderer.on('approval:needed', handler);
+    return () => ipcRenderer.removeListener('approval:needed', handler);
+  },
+  onApprovalGone: (fn: (id: string) => void) => {
+    const handler = (_e: unknown, id: string) => fn(id);
+    ipcRenderer.on('approval:gone', handler);
+    return () => ipcRenderer.removeListener('approval:gone', handler);
+  },
   getPermissionRules: () => ipcRenderer.invoke('rules:get'),
   addPermissionRule: (rule: Omit<PermissionRule, 'id'>) =>
     ipcRenderer.invoke('rules:add', rule),

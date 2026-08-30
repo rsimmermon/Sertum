@@ -1,4 +1,5 @@
 import { TerminalPane } from './terminal-pane';
+import { ApprovalBar } from './approval-bar';
 import { openNewSessionDialog } from './new-session-dialog';
 import { openAdoptDialog } from './adopt-dialog';
 import { openSettingsDialog } from './settings-dialog';
@@ -94,6 +95,7 @@ const FONT_VARS: Array<[keyof Settings, string]> = [
 
 export class App {
   private sessions = new Map<string, SessionSnapshot>();
+  private approvals = new ApprovalBar(() => this.render());
   private panes = new Map<string, TerminalPane>();
   /**
    * Which session each pane holds, in reading order; null is an empty pane.
@@ -161,6 +163,7 @@ export class App {
     sidebarFilter: qs('#sidebar-filter') as HTMLInputElement,
     sidebarClear: qs('#sidebar-clear'),
     paneHost: qs('#pane-host'),
+    approvalHost: qs('#approval-host'),
     paneHead: qs('#pane-head'),
     paneTitle: qs('#pane-title'),
     layoutButton: qs('#pane-layout') as HTMLButtonElement,
@@ -227,6 +230,16 @@ export class App {
     api.onSessionReveal((id) => {
       if (this.sessions.has(id)) this.focusSession(id);
     });
+
+    // B5: a tool call is holding a turn open until someone answers.
+    this.el.approvalHost.append(this.approvals.element);
+    api.onApprovalNeeded((request) => {
+      // Answering means seeing what led to the request, so the session it is
+      // about comes forward with the bar.
+      if (this.sessions.has(request.sessionId)) this.focusSession(request.sessionId);
+      this.approvals.show(request);
+    });
+    api.onApprovalGone((id) => this.approvals.dismiss(id));
 
     menu.on('new-session', () => void this.promptNewSession());
     menu.on('settings', () => void this.promptSettings());
