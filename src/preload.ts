@@ -45,6 +45,14 @@ const api: SertumApi = {
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   openExternal: (url: string) =>
     ipcRenderer.invoke('shell:open-external', url),
+  muteSession: (id: string, muted: boolean) =>
+    ipcRenderer.invoke('session:mute', { id, muted }),
+  snoozeSession: (id: string) => ipcRenderer.invoke('session:snooze', id),
+  onSessionReveal: (fn: (id: string) => void) => {
+    const handler = (_e: unknown, id: string) => fn(id);
+    ipcRenderer.on('session:reveal', handler);
+    return () => ipcRenderer.removeListener('session:reveal', handler);
+  },
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
   steerSession: (id: string, text: string) =>
     ipcRenderer.invoke('session:steer', { id, text }),

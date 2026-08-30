@@ -99,6 +99,8 @@ export interface SessionSnapshot extends SessionSpec {
   id: string;
   /** True while the adapter is denying tool execution for this session. */
   toolsPaused: boolean;
+  /** Notifications for this session are muted until it finishes (E5). */
+  muted: boolean;
   origin: SessionOrigin;
   /** The agent's own session id, when we adopted rather than spawned it. */
   externalId: string | null;
@@ -518,6 +520,26 @@ export interface Settings {
   worktreeBootstrap: string;
 
   // --------------------------------------------- E6 · Appearance
+  // -------------------------------------------- E5 · Notifications
+  /**
+   * Which transitions are worth interrupting for. The defaults are narrow on
+   * purpose: notifications come from adapter events rather than screen
+   * output, so they are exact, and an exact notifier earns the right to be
+   * quiet about everything else.
+   */
+  notifyNeedsInput: boolean;
+  notifyFailed: boolean;
+  notifyFinished: boolean;
+  /** Minutes a turn may run before it is mentioned. 0 never mentions it. */
+  notifyLongTurnMinutes: number;
+  /** With the window focused, the sidebar dot has already said it. */
+  notifyOnlyWhenUnfocused: boolean;
+  notifySound: boolean;
+  notifyBadge: boolean;
+  /** Minutes a snoozed session stays quiet. */
+  notifySnoozeMinutes: number;
+
+  // --------------------------------------------- E6 · Appearance
   theme: ThemePreference;
   accent: AccentColour;
   /** Denser sidebar rows: roughly 40% more sessions in the same height. */
@@ -562,6 +584,14 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalRenderer: 'webgl',
   worktreeBase: 'fresh',
   worktreeBootstrap: '',
+  notifyNeedsInput: true,
+  notifyFailed: true,
+  notifyFinished: false,
+  notifyLongTurnMinutes: 0,
+  notifyOnlyWhenUnfocused: true,
+  notifySound: false,
+  notifyBadge: true,
+  notifySnoozeMinutes: 10,
   theme: 'system',
   accent: 'blue',
   compactRows: false,
@@ -679,6 +709,12 @@ export interface SertumApi {
   revealPath(target: string): Promise<void>;
   /** Open an http(s) URL in the browser. Any other scheme is refused. */
   openExternal(url: string): Promise<boolean>;
+  /** Mute a session's notifications until it finishes (E5). */
+  muteSession(id: string, muted: boolean): Promise<boolean>;
+  /** Quiet one session for the configured snooze (C20 note 152). */
+  snoozeSession(id: string): Promise<void>;
+  /** A notification was clicked: bring this session forward (C20 note 150). */
+  onSessionReveal(fn: (id: string) => void): () => void;
   /** Native folder picker. Resolves null if the user cancels. */
   pickDirectory(startIn?: string): Promise<string | null>;
   /** Native file picker, for browsing to an agent's CLI. Resolves null if the user cancels. */

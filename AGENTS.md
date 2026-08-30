@@ -92,8 +92,11 @@ What's built and verified so far:
       Worktrees' base branch and bootstrap command (E4), and Appearance's
       theme, accent, compact rows, tabs, badges and type sizes (E6) are wired
       end to end; E2 keeps the agent-path resolver. Controls whose subsystem
-      does not exist — permission rules, notifications, shortcut remapping,
-      session restore, storage — render disabled carrying the reason
+      does not exist — permission rules, shortcut remapping, session restore,
+      storage — render disabled carrying the reason
+- [x] **System notifications** (wireframes C20, E5) — fired from adapter
+      events on a status transition, only when the window is unfocused, with
+      per-session mute and snooze
 - [x] **Split views** (wireframes G1–G8) — Single, Columns, Rows and Grid,
       each pane sized to its own PTY; gutters clamp at a readable terminal,
       focus moves spatially, and a session dropped on a pane moves rather
@@ -515,8 +518,8 @@ rendered disabled carrying its reason, never as a switch that switches
 nothing.** This is the same answer `AgentAdapter` gives for a declined
 capability, for the same purpose -- the user learns why, at the moment it
 matters, instead of discovering later that a toggle did nothing. Permission
-rules, notifications, shortcut remapping, session restore and storage
-management all read that way today.
+rules, shortcut remapping, session restore and storage management all read
+that way today.
 
 Two settings were deliberately removed rather than shipped as stored values
 nothing reads:
@@ -539,6 +542,43 @@ to the next session, since an addon cannot be swapped under a live terminal.
 the new worktree before any agent starts, since only tracked files come with a
 checkout. A bootstrap failure is reported and the worktree kept: telling the
 user their install step failed beats discarding a working checkout over it.
+
+## Notifications are the payoff of the truth plane
+
+C20 fires because an adapter said the agent is waiting, never because output
+went quiet. That is the whole reason it is allowed to interrupt someone, and
+why E5's defaults can be as narrow as they are: an exact notifier earns the
+right to stay silent about everything else.
+
+`main/notifications.ts` consumes the same `session-updated` event the renderer
+draws from, so a notification can never disagree with the dot beside it. Three
+gates keep it honest, all verified against a driven sequence of snapshots:
+
+- **Only transitions.** A session already sitting in `needs-input` that
+  updates for any other reason does not notify again.
+- **Only when you are not looking.** With the window focused, the sidebar dot
+  has already said it.
+- **Only states blocked on you.** `working` never notifies. `needs-input` and
+  a failure are on by default; a clean finish is off.
+
+The long-turn threshold is a timer started on entering `working` and cleared
+on leaving it, so "at most once per turn" is a property of the construction
+rather than of bookkeeping -- a turn that ends before the threshold fires
+nothing.
+
+Mute is ours rather than the agent's, so every session offers it, and it
+lasts until the process ends. It deliberately does not touch the status dot:
+muting is about not being interrupted, not about pretending the agent is not
+waiting.
+
+Two platform facts shape the surface rather than being hidden:
+
+- **Notification action buttons are macOS-only in Electron.** C20's Answer and
+  Snooze buttons cannot render on Windows or Linux, so snooze lives in the
+  session row menu where every platform reaches it, and the notification body
+  is the whole affordance -- clicking it focuses the window and that session.
+- **`app.setBadgeCount` is macOS and Linux only.** E5 says so next to the
+  control instead of offering a switch that appears to work.
 
 ## Pane layouts
 
@@ -787,6 +827,7 @@ src/
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
   main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)
   main/pull-request.ts        Pull requests through the GitHub CLI (C16)
+  main/notifications.ts       System notifications from adapter events (C20, E5)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search

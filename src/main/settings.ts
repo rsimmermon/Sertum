@@ -128,6 +128,26 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
       typeof raw.worktreeBootstrap === 'string'
         ? raw.worktreeBootstrap.trim().slice(0, 500)
         : base.worktreeBootstrap,
+    notifyNeedsInput: bool(raw.notifyNeedsInput, base.notifyNeedsInput),
+    notifyFailed: bool(raw.notifyFailed, base.notifyFailed),
+    notifyFinished: bool(raw.notifyFinished, base.notifyFinished),
+    // Only the thresholds E5 offers; 0 is "never".
+    notifyLongTurnMinutes: [0, 5, 10, 30].includes(
+      raw.notifyLongTurnMinutes as number,
+    )
+      ? (raw.notifyLongTurnMinutes as number)
+      : base.notifyLongTurnMinutes,
+    notifyOnlyWhenUnfocused: bool(
+      raw.notifyOnlyWhenUnfocused,
+      base.notifyOnlyWhenUnfocused,
+    ),
+    notifySound: bool(raw.notifySound, base.notifySound),
+    notifyBadge: bool(raw.notifyBadge, base.notifyBadge),
+    notifySnoozeMinutes: [5, 10, 30, 60].includes(
+      raw.notifySnoozeMinutes as number,
+    )
+      ? (raw.notifySnoozeMinutes as number)
+      : base.notifySnoozeMinutes,
     theme: oneOf<ThemePreference>(
       raw.theme,
       ['system', 'light', 'dark'],
@@ -141,6 +161,10 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
     compactRows:
       typeof raw.compactRows === 'boolean' ? raw.compactRows : base.compactRows,
   };
+}
+
+function bool(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function oneOf<T extends string>(value: unknown, allowed: T[], fallback: T): T {

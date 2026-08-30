@@ -25,6 +25,10 @@ const api = window.sertum;
 export function openSettingsDialog(
   current: Settings,
   onPreview: (s: Settings) => void,
+  muted: { list: () => Array<{ id: string; label: string }>; unmute: (id: string) => void } = {
+    list: () => [],
+    unmute: () => undefined,
+  },
 ): Promise<Settings | null> {
   return new Promise((resolve) => {
     const opened: Settings = { ...current };
@@ -384,29 +388,83 @@ export function openSettingsDialog(
       const pane = group();
       pane.append(sectionHead('Notify me when'));
       pane.append(
-        note(
-          'Sertum has no notifier yet. Every control on this pane would need ' +
-            'one, so they are shown with their reason rather than as switches ' +
-            'that change nothing. Status still moves live in the sidebar and ' +
-            'the tab strip, which is where needs-input reads today.',
+        toggle('A session needs input', working.notifyNeedsInput, (v) =>
+          apply({ notifyNeedsInput: v }),
+        ),
+        toggle('A session fails', working.notifyFailed, (v) =>
+          apply({ notifyFailed: v }),
+        ),
+        toggle('A session finishes', working.notifyFinished, (v) =>
+          apply({ notifyFinished: v }),
+        ),
+        field(
+          'A long turn passes a threshold',
+          select(
+            [
+              ['0', 'Never'],
+              ['5', '5 minutes'],
+              ['10', '10 minutes'],
+              ['30', '30 minutes'],
+            ],
+            String(working.notifyLongTurnMinutes),
+            (v) => apply({ notifyLongTurnMinutes: Number(v) }),
+          ),
+          'Fires once per turn.',
         ),
       );
-      for (const [label, hint] of [
-        ['A session needs input', 'Question, choice, or approval request'],
-        ['A session fails', 'Turn error, tool failure, adapter lost'],
-        ['A session finishes', 'Turn completed with no error'],
-        ['A long turn passes a threshold', 'Fires once per turn'],
-      ] as Array<[string, string]>) {
-        pane.append(declined(label, hint, 'No notification system is built.'));
-      }
+      pane.append(
+        note(
+          'Notifications fire from adapter events, not from screen output. ' +
+            'They are exact, which is what lets the defaults be this narrow: ' +
+            'a working session never interrupts you.',
+        ),
+      );
+
       pane.append(sectionHead('Delivery'));
-      for (const [label, hint] of [
-        ['Only when the window is not focused', 'Never interrupts the session you are watching'],
-        ['Play a sound', ''],
-        ['Badge the icon with the needs-input count', ''],
-        ['Snooze duration', 'Offered on every notification'],
-      ] as Array<[string, string]>) {
-        pane.append(declined(label, hint, 'No notification system is built.'));
+      pane.append(
+        toggle(
+          'Only when the window is not focused',
+          working.notifyOnlyWhenUnfocused,
+          (v) => apply({ notifyOnlyWhenUnfocused: v }),
+        ),
+        toggle('Play a sound', working.notifySound, (v) => apply({ notifySound: v })),
+        field(
+          'Badge the app icon with the needs-input count',
+          checkbox(working.notifyBadge, (v) => apply({ notifyBadge: v })),
+          'macOS and Linux only — Windows has no dock badge to set.',
+        ),
+        field(
+          'Snooze duration',
+          select(
+            [
+              ['5', '5 minutes'],
+              ['10', '10 minutes'],
+              ['30', '30 minutes'],
+              ['60', '1 hour'],
+            ],
+            String(working.notifySnoozeMinutes),
+            (v) => apply({ notifySnoozeMinutes: Number(v) }),
+          ),
+          'Offered on every notification.',
+        ),
+      );
+
+      pane.append(sectionHead('Per session'));
+      const rows = muted.list();
+      if (!rows.length) {
+        pane.append(
+          note(
+            'Nothing is muted. Mute a session from its row menu to silence it ' +
+              'until it finishes.',
+          ),
+        );
+      }
+      for (const row of rows) {
+        const unmute = button('Unmute', 'btn ghost', () => {
+          muted.unmute(row.id);
+          show('notifications');
+        });
+        pane.append(field(row.label, unmute, 'Muted until it finishes.'));
       }
       return pane;
     }
@@ -609,14 +667,19 @@ function toggle(
   label: string,
   value: boolean,
   onChange: (v: boolean) => void,
+  hint?: string,
 ): HTMLElement {
+  return field(label, checkbox(value, onChange), hint);
+}
+
+function checkbox(value: boolean, onChange: (v: boolean) => void): HTMLElement {
   const box = document.createElement('input');
   box.type = 'checkbox';
   box.checked = value;
   box.onchange = () => onChange(box.checked);
   const wrap = el('label', 'check');
   wrap.append(box, text('span', 'On', ''));
-  return field(label, wrap);
+  return wrap;
 }
 
 function select(

@@ -223,6 +223,11 @@ export class App {
       this.render();
     });
 
+    // C20 note 150: clicking a notification lands on the session it was about.
+    api.onSessionReveal((id) => {
+      if (this.sessions.has(id)) this.focusSession(id);
+    });
+
     menu.on('new-session', () => void this.promptNewSession());
     menu.on('settings', () => void this.promptSettings());
     menu.on('import-sessions', () => void this.promptAdopt());
@@ -829,10 +834,30 @@ export class App {
     this.render();
   }
 
+  /**
+   * Silences one session's notifications until its process ends (E5). The
+   * status dot is deliberately untouched: muting is about being interrupted,
+   * not about pretending the agent is not waiting.
+   */
+  private async setMuted(s: SessionSnapshot, muted: boolean): Promise<void> {
+    await api.muteSession(s.id, muted);
+  }
+
   private async promptSettings(): Promise<void> {
     const before = this.settings;
-    const chosen = await openSettingsDialog(before, (preview) =>
-      this.applySettings(preview),
+    const chosen = await openSettingsDialog(
+      before,
+      (preview) => this.applySettings(preview),
+      {
+        list: () =>
+          [...this.sessions.values()]
+            .filter((row) => row.muted)
+            .map((row) => ({ id: row.id, label: row.label })),
+        unmute: (id) => {
+          const session = this.sessions.get(id);
+          if (session) void this.setMuted(session, false);
+        },
+      },
     );
     if (!chosen) return;
     try {
@@ -1233,6 +1258,17 @@ export class App {
           running && toolGate?.ok
             ? () => void this.setToolGate(s, !s.toolsPaused)
             : undefined,
+      },
+      {
+        // Muting is ours, not the agent's, so every session offers it.
+        label: s.muted ? 'Unmute notifications' : 'Mute until it finishes',
+        onSelect: () => void this.setMuted(s, !s.muted),
+      },
+      {
+        // Electron only renders notification action buttons on macOS, so
+        // snooze lives here where every platform can reach it.
+        label: `Snooze notifications ${this.settings.notifySnoozeMinutes}m`,
+        onSelect: s.muted ? undefined : () => void api.snoozeSession(s.id),
       },
       {
         // The agent's own id when we know it, ours otherwise -- either way

@@ -42,6 +42,7 @@ import {
   createPullRequest,
   readPullRequestContext,
 } from './main/pull-request';
+import { Notifier } from './main/notifications';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import {
@@ -395,9 +396,40 @@ ptys.on('exit', (e) => {
   for (const [threadId, sessionId] of threadToSession) {
     if (sessionId === e.id) threadToSession.delete(threadId);
   }
+  // A mute lasted "until it finishes", and it just did.
+  notifier.forget(e.id);
   broadcast('pty:exit', e);
 });
-ptys.on('session-updated', (s) => broadcast('session:updated', s));
+/**
+ * C20 rides on the same event the renderer does, so a notification can never
+ * disagree with the dot beside it.
+ */
+const notifier = new Notifier(
+  () => mainWindow,
+  () => getSettings(),
+);
+
+ptys.on('session-updated', (s) => {
+  s.muted = notifier.isMuted(s.id);
+  notifier.update(s);
+  notifier.updateBadge(
+    ptys.list().filter((row) => row.status === 'needs-input').length,
+  );
+  broadcast('session:updated', s);
+});
+
+ipcMain.handle(
+  'session:mute',
+  (_e, { id, muted }: { id: string; muted: boolean }) => {
+    notifier.setMuted(id, muted);
+    const session = ptys.get(id);
+    if (session) broadcast('session:updated', { ...session, muted });
+    return muted;
+  },
+);
+ipcMain.handle('session:snooze', (_e, id: string) => {
+  notifier.snooze(id, getSettings().notifySnoozeMinutes);
+});
 
 ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
   // Resolve the agent's binary here rather than trusting PATH: a packaged app

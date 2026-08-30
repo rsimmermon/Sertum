@@ -93,6 +93,7 @@ export class PtyManager extends EventEmitter {
       ...resolved,
       id,
       toolsPaused: false,
+      muted: false,
       origin: 'owned',
       externalId: null,
       status: 'working',
@@ -215,6 +216,7 @@ export class PtyManager extends EventEmitter {
     const snapshot: SessionSnapshot = {
       id: randomUUID(),
       toolsPaused: false,
+      muted: false,
       origin: 'monitored',
       externalId: input.externalId,
       label: input.label,
