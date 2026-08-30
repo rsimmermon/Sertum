@@ -113,6 +113,20 @@ export function mapClaudeHook(
  * `Notification` is the event that actually earns this architecture: it fires
  * when Claude wants input or a permission decision, so "needs you" is exact
  * rather than inferred from output going quiet.
+ *
+ * It carries two unlike things under one name, and only one of them is a
+ * question:
+ *
+ *   - **A permission or approval request.** The agent is blocked and cannot
+ *     proceed until you answer. This is what amber is for.
+ *   - **The idle nudge.** Claude Code fires this after roughly a minute of no
+ *     typing at an empty prompt. Nothing is blocked -- it is the state a
+ *     finished turn already left the session in, restated.
+ *
+ * Treating the nudge as "needs you" turned every session anyone walked away
+ * from amber a minute after `Stop` had correctly set it idle, which is the
+ * crying-wolf failure the two planes exist to prevent. It costs more now that
+ * a needs-input transition can also raise a system notification.
  */
 function mapNotification(payload: Record<string, unknown>): StatusUpdate {
   const kind = (
@@ -122,13 +136,23 @@ function mapNotification(payload: Record<string, unknown>): StatusUpdate {
     ''
   ).toLowerCase();
   const message = str(payload.message);
+  const text = (message ?? '').toLowerCase();
 
-  if (kind.includes('permission')) {
+  if (kind.includes('permission') || /permission|approve|approval/.test(text)) {
     return { status: 'needs-input', activity: message ?? 'approval needed' };
   }
-  if (kind.includes('idle') || kind.includes('prompt')) {
-    return { status: 'needs-input', activity: message ?? 'waiting for you' };
+
+  // Deliberately no status at all rather than `idle`: the nudge says nothing
+  // about whether the agent is blocked, so it must not clear a genuine
+  // needs-input that arrived before it either.
+  if (
+    kind.includes('idle') ||
+    kind.includes('prompt') ||
+    text.includes('waiting for your input')
+  ) {
+    return {};
   }
+
   // Unknown notification kinds still mean Claude spoke up unprompted.
   if (message) return { status: 'needs-input', activity: message };
   return {};
