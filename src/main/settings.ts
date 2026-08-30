@@ -4,9 +4,15 @@ import path from 'node:path';
 import {
   DEFAULT_SETTINGS,
   PANE_COUNT,
+  SCROLLBACK_CHOICES,
+  type AccentColour,
   type PaneLayout,
   type PaneSplits,
   type Settings,
+  type TerminalCursorStyle,
+  type TerminalRenderer,
+  type ThemePreference,
+  type WorktreeBase,
 } from '../shared/types';
 
 /**
@@ -83,7 +89,62 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
       codex: sanitizeBinaryPath(raw.agentBinaryPaths?.codex, base.agentBinaryPaths.codex),
       grok: sanitizeBinaryPath(raw.agentBinaryPaths?.grok, base.agentBinaryPaths.grok),
     },
+    terminalFontFamily:
+      typeof raw.terminalFontFamily === 'string'
+        ? raw.terminalFontFamily.trim().slice(0, 200)
+        : base.terminalFontFamily,
+    terminalLineHeight:
+      typeof raw.terminalLineHeight === 'number' &&
+      Number.isFinite(raw.terminalLineHeight)
+        ? Math.min(2, Math.max(1, raw.terminalLineHeight))
+        : base.terminalLineHeight,
+    terminalCursorStyle: oneOf<TerminalCursorStyle>(
+      raw.terminalCursorStyle,
+      ['block', 'block-blink', 'bar', 'bar-blink', 'underline', 'underline-blink'],
+      base.terminalCursorStyle,
+    ),
+    // Only the offered sizes are accepted: an arbitrary hand-edited number is
+    // exactly the setting that quietly costs hundreds of megabytes.
+    terminalScrollback: SCROLLBACK_CHOICES.includes(
+      raw.terminalScrollback as number,
+    )
+      ? (raw.terminalScrollback as number)
+      : base.terminalScrollback,
+    terminalCopyOnSelect:
+      typeof raw.terminalCopyOnSelect === 'boolean'
+        ? raw.terminalCopyOnSelect
+        : base.terminalCopyOnSelect,
+    terminalRenderer: oneOf<TerminalRenderer>(
+      raw.terminalRenderer,
+      ['webgl', 'canvas'],
+      base.terminalRenderer,
+    ),
+    worktreeBase: oneOf<WorktreeBase>(
+      raw.worktreeBase,
+      ['fresh', 'head'],
+      base.worktreeBase,
+    ),
+    worktreeBootstrap:
+      typeof raw.worktreeBootstrap === 'string'
+        ? raw.worktreeBootstrap.trim().slice(0, 500)
+        : base.worktreeBootstrap,
+    theme: oneOf<ThemePreference>(
+      raw.theme,
+      ['system', 'light', 'dark'],
+      base.theme,
+    ),
+    accent: oneOf<AccentColour>(
+      raw.accent,
+      ['blue', 'violet', 'green', 'amber'],
+      base.accent,
+    ),
+    compactRows:
+      typeof raw.compactRows === 'boolean' ? raw.compactRows : base.compactRows,
   };
+}
+
+function oneOf<T extends string>(value: unknown, allowed: T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
 function sanitizeBinaryPath(value: unknown, fallback: string): string {

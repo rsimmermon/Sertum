@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import type { SessionSnapshot } from '../shared/types';
+import type { Settings, SessionSnapshot } from '../shared/types';
 
 const api = window.sertum;
 
@@ -22,22 +22,23 @@ export class TerminalPane {
   private disposers: Array<() => void> = [];
   private resizeObserver: ResizeObserver;
   private attached = false;
+  private renderer: Settings['terminalRenderer'];
+  private copyOnSelect = false;
 
   constructor(
     readonly session: SessionSnapshot,
-    fontSize = 14,
+    settings: Settings,
   ) {
     this.element = document.createElement('div');
     this.element.className = 'term-host';
+    this.renderer = settings.terminalRenderer;
 
     this.term = new Terminal({
-      fontFamily: getComputedStyle(document.body)
-        .getPropertyValue('--font-mono')
-        .trim(),
-      fontSize,
-      lineHeight: 1.25,
-      cursorBlink: true,
-      scrollback: 10000,
+      fontFamily: terminalFontFamily(settings),
+      fontSize: settings.terminalFontSize,
+      lineHeight: settings.terminalLineHeight,
+      scrollback: settings.terminalScrollback,
+      ...cursorOptions(settings.terminalCursorStyle),
       allowProposedApi: true,
       theme: readTerminalTheme(),
     });
@@ -47,9 +48,22 @@ export class TerminalPane {
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.serialize);
 
+    this.copyOnSelect = settings.terminalCopyOnSelect;
+
     // Keystrokes go straight to the PTY.
     this.disposers.push(
       this.term.onData((data) => api.write(this.session.id, data)).dispose,
+    );
+
+    // Copy on select, when asked for. The selection is left in place: clearing
+    // it here would fight the Ctrl+C handler, which clears deliberately so a
+    // stale selection cannot keep swallowing interrupts.
+    this.disposers.push(
+      this.term.onSelectionChange(() => {
+        if (!this.copyOnSelect) return;
+        const selection = this.term.getSelection();
+        if (selection) void api.copyText(selection);
+      }).dispose,
     );
 
     this.term.attachCustomKeyEventHandler((e) => {
@@ -122,10 +136,12 @@ export class TerminalPane {
   attach(): void {
     if (this.attached) return;
     this.term.open(this.element);
-    try {
-      this.term.loadAddon(new WebglAddon());
-    } catch {
-      // Canvas fallback is automatic; nothing to do.
+    if (this.renderer === 'webgl') {
+      try {
+        this.term.loadAddon(new WebglAddon());
+      } catch {
+        // Canvas fallback is automatic; nothing to do.
+      }
     }
     this.attached = true;
     this.resizeObserver.observe(this.element);
@@ -182,6 +198,36 @@ export class TerminalPane {
     if (this.term.options.fontSize === size) return;
     this.term.options.fontSize = size;
     this.refit();
+  }
+
+  /**
+   * Applies E3's preferences to a live terminal.
+   *
+   * Anything that changes the cell box -- family, size, line height -- ends in
+   * a refit, because the PTY has to be told the new geometry or the agent's
+   * TUI keeps drawing against the old one. `scrollback` is applied here too,
+   * which xterm honours by trimming an over-long buffer immediately; the
+   * renderer choice is not, since an addon cannot be swapped under a live
+   * terminal and the next session picks it up.
+   */
+  applySettings(settings: Settings): void {
+    const options = this.term.options;
+    const family = terminalFontFamily(settings);
+    const cursor = cursorOptions(settings.terminalCursorStyle);
+    const geometryChanged =
+      options.fontFamily !== family ||
+      options.fontSize !== settings.terminalFontSize ||
+      options.lineHeight !== settings.terminalLineHeight;
+
+    options.fontFamily = family;
+    options.fontSize = settings.terminalFontSize;
+    options.lineHeight = settings.terminalLineHeight;
+    options.scrollback = settings.terminalScrollback;
+    options.cursorStyle = cursor.cursorStyle;
+    options.cursorBlink = cursor.cursorBlink;
+    this.copyOnSelect = settings.terminalCopyOnSelect;
+
+    if (geometryChanged) this.refit();
   }
 
   refit(): void {
@@ -255,4 +301,30 @@ function isPasteChord(e: KeyboardEvent): boolean {
  */
 function quotedPath(target: string): string {
   return /\s/.test(target) ? `"${target}"` : target;
+}
+
+/**
+ * The configured family, falling back to the stylesheet's own mono stack.
+ * Read at call time rather than captured, so a theme that changes the stack
+ * is picked up on the next apply.
+ */
+function terminalFontFamily(settings: Settings): string {
+  const chosen = settings.terminalFontFamily.trim();
+  const fallback = getComputedStyle(document.body)
+    .getPropertyValue('--font-mono')
+    .trim();
+  return chosen ? `${chosen}, ${fallback}` : fallback;
+}
+
+/** E3 offers one list; xterm wants a style and a blink flag. */
+function cursorOptions(style: Settings['terminalCursorStyle']): {
+  cursorStyle: 'block' | 'bar' | 'underline';
+  cursorBlink: boolean;
+} {
+  const blink = style.endsWith('-blink');
+  const base = blink ? style.slice(0, -'-blink'.length) : style;
+  return {
+    cursorStyle: base as 'block' | 'bar' | 'underline',
+    cursorBlink: blink,
+  };
 }

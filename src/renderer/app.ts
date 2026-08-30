@@ -328,7 +328,7 @@ export class App {
     this.sessions.set(snapshot.id, snapshot);
     this.panes.set(
       snapshot.id,
-      new TerminalPane(snapshot, this.settings.terminalFontSize),
+      new TerminalPane(snapshot, this.settings),
     );
     this.activeId = snapshot.id;
     this.render();
@@ -819,8 +819,13 @@ export class App {
     root.classList.toggle('tabs-top', next.tabPlacement !== 'side');
     root.classList.toggle('tabs-side', next.tabPlacement !== 'top');
     root.classList.toggle('no-chips', !next.showChips);
+    root.classList.toggle('compact-rows', next.compactRows);
+    // `system` leaves the attribute off so the media query decides (E6).
+    if (next.theme === 'system') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', next.theme);
+    root.setAttribute('data-accent', next.accent);
 
-    for (const pane of this.panes.values()) pane.setFontSize(next.terminalFontSize);
+    for (const pane of this.panes.values()) pane.applySettings(next);
     this.render();
   }
 
@@ -1743,7 +1748,7 @@ export class App {
 
     let pane = this.panes.get(session.id);
     if (!pane) {
-      pane = new TerminalPane(session, this.settings.terminalFontSize);
+      pane = new TerminalPane(session, this.settings);
       this.panes.set(session.id, pane);
     }
     return {

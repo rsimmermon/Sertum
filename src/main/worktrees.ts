@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { getSettings } from './settings';
 import type {
   WorktreeInfo,
   WorktreeInventory,
@@ -218,14 +219,72 @@ export async function provisionWorktree(
     const known = await branchExists(root, branch);
     const args = known
       ? ['-C', root, 'worktree', 'add', target, branch]
-      : ['-C', root, 'worktree', 'add', '-b', branch, target];
+      : ['-C', root, 'worktree', 'add', '-b', branch, target, ...(await startPoint(root))];
     await run('git', args, { timeout: 60_000 });
   } catch (err) {
     return { ok: false, reason: gitMessage(err) };
   }
 
   const copied = copyIncludes ? await copyIncludes_(root, target) : [];
-  return { ok: true, path: target, reused: false, copied };
+  const bootstrap = await runBootstrap(target);
+  return { ok: true, path: target, reused: false, copied, bootstrap };
+}
+
+/**
+ * Where a brand-new branch starts (E4).
+ *
+ * `head` is git's own default -- branch from wherever the repository is now,
+ * carrying local commits that were never pushed. `fresh` asks for the remote
+ * default branch instead, which is what you want when the checkout you are
+ * sitting in is mid-change and the new work should not inherit it. An
+ * unresolvable remote falls back to git's default rather than failing the
+ * whole provision over a preference.
+ */
+async function startPoint(root: string): Promise<string[]> {
+  if (getSettings().worktreeBase !== 'fresh') return [];
+  try {
+    const { stdout } = await run(
+      'git',
+      ['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+      { timeout: 8_000 },
+    );
+    const ref = stdout.trim();
+    return ref ? [ref] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The bootstrap command from E4, run in the new worktree before any agent
+ * starts. Only tracked files come with a checkout, so this is where
+ * `pnpm install` or `dotnet restore` makes the worktree actually usable.
+ *
+ * A failure is reported, not thrown: the worktree exists and is checked out,
+ * and telling the user their install step failed is more useful than
+ * discarding a working checkout over it.
+ */
+async function runBootstrap(target: string): Promise<string | undefined> {
+  const command = getSettings().worktreeBootstrap.trim();
+  if (!command) return undefined;
+  try {
+    await run(command, [], {
+      cwd: target,
+      timeout: 10 * 60_000,
+      shell: true,
+      maxBuffer: 8_000_000,
+    });
+    return undefined;
+  } catch (err) {
+    // A command that fails silently still has to say something: `exit 1` with
+    // no stderr is a real and common shape for a bootstrap step.
+    const failure = err as { stderr?: string; code?: number };
+    const detail =
+      String(failure.stderr ?? '')
+        .trim()
+        .split('\n')[0] || `exited with code ${failure.code ?? 'nonzero'}`;
+    return `Bootstrap command failed: ${detail}`;
+  }
 }
 
 async function branchExists(root: string, branch: string): Promise<boolean> {

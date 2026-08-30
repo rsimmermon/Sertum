@@ -88,8 +88,12 @@ What's built and verified so far:
       changed-file inventory, per-file unified diff, types-to-confirm discard,
       a commit sheet that commits the reviewed paths and optionally pushes,
       and a pull-request sheet driven by the GitHub CLI
-- [ ] The rest of Settings (E2–E7) — worktree bootstrap config (E4) and others
-      beyond today's display/agent panes
+- [x] **Settings E1–E7** — one window with a nav down the left. Terminal (E3),
+      Worktrees' base branch and bootstrap command (E4), and Appearance's
+      theme, accent, compact rows, tabs, badges and type sizes (E6) are wired
+      end to end; E2 keeps the agent-path resolver. Controls whose subsystem
+      does not exist — permission rules, notifications, shortcut remapping,
+      session restore, storage — render disabled carrying the reason
 - [x] **Split views** (wireframes G1–G8) — Single, Columns, Rows and Grid,
       each pane sized to its own PTY; gutters clamp at a readable terminal,
       focus moves spatially, and a session dropped on a pane moves rather
@@ -499,6 +503,42 @@ follows.
 http(s). `shell.openExternal` hands any other scheme to whatever the OS
 registered for it, which is how a renderer bug or a hostile string turns into
 launching a local program -- and these URLs come from `gh`'s output.
+
+## Settings say what they cannot do
+
+E1–E7 share one window and a nav; every control applies live, and Cancel puts
+back the settings captured on open, so previewing a theme or a type size stays
+safe to explore.
+
+The rule that shapes the panes: **a control whose subsystem does not exist is
+rendered disabled carrying its reason, never as a switch that switches
+nothing.** This is the same answer `AgentAdapter` gives for a declined
+capability, for the same purpose -- the user learns why, at the moment it
+matters, instead of discovering later that a toggle did nothing. Permission
+rules, notifications, shortcut remapping, session restore and storage
+management all read that way today.
+
+Two settings were deliberately removed rather than shipped as stored values
+nothing reads:
+
+- **Worktree location.** E4 draws it as a repo-relative path, but managed
+  worktrees live under one root outside the repository (`~/.sertum/worktrees`)
+  and `isManagedWorktree` is a prefix test against it. That prefix is what
+  lets the pool tell its own worktrees from the user's, so making the location
+  configurable per repo would trade a load-bearing invariant for a preference.
+- **Remove worktree when closing a clean tab.** Nothing reclaims a worktree on
+  tab close; C9 removes them deliberately.
+
+What is wired: `terminalFontFamily`, size, line height, cursor style,
+scrollback and copy-on-select reach a live xterm through
+`TerminalPane.applySettings`, which refits whenever the cell box changes
+because the PTY has to be told the new geometry. The renderer choice applies
+to the next session, since an addon cannot be swapped under a live terminal.
+`worktreeBase` picks a new branch's start point -- `fresh` resolves
+`origin/HEAD`, `head` takes git's default -- and `worktreeBootstrap` runs in
+the new worktree before any agent starts, since only tracked files come with a
+checkout. A bootstrap failure is reported and the worktree kept: telling the
+user their install step failed beats discarding a working checkout over it.
 
 ## Pane layouts
 

@@ -275,6 +275,8 @@ export interface WorktreeProvisionResult {
   reused?: boolean;
   /** Untracked files copied in from .worktreeinclude. */
   copied?: string[];
+  /** Why the E4 bootstrap command failed. Absent when it ran or was unset. */
+  bootstrap?: string;
   reason?: string;
 }
 
@@ -314,6 +316,31 @@ export interface DiffFilePatch {
 
 export interface DiffDiscardResult {
   ok: boolean;
+  reason?: string;
+}
+
+/**
+ * What C15 asks Git to do. Paths are the rows ticked in C11's inventory, so
+ * an empty list is a caller error rather than "commit everything".
+ */
+export interface DiffCommitRequest {
+  root: string;
+  message: string;
+  paths: string[];
+  push: boolean;
+}
+
+/**
+ * Committing and pushing succeed independently, so they are reported
+ * independently: a commit that lands and a push that cannot is a real state
+ * the sheet has to show without implying the work was lost.
+ */
+export interface DiffCommitResult {
+  ok: boolean;
+  /** Abbreviated hash of the commit that was written, when one was. */
+  commit?: string;
+  /** Absent when no push was asked for. */
+  push?: { ok: boolean; reason?: string };
   reason?: string;
 }
 
@@ -468,7 +495,53 @@ export interface Settings {
    * to, not a sentinel some other part of the app has to know about.
    */
   agentBinaryPaths: Record<ManagedAgent, string>;
+
+  // ------------------------------------------------- E3 · Terminal
+  /** Empty means the stylesheet's own mono stack, not a hardcoded family. */
+  terminalFontFamily: string;
+  terminalLineHeight: number;
+  terminalCursorStyle: TerminalCursorStyle;
+  /**
+   * Lines xterm keeps per session. The main memory cost in the app: this many
+   * lines across eight sessions is the difference between tens and hundreds of
+   * megabytes, which is why E3 states the cost next to the control.
+   */
+  terminalScrollback: number;
+  terminalCopyOnSelect: boolean;
+  /** WebGL falls back to canvas on its own; this only sets the preference. */
+  terminalRenderer: TerminalRenderer;
+
+  // ------------------------------------------------ E4 · Worktrees
+  /** `fresh` branches from the remote default; `head` carries local work. */
+  worktreeBase: WorktreeBase;
+  /** Run in a new worktree before the agent starts. Empty means none. */
+  worktreeBootstrap: string;
+
+  // --------------------------------------------- E6 · Appearance
+  theme: ThemePreference;
+  accent: AccentColour;
+  /** Denser sidebar rows: roughly 40% more sessions in the same height. */
+  compactRows: boolean;
 }
+
+export type TerminalCursorStyle =
+  | 'block'
+  | 'block-blink'
+  | 'bar'
+  | 'bar-blink'
+  | 'underline'
+  | 'underline-blink';
+
+export type TerminalRenderer = 'webgl' | 'canvas';
+
+export type WorktreeBase = 'fresh' | 'head';
+
+export type ThemePreference = 'system' | 'light' | 'dark';
+
+export type AccentColour = 'blue' | 'violet' | 'green' | 'amber';
+
+/** Offered by E3, with the per-session memory each choice implies. */
+export const SCROLLBACK_CHOICES = [1000, 5000, 10_000, 50_000, 100_000];
 
 export const DEFAULT_SETTINGS: Settings = {
   tabPlacement: 'side',
@@ -481,6 +554,17 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarWidth: 280,
   showChips: true,
   agentBinaryPaths: { claude: '', codex: '', grok: '' },
+  terminalFontFamily: '',
+  terminalLineHeight: 1.2,
+  terminalCursorStyle: 'block-blink',
+  terminalScrollback: 10_000,
+  terminalCopyOnSelect: false,
+  terminalRenderer: 'webgl',
+  worktreeBase: 'fresh',
+  worktreeBootstrap: '',
+  theme: 'system',
+  accent: 'blue',
+  compactRows: false,
 };
 
 /**
@@ -567,6 +651,11 @@ export interface SertumApi {
   readDiffFile(root: string, path: string): Promise<DiffFilePatch>;
   /** Permanently discard the currently reported worktree changes. */
   discardDiff(root: string): Promise<DiffDiscardResult>;
+  /**
+   * Commit the selected paths, optionally pushing (wireframe C15). Git is
+   * asked directly; no agent is involved and no terminal is written to.
+   */
+  commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
   /**
    * Commit the selected paths, optionally pushing (wireframe C15). Git is
    * asked directly; no agent is involved and no terminal is written to.
