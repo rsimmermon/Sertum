@@ -1188,22 +1188,22 @@ export class App {
         }
         top.append(close);
 
-        const bottom = div('sb-bottom');
+        // One line, as the wireframe draws it: dot, name, chips, repo, age.
+        // Activity is in the row's tooltip and in the pane header, and the
+        // context figure is in the status bar, so neither is lost -- what a
+        // second line cost was half the fleet fitting on screen.
+        row.append(top);
+
+        // The exception, and only while it is true: renaming is the one
+        // moment the scope of the new name has to be visible before you
+        // commit to it.
         if (scope) {
+          const bottom = div('sb-bottom');
           const hint = text('span', scope, 'activity rename-scope');
           hint.id = `rename-scope-${s.id}`;
           bottom.append(hint);
-        } else {
-          bottom.append(text('span', s.activity ?? shortCwd(s.cwd), 'activity'));
+          row.append(bottom);
         }
-        const ctx = contextInfo(s);
-        if (ctx) {
-          const badge = text('span', `ctx ${ctx.label}`, `tm-ctx ${ctx.band}`);
-          badge.title = ctx.detail;
-          bottom.append(badge);
-        }
-
-        row.append(top, bottom);
         row.title =
           `${agentName(s.agent)}\n${s.cwd}\n${s.activity ?? ''}`.trim();
         row.tabIndex = 0;

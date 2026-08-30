@@ -44,9 +44,12 @@ export function readSessionMeta(
     } catch {
       continue;
     }
+    // Named agents only. Defaulting an unrecognised agent to Claude's record
+    // shape means a shell -- or a future agent nobody has taught this yet --
+    // silently reports another agent's model as its own.
     if (agent === 'codex') applyCodex(rec, meta);
     else if (agent === 'grok') applyGrok(rec, meta);
-    else applyClaude(rec, meta);
+    else if (agent === 'claude') applyClaude(rec, meta);
   }
 
   if (meta.model && meta.contextLimit === null) {

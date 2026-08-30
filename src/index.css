@@ -780,6 +780,11 @@ textarea.field:focus { outline: none; border-color: var(--accent); }
 #sidebar-list { font-size: var(--size-list); }
 .tabstrip { font-size: var(--size-tab); }
 
+/*
+ * One line per session (wireframe B2's SB Row). The row stays a column only
+ * so the rename hint can appear beneath the name while renaming; with no
+ * hint there is a single child and the row is one line tall.
+ */
 .sb-row {
   display: flex;
   flex-direction: column;

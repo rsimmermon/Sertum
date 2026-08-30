@@ -425,6 +425,12 @@ function transcriptFor(s: SessionSnapshot): string | null {
     return findTranscriptForSession(s.agent, sessionId, s.cwd);
   }
 
+  // A shell is not an agent and writes no transcript, so anything a cwd
+  // search turns up belongs to some other session sharing the folder. Left
+  // unguarded this gave every shell the model and context of whichever agent
+  // last worked there.
+  if (s.agent === 'shell') return null;
+
   // Claude tells us its exact transcript through the hook payload. Never
   // guess one by cwd: several sessions share a folder, and showing another
   // session's context is worse than showing none.
