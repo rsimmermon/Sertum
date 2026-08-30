@@ -33,15 +33,41 @@ const HOOK_EVENTS = [
  * arguments are deliberately free of quotes and spaces-in-values so the single
  * string is valid under both sh and cmd.exe. Claude hands the event payload to
  * the command on stdin, which `--data-binary @-` forwards verbatim.
+ *
+ * **Two deadlines, because only one event is ever held.** Every hook but
+ * `PreToolUse` is answered the moment it arrives, so it keeps a two-second
+ * ceiling: a Sertum that has stopped answering must never stall a turn.
+ * `PreToolUse` is the one call Sertum deliberately holds open while B5's
+ * approval bar waits for a person, so its deadline has to outlast that hold.
+ * One shared `-m 2` did not, and it failed in the worst way available -- the
+ * bar appeared, curl gave up two seconds later, Claude printed
+ * `PreToolUse:Bash hook error -- Failed with non-blocking status code` and
+ * asked in its own TUI, and every button on the bar answered a socket that had
+ * already gone. `--connect-timeout` keeps the fast failure where it belongs:
+ * an endpoint that is gone refuses the connection at once, so only a live one
+ * that is genuinely holding a call gets the long deadline.
  */
-export function buildClaudeSettings(hookUrl: string): string {
-  const command =
-    'curl -s -m 2 --noproxy 127.0.0.1 -X POST ' +
+export function buildClaudeSettings(
+  hookUrl: string,
+  approvalHoldMs: number,
+): string {
+  const curl = (maxSeconds: number): string =>
+    `curl -s --connect-timeout 2 -m ${maxSeconds} --noproxy 127.0.0.1 -X POST ` +
     `-H Content-Type:application/json --data-binary @- ${hookUrl}`;
+  const held = Math.max(2, Math.ceil(approvalHoldMs / 1000) + 5);
   const hooks = Object.fromEntries(
     HOOK_EVENTS.map((event) => [
       event,
-      [{ hooks: [{ type: 'command', command }] }],
+      [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: curl(event === 'PreToolUse' ? held : 2),
+            },
+          ],
+        },
+      ],
     ]),
   );
   return JSON.stringify({ hooks });

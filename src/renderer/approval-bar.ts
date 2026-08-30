@@ -23,7 +23,15 @@ const api = window.sertum;
  */
 export class ApprovalBar {
   readonly element: HTMLElement;
-  private pending: PendingApproval | null = null;
+
+  /**
+   * Calls waiting, oldest first; the head is the one on screen. Claude issues
+   * tool calls in parallel, so more than one turn can be held at a time, and a
+   * later request must not replace an earlier one that is still holding its
+   * own turn open -- that would leave a call nobody can answer until it times
+   * out.
+   */
+  private queue: PendingApproval[] = [];
 
   constructor(private readonly onResolved: () => void) {
     this.element = document.createElement('div');
@@ -33,15 +41,36 @@ export class ApprovalBar {
 
   /** The session this bar is currently asking about, if any. */
   get sessionId(): string | null {
-    return this.pending?.sessionId ?? null;
+    return this.queue[0]?.sessionId ?? null;
   }
 
   show(request: PendingApproval): void {
-    this.pending = request;
+    if (this.queue.some((r) => r.id === request.id)) return;
+    this.queue.push(request);
+    this.draw();
+  }
+
+  /**
+   * Takes a call off the bar without answering. Only correct when it is
+   * already gone -- the hook server says so, or the session ended. With no id
+   * every call is dropped, which is what a session ending looks like.
+   */
+  dismiss(id?: string): void {
+    this.queue = id ? this.queue.filter((r) => r.id !== id) : [];
+    this.draw();
+  }
+
+  private draw(): void {
+    const request = this.queue[0];
+    if (!request) {
+      this.element.hidden = true;
+      this.element.replaceChildren();
+      return;
+    }
     this.element.hidden = false;
     this.element.replaceChildren(
       icon(),
-      body(request),
+      body(request, this.queue.length),
       actions([
         button('Allow once', 'primary', () => void this.answer('allow', 'once')),
         button('Allow this session', '', () => void this.answer('allow', 'session')),
@@ -51,19 +80,8 @@ export class ApprovalBar {
     );
   }
 
-  /**
-   * Takes the bar down without answering. Only correct when the call is
-   * already gone -- the hook server says so, or the session ended.
-   */
-  dismiss(id?: string): void {
-    if (id && this.pending?.id !== id) return;
-    this.pending = null;
-    this.element.hidden = true;
-    this.element.replaceChildren();
-  }
-
   private async deny(): Promise<void> {
-    const request = this.pending;
+    const request = this.queue[0];
     if (!request) return;
     // B5 note 31: the reason is optional and goes back to the agent, so it can
     // try something else instead of guessing why it was stopped.
@@ -75,7 +93,7 @@ export class ApprovalBar {
       submitLabel: 'Deny',
     });
     // The prompt may have outlived the request it was about.
-    if (this.pending?.id !== request.id) return;
+    if (this.queue[0]?.id !== request.id) return;
     await this.answer('deny', 'once', reason ?? undefined);
   }
 
@@ -84,9 +102,9 @@ export class ApprovalBar {
     scope: ApprovalScope,
     reason?: string,
   ): Promise<void> {
-    const request = this.pending;
+    const request = this.queue[0];
     if (!request) return;
-    this.dismiss();
+    this.dismiss(request.id);
     await api.answerApproval(
       {
         id: request.id,
@@ -107,12 +125,17 @@ function icon(): HTMLElement {
   return el;
 }
 
-function body(request: PendingApproval): HTMLElement {
+function body(request: PendingApproval, waiting: number): HTMLElement {
   const col = document.createElement('div');
   col.className = 'approval-body';
   const title = document.createElement('div');
   title.className = 'approval-title';
-  title.textContent = `${request.tool} needs permission`;
+  // Saying how many are queued matters: each one is a turn held open, so
+  // answering this bar is not necessarily the end of it.
+  title.textContent =
+    waiting > 1
+      ? `${request.tool} needs permission · ${waiting - 1} more waiting`
+      : `${request.tool} needs permission`;
   const subject = document.createElement('div');
   subject.className = 'approval-subject';
   subject.textContent = request.subject;

@@ -162,7 +162,19 @@ hooks.onApprovalGone = (id) => broadcast('approval:gone', id);
  */
 function syncApprovalHandler(): void {
   hooks.onApprovalNeeded = getSettings().approvalsInApp
-    ? (request) => broadcast('approval:needed', request)
+    ? (request) => {
+        // `PreToolUse` has just set this session working, which is true of the
+        // agent and wrong about what it is waiting for: from here until the
+        // bar is answered the turn is blocked on a person. Holding the call is
+        // Sertum's own doing, so this is plane 2 speaking, not a guess about
+        // pixels -- and without it a session reads "working" beside a bar
+        // asking for permission.
+        ptys.applyUpdate(request.sessionId, {
+          status: 'needs-input',
+          activity: `approve ${request.tool}?`,
+        });
+        broadcast('approval:needed', request);
+      }
     : undefined;
 }
 syncApprovalHandler();
@@ -203,6 +215,14 @@ ipcMain.handle(
       });
     }
     hooks.resolveApproval(id, answer);
+    // The agent is moving again, and will be before its next hook arrives.
+    // Deliberately not done for a call that expired or was abandoned: there
+    // Claude falls back to asking in its own TUI, so it still needs you and
+    // the dot should stay amber until an event says otherwise.
+    ptys.applyUpdate(sessionId, {
+      status: 'working',
+      activity: answer.decision === 'deny' ? `${tool} denied` : `${tool}…`,
+    });
   },
 );
 
@@ -281,7 +301,11 @@ const ptys = new PtyManager((id, spec) => {
 
   if (spec.agent === 'claude' && hooks.port) {
     return {
-      args: [...args, '--settings', buildClaudeSettings(hooks.urlFor(id))],
+      args: [
+        ...args,
+        '--settings',
+        buildClaudeSettings(hooks.urlFor(id), hooks.approvalTimeoutMs),
+      ],
       adapterBound: true,
     };
   }

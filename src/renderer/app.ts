@@ -234,10 +234,12 @@ export class App {
     // B5: a tool call is holding a turn open until someone answers.
     this.el.approvalHost.append(this.approvals.element);
     api.onApprovalNeeded((request) => {
-      // Answering means seeing what led to the request, so the session it is
-      // about comes forward with the bar.
-      if (this.sessions.has(request.sessionId)) this.focusSession(request.sessionId);
       this.approvals.show(request);
+      // Answering means seeing what led to the request, so the session comes
+      // forward with the bar -- whichever call the bar ended up showing, which
+      // is not this one when an older call is still queued ahead of it.
+      const showing = this.approvals.sessionId;
+      if (showing && this.sessions.has(showing)) this.focusSession(showing);
     });
     api.onApprovalGone((id) => this.approvals.dismiss(id));
 

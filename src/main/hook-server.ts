@@ -11,6 +11,14 @@ export interface HookEvent {
 }
 
 /**
+ * How long a turn may sit blocked on Sertum's UI.
+ *
+ * Exported because the hook command has to know it. curl's own deadline must
+ * outlast the hold, or the decision can never reach the agent waiting for it.
+ */
+export const APPROVAL_HOLD_MS = 120_000;
+
+/**
  * Plane 2 ingress for Claude Code.
  *
  * Each session is spawned with a settings blob whose hook URLs carry that
@@ -70,7 +78,7 @@ export class HookServer extends EventEmitter {
    * with no decision, so Claude falls back to asking in its own TUI: a person
    * who walked away costs a delay, never a wedged session.
    */
-  approvalTimeoutMs = 120_000;
+  approvalTimeoutMs = APPROVAL_HOLD_MS;
 
   async start(): Promise<number> {
     if (this.server) return this.boundPort;
@@ -105,7 +113,18 @@ export class HookServer extends EventEmitter {
         const event = String(payload.hook_event_name ?? 'Unknown');
         this.emit('hook', { sessionId, event, payload } satisfies HookEvent);
 
-        void this.controlReply(sessionId, event, payload).then(
+        // A held call has a turn behind it only for as long as its connection
+        // lives. curl giving up, or the user interrupting Claude, closes the
+        // socket with no answer -- and a bar still asking about a turn that
+        // has gone is exactly the false claim the two planes exist to prevent.
+        let abandon: (() => void) | null = null;
+        res.on('close', () => {
+          if (!res.writableEnded) abandon?.();
+        });
+
+        void this.controlReply(sessionId, event, payload, (cancel) => {
+          abandon = cancel;
+        }).then(
           (reply) => {
             if (res.writableEnded) return;
             if (reply) {
@@ -192,6 +211,7 @@ export class HookServer extends EventEmitter {
     sessionId: string,
     payload: Record<string, unknown>,
     subject: string,
+    onHold?: (cancel: () => void) => void,
   ): Promise<ApprovalAnswer | null> {
     const id = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     return new Promise((resolve) => {
@@ -207,6 +227,9 @@ export class HookServer extends EventEmitter {
       const timer = setTimeout(() => settle(null), this.approvalTimeoutMs);
       timer.unref?.();
       this.pendingApprovals.set(id, { sessionId, settle });
+      // Registered before the bar is announced, so a connection that dies in
+      // the same tick still has something to release.
+      onHold?.(() => settle(null));
       this.onApprovalNeeded?.({
         id,
         sessionId,
@@ -220,6 +243,7 @@ export class HookServer extends EventEmitter {
     sessionId: string,
     event: string,
     payload: Record<string, unknown>,
+    onHold?: (cancel: () => void) => void,
   ): Promise<Record<string, unknown> | null> {
     if (this.pendingInterrupts.delete(sessionId)) {
       return {
@@ -264,6 +288,7 @@ export class HookServer extends EventEmitter {
           decision?.decision === 'ask'
             ? decision.subject
             : String(payload.tool_name ?? ''),
+          onHold,
         );
         if (answer) {
           return {

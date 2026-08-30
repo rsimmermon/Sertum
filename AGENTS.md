@@ -658,6 +658,7 @@ So every path out of it answers:
 | Someone chooses | `200` with the decision | the call proceeds or is refused |
 | Two minutes pass | `204` empty | Claude asks in its own TUI |
 | The session exits | `204` empty | nothing is left waiting |
+| The client hangs up | nothing to answer | the bar comes down, unanswered |
 | The app quits | released, then closed | quit is not blocked |
 
 That last row was a real deadlock before it was tested. `server.close()` waits
@@ -666,6 +667,37 @@ in-flight request with no response yet, so settling *after* the close
 completed meant the close never completed. Pending calls are now released
 before the server closes, with `closeAllConnections()` as a backstop for
 keep-alive sockets that outlive their request.
+
+**The hook command needs two deadlines, because only one event is ever held.**
+Every hook but `PreToolUse` is answered the moment it arrives and keeps a
+`-m 2` ceiling, so a Sertum that stops answering never stalls a turn.
+`PreToolUse` is the call the bar holds, so its curl must outlast the hold
+(`-m` = the hold plus five seconds), with `--connect-timeout 2` keeping the
+fast failure where it belongs: an endpoint that is gone refuses the connection
+at once. One shared `-m 2` made B5 impossible in a way that looked like working
+software -- the bar appeared, curl gave up two seconds later, the terminal
+filled with `PreToolUse:Bash hook error -- Failed with non-blocking status
+code: No stderr output` (exit 28, stderr silenced by `-s`), Claude fell back to
+asking in its own TUI, and every button on the bar wrote into a socket that had
+already gone.
+
+That timeout is also why the client-hangup row exists. A held call has a turn
+behind it only while its connection lives, so the socket closing without an
+answer -- curl's own deadline, or the user interrupting Claude -- takes the bar
+down rather than leaving it asking about a turn that has ended.
+
+**A held call is `needs-input`, not `working`.** `PreToolUse` sets the session
+working, which is true of the agent and wrong about what it is waiting for, so
+the dot would read working beside a bar asking for permission. Holding the call
+is Sertum's own doing and therefore plane-2 truth, not an inference from
+pixels. The status returns to `working` only when the bar is *answered*: a call
+that expired or was abandoned leaves Claude asking in its own TUI, where it
+still needs you.
+
+Claude issues tool calls in parallel, so the bar is a queue rather than a
+single slot, and it says how many are behind the one on screen. A later request
+replacing an earlier one would leave a turn held open with no way to answer it
+until the timeout.
 
 The bar sits above the terminal rather than over it, because deciding means
 reading the output that led to the request. It is never dismissed by clicking
@@ -893,7 +925,9 @@ fixed along the way:
   placeholder's exact dimensions because Squirrel sizes its window to this
   image. Note that `Setup.exe` contains no raw `GIF89a` header at all -- the
   payload is compressed -- so a byte search of the installer cannot confirm
-  which image is embedded; run the installer to check that.
+  which image is embedded; run the installer to check that. Verified by
+  running a real `Sertum-1.0.0 Setup.exe`: the install screen shows our
+  spinner, not the placeholder.
 - **`node-pty`'s ConPTY `kill()` can throw a benign but scary-looking
   uncaught exception.** On the non-DLL ConPTY path, `kill()` forks a helper
   (`conpty_console_list_agent.js`) to enumerate and force-kill the shell's
