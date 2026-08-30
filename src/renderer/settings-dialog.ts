@@ -1,11 +1,14 @@
 import {
   DEFAULT_SETTINGS,
   SCROLLBACK_CHOICES,
+  type Keybinding,
   type ManagedAgent,
   type PermissionRule,
   type Settings,
   type TabPlacement,
 } from '../shared/types';
+
+import { openConfirmDialog } from './confirm-dialog';
 
 const api = window.sertum;
 
@@ -658,13 +661,42 @@ export function openSettingsDialog(
 
       pane.append(sectionHead('Shortcuts'));
       pane.append(
-        declined(
-          'Remap shortcuts',
-          'Every binding listed in C23',
-          'Shortcuts are fixed in the application menu; there is no keybinding ' +
-            'registry to rebind against.',
+        note(
+          'Click a shortcut to record a new one; Escape cancels. A chord ' +
+            'already in use is refused and says by what — two menu items ' +
+            'claiming one chord would leave which of them fires up to Electron ' +
+            'rather than to you.',
         ),
       );
+
+      const keyList = el('div', 'key-list');
+      const drawKeys = (bindings: Keybinding[]): void => {
+        keyList.replaceChildren();
+        let section = '';
+        for (const binding of bindings) {
+          if (binding.section !== section) {
+            section = binding.section;
+            keyList.append(text('div', section, 'key-section'));
+          }
+          keyList.append(keyRow(binding, drawKeys));
+        }
+      };
+      pane.append(keyList);
+      void api.getKeybindings().then(drawKeys);
+
+      const resetRow = el('div', 'row');
+      resetRow.append(
+        button('Reset all to defaults', 'btn ghost', async () => {
+          const ok = await openConfirmDialog({
+            title: 'Reset every shortcut?',
+            body: 'Restores the shipped chord for every command listed here.',
+            confirmLabel: 'Reset all',
+          });
+          if (!ok) return;
+          drawKeys(await api.resetKeybindings());
+        }),
+      );
+      pane.append(resetRow);
       return pane;
     }
 
@@ -891,4 +923,113 @@ function el(tag: string, cls: string): HTMLElement {
 
 function toneFor(decision: PermissionRule['decision']): string {
   return decision === 'deny' ? 'err' : decision === 'allow' ? 'ok' : 'warn';
+}
+
+/**
+ * One command and its chord. The badge is the control: clicking it starts
+ * recording, and the next chord either lands or is refused inline.
+ *
+ * Recording captures on `keydown` and swallows the event, so a chord being
+ * assigned cannot also fire the command it is being assigned to.
+ */
+function keyRow(binding: Keybinding, redraw: (b: Keybinding[]) => void): HTMLElement {
+  const row = el('div', 'key-row');
+  const label = text('span', binding.label, 'key-label');
+  const badge = document.createElement('button');
+  badge.type = 'button';
+  badge.className = 'key-badge' + (binding.isDefault ? '' : ' is-custom');
+  badge.textContent = prettyAccelerator(binding.accelerator);
+  const problem = text('span', '', 'key-problem');
+
+  let recording = false;
+  const stop = (): void => {
+    recording = false;
+    badge.classList.remove('is-recording');
+    badge.textContent = prettyAccelerator(binding.accelerator);
+    document.removeEventListener('keydown', onKey, true);
+  };
+
+  async function onKey(event: KeyboardEvent): Promise<void> {
+    if (!recording) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      problem.textContent = '';
+      stop();
+      return;
+    }
+    const accelerator = toAccelerator(event);
+    // A modifier on its own is the first half of a chord, not a chord.
+    if (!accelerator) return;
+
+    const result = await api.setKeybinding(binding.id, accelerator);
+    if (!result.ok) {
+      problem.textContent = `${prettyAccelerator(accelerator)} — ${result.reason}`;
+      row.classList.add('is-conflict');
+      // Deliberately keeps recording: the fix is another chord, and dropping
+      // out would make the user click the badge again to try one.
+      return;
+    }
+    row.classList.remove('is-conflict');
+    problem.textContent = '';
+    stop();
+    redraw(result.bindings);
+  }
+
+  badge.onclick = () => {
+    if (recording) {
+      stop();
+      return;
+    }
+    recording = true;
+    badge.classList.add('is-recording');
+    badge.textContent = 'Press a chord…';
+    document.addEventListener('keydown', (e) => void onKey(e), true);
+  };
+
+  row.append(label, badge, problem);
+  return row;
+}
+
+/** A keyboard event as an Electron accelerator, or null if it is only mods. */
+function toAccelerator(event: KeyboardEvent): string | null {
+  const parts: string[] = [];
+  if (event.ctrlKey || event.metaKey) parts.push('CmdOrCtrl');
+  if (event.altKey) parts.push('Alt');
+  if (event.shiftKey) parts.push('Shift');
+
+  const key = event.key;
+  if (['Control', 'Meta', 'Alt', 'Shift', 'CapsLock', 'Dead'].includes(key)) return null;
+  if (!parts.length) return null;
+
+  const NAMED: Record<string, string> = {
+    ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Enter: 'Return', ' ': 'Space', Escape: 'Escape', Backspace: 'Backspace',
+    Delete: 'Delete', Tab: 'Tab', Home: 'Home', End: 'End',
+    PageUp: 'PageUp', PageDown: 'PageDown',
+  };
+  const named = NAMED[key];
+  if (named) return [...parts, named].join('+');
+  if (/^F\d{1,2}$/.test(key)) return [...parts, key].join('+');
+  if (key.length === 1) return [...parts, key.toUpperCase()].join('+');
+  return null;
+}
+
+/** Electron's spelling is for Electron; this is for reading. */
+function prettyAccelerator(value: string): string {
+  const mac = navigator.platform.toLowerCase().includes('mac');
+  return value
+    .split('+')
+    .map((part) => {
+      if (part === 'CmdOrCtrl' || part === 'CommandOrControl') return mac ? '⌘' : 'Ctrl';
+      if (part === 'Alt') return mac ? '⌥' : 'Alt';
+      if (part === 'Shift') return mac ? '⇧' : 'Shift';
+      if (part === 'Return') return '↵';
+      if (part === 'Up') return '↑';
+      if (part === 'Down') return '↓';
+      if (part === 'Left') return '←';
+      if (part === 'Right') return '→';
+      return part;
+    })
+    .join(mac ? '' : '+');
 }

@@ -50,6 +50,12 @@ import {
   removeRule,
   subjectOf,
 } from './main/permission-rules';
+import {
+  accel,
+  listKeybindings,
+  resetKeybindings,
+  setKeybinding,
+} from './main/keybindings';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import {
@@ -200,6 +206,22 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle('keys:get', () => listKeybindings());
+ipcMain.handle(
+  'keys:set',
+  (_e, { id, accelerator }: { id: string; accelerator: string }) => {
+    const result = setKeybinding(id, accelerator);
+    // The menu carries the accelerators, so a new binding only takes effect
+    // once it is rebuilt.
+    if (result.ok) buildMenu();
+    return result;
+  },
+);
+ipcMain.handle('keys:reset', () => {
+  const bindings = resetKeybindings();
+  buildMenu();
+  return bindings;
+});
 ipcMain.handle('rules:get', () => getRules());
 ipcMain.handle('rules:add', (_e, rule: Omit<PermissionRule, 'id'>) => addRule(rule));
 ipcMain.handle('rules:remove', (_e, id: string) => removeRule(id));
@@ -1034,7 +1056,7 @@ function buildMenu() {
       { type: 'separator' },
       {
         label: 'Settings…',
-        accelerator: 'CmdOrCtrl+,',
+        accelerator: accel('settings'),
         click: send('menu:settings'),
       },
       { type: 'separator' },
@@ -1055,7 +1077,7 @@ function buildMenu() {
       submenu: [
         {
           label: 'New Session…',
-          accelerator: 'CmdOrCtrl+N',
+          accelerator: accel('new-session'),
           click: send('menu:new-session'),
         },
         { type: 'separator' },
@@ -1069,7 +1091,7 @@ function buildMenu() {
         // it behind the very session you just closed.
         {
           label: 'Worktree Manager…',
-          accelerator: 'CmdOrCtrl+Shift+W',
+          accelerator: accel('worktrees'),
           click: send('menu:worktrees'),
         },
         // macOS keeps Settings in the app menu; every other platform has no
@@ -1080,7 +1102,7 @@ function buildMenu() {
               { type: 'separator' },
               {
                 label: 'Settings…',
-                accelerator: 'CmdOrCtrl+,',
+                accelerator: accel('settings'),
                 click: send('menu:settings'),
               },
             ] as Electron.MenuItemConstructorOptions[])),
@@ -1088,7 +1110,7 @@ function buildMenu() {
         {
           id: 'file-close-tab',
           label: 'Close Tab',
-          accelerator: 'CmdOrCtrl+W',
+          accelerator: accel('close-tab'),
           click: send('menu:close-tab'),
           enabled: false,
         },
@@ -1111,7 +1133,7 @@ function buildMenu() {
         {
           id: 'session-interrupt',
           label: 'Interrupt Turn',
-          accelerator: 'CmdOrCtrl+.',
+          accelerator: accel('interrupt'),
           click: send('menu:interrupt'),
           enabled: false,
         },
@@ -1127,14 +1149,14 @@ function buildMenu() {
         {
           id: 'session-next',
           label: 'Next Session',
-          accelerator: 'CmdOrCtrl+Shift+]',
+          accelerator: accel('next-session'),
           click: send('menu:next-session'),
           enabled: false,
         },
         {
           id: 'session-prev',
           label: 'Previous Session',
-          accelerator: 'CmdOrCtrl+Shift+[',
+          accelerator: accel('prev-session'),
           click: send('menu:prev-session'),
           enabled: false,
         },
@@ -1159,7 +1181,7 @@ function buildMenu() {
       submenu: [
         {
           label: 'Command Palette…',
-          accelerator: 'CmdOrCtrl+K',
+          accelerator: accel('palette'),
           click: send('menu:palette'),
         },
         { type: 'separator' },
@@ -1169,7 +1191,7 @@ function buildMenu() {
         // would have to intercept is a keystroke the agent's TUI never sees.
         {
           label: 'Pane Layout…',
-          accelerator: 'CmdOrCtrl+Alt+L',
+          accelerator: accel('layout-picker'),
           click: send('menu:layout-picker'),
         },
         {
@@ -1210,28 +1232,28 @@ function buildMenu() {
           submenu: [
             {
               label: 'Split Focused Pane Right',
-              accelerator: 'CmdOrCtrl+Alt+D',
+              accelerator: accel('split-right'),
               click: send('menu:split-right'),
             },
             {
               label: 'Split Focused Pane Down',
-              accelerator: 'CmdOrCtrl+Alt+Shift+D',
+              accelerator: accel('split-down'),
               click: send('menu:split-down'),
             },
             { type: 'separator' },
             {
               label: 'Maximise Focused Pane',
-              accelerator: 'CmdOrCtrl+Alt+Return',
+              accelerator: accel('maximise-pane'),
               click: send('menu:maximise-pane'),
             },
             {
               label: 'Close Focused Pane',
-              accelerator: 'CmdOrCtrl+Alt+W',
+              accelerator: accel('close-pane'),
               click: send('menu:close-pane'),
             },
             {
               label: 'Reset Pane Sizes',
-              accelerator: 'CmdOrCtrl+Alt+0',
+              accelerator: accel('reset-panes'),
               click: send('menu:reset-panes'),
             },
             { type: 'separator' },
@@ -1239,22 +1261,22 @@ function buildMenu() {
             // a two-pane layout answers on its own axis only.
             {
               label: 'Focus Pane Left',
-              accelerator: 'CmdOrCtrl+Alt+Left',
+              accelerator: accel('focus-pane-left'),
               click: send('menu:focus-pane-left'),
             },
             {
               label: 'Focus Pane Right',
-              accelerator: 'CmdOrCtrl+Alt+Right',
+              accelerator: accel('focus-pane-right'),
               click: send('menu:focus-pane-right'),
             },
             {
               label: 'Focus Pane Up',
-              accelerator: 'CmdOrCtrl+Alt+Up',
+              accelerator: accel('focus-pane-up'),
               click: send('menu:focus-pane-up'),
             },
             {
               label: 'Focus Pane Down',
-              accelerator: 'CmdOrCtrl+Alt+Down',
+              accelerator: accel('focus-pane-down'),
               click: send('menu:focus-pane-down'),
             },
           ],

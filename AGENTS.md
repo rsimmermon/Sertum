@@ -92,8 +92,11 @@ What's built and verified so far:
       Worktrees' base branch and bootstrap command (E4), and Appearance's
       theme, accent, compact rows, tabs, badges and type sizes (E6) are wired
       end to end; E2 keeps the agent-path resolver. Controls whose subsystem
-      does not exist — shortcut remapping, session restore, storage — render
-      disabled carrying the reason
+      does not exist — session restore, storage — render disabled carrying
+      the reason
+- [x] **Remappable shortcuts** (wireframe E6) — a command registry behind the
+      menu, click-to-record chords, and a collision refused with the command
+      that already holds it
 - [x] **Permission rules and in-app approval** (wireframes E2, B5) — stored
       allow/deny/ask rules answered at Claude's `PreToolUse`, and an approval
       bar that holds the turn open for calls no rule decides
@@ -681,6 +684,34 @@ The whole feature is switchable in E2, and the switch is the presence of the
 handler: with none, the hook server never holds a call at all, so turning it
 off cannot leave a turn waiting on a bar that will not appear.
 
+## Shortcuts are a registry, not literals
+
+Accelerators lived as strings inside `buildMenu`, which made them unremappable
+by construction: there was nowhere to put an override and nothing to detect a
+collision against. `main/keybindings.ts` is that missing piece -- a table of
+commands, a map of overrides, and one rule about conflicts.
+
+- **Nothing is stored until the conflict is resolved** (E6 note 236). Two menu
+  items claiming one chord would leave which of them fires up to Electron
+  rather than to the user, so `setKeybinding` refuses and names the command
+  already holding it. The bar keeps recording, because the fix is another
+  chord.
+- **Chords are compared as chords, not as strings.** `Ctrl+Shift+X` and
+  `CmdOrCtrl+Shift+X` are one binding written two ways; normalising modifiers
+  and case before comparing is what stops a duplicate slipping in through
+  spelling.
+- **A stored accelerator is validated before Electron ever sees it.**
+  `Menu.buildFromTemplate` throws on a malformed accelerator and the menu is
+  built during startup, so one bad string in a hand-edited file would leave
+  the app with no menu at all. Anything that does not parse is dropped on load
+  and the command keeps its default.
+- **Changing a binding rebuilds the menu**, since the menu is where
+  accelerators live.
+
+Only commands with a fixed accelerator are listed. `⌘1`…`⌘4` address the nth
+session or pane rather than naming one command, and the layout radio set keeps
+its numeric mnemonic, so neither is offered for remapping.
+
 ## Pane layouts
 
 Design section 07. A window shows one terminal by default; splitting is opt-in
@@ -943,6 +974,7 @@ src/
   main/pull-request.ts        Pull requests through the GitHub CLI (C16)
   main/notifications.ts       System notifications from adapter events (C20, E5)
   main/permission-rules.ts    Stored allow/deny/ask rules for tool calls (E2)
+  main/keybindings.ts         Command registry behind the menu accelerators (E6)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search

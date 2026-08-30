@@ -62,6 +62,10 @@ const api: SertumApi = {
     ipcRenderer.on('approval:gone', handler);
     return () => ipcRenderer.removeListener('approval:gone', handler);
   },
+  getKeybindings: () => ipcRenderer.invoke('keys:get'),
+  setKeybinding: (id: string, accelerator: string) =>
+    ipcRenderer.invoke('keys:set', { id, accelerator }),
+  resetKeybindings: () => ipcRenderer.invoke('keys:reset'),
   getPermissionRules: () => ipcRenderer.invoke('rules:get'),
   addPermissionRule: (rule: Omit<PermissionRule, 'id'>) =>
     ipcRenderer.invoke('rules:add', rule),

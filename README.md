@@ -22,6 +22,7 @@ working, idle, or waiting for input.
   a decision you keep repeating into a stored permission rule.
 - Get a system notification when a session needs you, fired from agent events
   rather than from output going quiet.
+- Remap any menu shortcut, with collisions refused before they are saved.
 - Create isolated worktree sessions from the New Session dialog.
 - Discover supported agent sessions that were started outside Sertum.
 
@@ -97,8 +98,8 @@ external session discovery, binary configuration, worktree management,
 split-pane layouts, diff review with commit and pull request, permission rules
 and in-app tool approval, system notifications, and settings.
 
-Still planned: remapping keyboard shortcuts, restoring sessions on launch, and
-per-repository worktree defaults. Settings shows each of these as a disabled
+Still planned: restoring sessions on launch and per-repository worktree
+defaults. Settings shows each of these as a disabled
 control explaining what is missing, rather than as a switch that does
 nothing.
 

@@ -424,6 +424,31 @@ export interface DiffCommitResult {
 }
 
 /**
+ * What C15 asks Git to do. Paths are the rows ticked in C11's inventory, so
+ * an empty list is a caller error rather than "commit everything".
+ */
+export interface DiffCommitRequest {
+  root: string;
+  message: string;
+  paths: string[];
+  push: boolean;
+}
+
+/**
+ * Committing and pushing succeed independently, so they are reported
+ * independently: a commit that lands and a push that cannot is a real state
+ * the sheet has to show without implying the work was lost.
+ */
+export interface DiffCommitResult {
+  ok: boolean;
+  /** Abbreviated hash of the commit that was written, when one was. */
+  commit?: string;
+  /** Absent when no push was asked for. */
+  push?: { ok: boolean; reason?: string };
+  reason?: string;
+}
+
+/**
  * What C16 can offer for the current branch, resolved before the sheet is
  * shown. `ok: false` always carries a `reason` the user can act on.
  */
@@ -483,6 +508,24 @@ export interface ApprovalAnswer {
   scope: ApprovalScope;
   reason?: string;
 }
+
+/** Which group E6 lists a shortcut under. */
+export type KeybindingSection = 'Application' | 'Sessions' | 'Panes';
+
+/** One remappable command and the chord currently bound to it. */
+export interface Keybinding {
+  id: string;
+  label: string;
+  section: KeybindingSection;
+  accelerator: string;
+  /** False once the user has changed it, so E6 can offer a revert. */
+  isDefault: boolean;
+  defaultAccelerator: string;
+}
+
+export type KeybindingResult =
+  | { ok: true; bindings: Keybinding[] }
+  | { ok: false; reason: string };
 
 /** What a permission rule says to do (wireframe E2). */
 export type PermissionDecision = 'allow' | 'deny' | 'ask';
@@ -775,6 +818,11 @@ export interface SertumApi {
    * asked directly; no agent is involved and no terminal is written to.
    */
   commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
+  /**
+   * Commit the selected paths, optionally pushing (wireframe C15). Git is
+   * asked directly; no agent is involved and no terminal is written to.
+   */
+  commitDiff(request: DiffCommitRequest): Promise<DiffCommitResult>;
   /** What a pull request for the current branch would need (wireframe C16). */
   readPullRequest(root: string): Promise<PullRequestContext>;
   /** Open the pull request through the GitHub CLI. */
@@ -802,6 +850,11 @@ export interface SertumApi {
   onApprovalNeeded(fn: (request: PendingApproval) => void): () => void;
   /** That call no longer has a turn behind it; take the bar down. */
   onApprovalGone(fn: (id: string) => void): () => void;
+  /** Remappable shortcuts, as E6 lists them. */
+  getKeybindings(): Promise<Keybinding[]>;
+  /** Record a chord. Refused, with a reason, when it collides. */
+  setKeybinding(id: string, accelerator: string): Promise<KeybindingResult>;
+  resetKeybindings(): Promise<Keybinding[]>;
   /** Permission rules, as E2 lists and edits them. */
   getPermissionRules(): Promise<PermissionRule[]>;
   addPermissionRule(rule: Omit<PermissionRule, 'id'>): Promise<PermissionRule[]>;

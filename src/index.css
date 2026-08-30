@@ -1475,6 +1475,28 @@ select.field {
 }
 .approval-actions { flex: none; display: flex; gap: 6px; }
 
+/* ------------------------------------------------- E6 shortcuts */
+.key-list { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 8px; }
+.key-section {
+  margin: 10px 0 2px; font-size: 0.85em; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.key-row { display: flex; align-items: center; gap: 10px; padding: 5px 2px; }
+.key-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-badge {
+  flex: none; min-width: 76px; padding: 4px 9px; cursor: default;
+  font: 11px/1.4 var(--font-mono); color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 5px;
+}
+.key-badge:hover { border-color: var(--accent); }
+.key-badge.is-custom { color: var(--accent); border-color: var(--accent); }
+.key-badge.is-recording {
+  color: var(--warn); border-color: var(--warn); background: var(--warn-soft);
+}
+/* The conflict is stated on the row it belongs to, and nothing is stored. */
+.key-problem { flex: none; max-width: 320px; font-size: 11px; color: var(--err); }
+.key-row.is-conflict .key-label { color: var(--err); }
+
 /* --------------------------------------------- E2 permission rules */
 .rule-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
 .rule-row {
