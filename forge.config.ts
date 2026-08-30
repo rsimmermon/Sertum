@@ -119,7 +119,16 @@ const config: ForgeConfig = {
     ignoreModules: ['node-pty'],
   },
   makers: [
-    new MakerSquirrel({ setupIcon: 'assets/icon.ico' }),
+    // Without `loadingGif`, electron-winstaller falls back to its own
+    // placeholder -- a mint-green rectangle with two stray marks in the
+    // corner, which is the first thing anyone sees of Sertum. Ours is
+    // generated from the same vector as the icon by scripts/make-loading-gif.js
+    // and keeps the placeholder's dimensions, since Squirrel sizes its window
+    // to this image.
+    new MakerSquirrel({
+      setupIcon: 'assets/icon.ico',
+      loadingGif: 'assets/install-spinner.gif',
+    }),
     new MakerZIP({}, ['darwin']),
     new MakerRpm({ options: { icon: 'assets/icon.png' } }),
     new MakerDeb({ options: { icon: 'assets/icon.png' } }),
