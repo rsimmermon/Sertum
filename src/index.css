@@ -150,6 +150,23 @@ input {
   user-select: text;
   -webkit-user-select: text;
 }
+/*
+ * ...but only for inputs you actually type into. The rule above exists so a
+ * real field behaves like one; applied to a control you click, an I-beam
+ * says "type here" about something that takes no typing.
+ */
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'],
+input[type='color'],
+input[type='file'],
+input[type='button'],
+input[type='submit'],
+input[type='reset'] {
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 /* ---------- tab strip ---------- */
 .tabstrip {
