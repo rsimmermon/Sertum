@@ -92,8 +92,11 @@ What's built and verified so far:
       Worktrees' base branch and bootstrap command (E4), and Appearance's
       theme, accent, compact rows, tabs, badges and type sizes (E6) are wired
       end to end; E2 keeps the agent-path resolver. Controls whose subsystem
-      does not exist — permission rules, shortcut remapping, session restore,
-      storage — render disabled carrying the reason
+      does not exist — shortcut remapping, session restore, storage — render
+      disabled carrying the reason
+- [x] **Permission rules** (wireframe E2) — stored allow/deny/ask rules
+      answered at Claude's `PreToolUse`, deny winning over allow and an
+      unmatched call falling through to the agent's own prompt
 - [x] **System notifications** (wireframes C20, E5) — fired from adapter
       events on a status transition, only when the window is unfocused, with
       per-session mute and snooze
@@ -541,9 +544,8 @@ The rule that shapes the panes: **a control whose subsystem does not exist is
 rendered disabled carrying its reason, never as a switch that switches
 nothing.** This is the same answer `AgentAdapter` gives for a declined
 capability, for the same purpose -- the user learns why, at the moment it
-matters, instead of discovering later that a toggle did nothing. Permission
-rules, shortcut remapping, session restore and storage management all read
-that way today.
+matters, instead of discovering later that a toggle did nothing. Shortcut
+remapping, session restore and storage management all read that way today.
 
 Two settings were deliberately removed rather than shipped as stored values
 nothing reads:
@@ -603,6 +605,41 @@ Two platform facts shape the surface rather than being hidden:
   is the whole affordance -- clicking it focuses the window and that session.
 - **`app.setBadgeCount` is macOS and Linux only.** E5 says so next to the
   control instead of offering a switch that appears to work.
+
+## Permission rules are the tool gate made selective
+
+`tool-gate` already proved the mechanism: `PreToolUse` is a structured
+decision point that accepts `allow` or `deny` and attributes to exactly one
+session. Rules add a matcher in front of that answer and need no new channel,
+which is why this is a small module rather than a subsystem.
+
+Four decisions, all verified by driving the hook server over real HTTP:
+
+- **Deny wins.** When several rules match, one deny beats any number of
+  allows. A permission control that resolves ambiguity by permitting is not a
+  permission control: the cost of failing closed is one extra prompt, the cost
+  of failing open is the command the user wrote a rule to stop.
+- **No rule is not an approval.** An unmatched call returns nothing at all, so
+  Claude runs its own permission flow exactly as it would without Sertum.
+- **`*` is the only wildcard.** Full regex in a permission rule is a foot-gun,
+  because the character that makes a pattern broader than intended is
+  invisible in a settings row. Every other character is literal -- `a.b` does
+  not match `aXb` -- so what a rule covers can be read off the row.
+- **Scope is a path prefix**, so a rule bound to a repository also covers the
+  worktrees beneath it.
+
+The precedence chain at a `PreToolUse` boundary, outermost first: a queued
+interrupt returns `{ continue: false }`; the wholesale tool gate denies; then
+rules answer; then nothing. The gate is the blunter instrument and must
+outrank rules, or pausing tool use would be quietly overridden by an allow.
+
+A rule matches on the field a person would actually write it about -- a Bash
+command, an edited path -- not on the tool name, which a bare `*` still
+covers.
+
+`permission-rules` is a declared capability. Claude answers `ok`; Codex, Grok
+and shell decline with reasons, so E2 can say the rules are Claude-only rather
+than implying a fleet-wide policy.
 
 ## Pane layouts
 
@@ -865,6 +902,7 @@ src/
   main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)
   main/pull-request.ts        Pull requests through the GitHub CLI (C16)
   main/notifications.ts       System notifications from adapter events (C20, E5)
+  main/permission-rules.ts    Stored allow/deny/ask rules for tool calls (E2)
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search

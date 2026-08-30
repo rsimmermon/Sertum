@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   DiffCommitRequest,
+  PermissionRule,
   ManagedAgent,
   MenuState,
   SertumApi,
@@ -45,6 +46,10 @@ const api: SertumApi = {
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   openExternal: (url: string) =>
     ipcRenderer.invoke('shell:open-external', url),
+  getPermissionRules: () => ipcRenderer.invoke('rules:get'),
+  addPermissionRule: (rule: Omit<PermissionRule, 'id'>) =>
+    ipcRenderer.invoke('rules:add', rule),
+  removePermissionRule: (id: string) => ipcRenderer.invoke('rules:remove', id),
   muteSession: (id: string, muted: boolean) =>
     ipcRenderer.invoke('session:mute', { id, muted }),
   snoozeSession: (id: string) => ipcRenderer.invoke('session:snooze', id),

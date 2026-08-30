@@ -56,7 +56,9 @@ export type AgentCapability =
   /** Stop an active turn through the agent's structured control plane. */
   | 'turn-interrupt'
   /** Deny tool execution until the user explicitly resumes it. */
-  | 'tool-gate';
+  | 'tool-gate'
+  /** Decide individual tool calls from stored rules (wireframe E2). */
+  | 'permission-rules';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -433,6 +435,25 @@ export interface PullRequestResult {
   reason?: string;
 }
 
+/** What a permission rule says to do (wireframe E2). */
+export type PermissionDecision = 'allow' | 'deny' | 'ask';
+
+/**
+ * One rule, as E2 lists it and B5's "Always allow" writes it.
+ *
+ * `tool` is an exact tool name or `*`; `pattern` is matched against the field
+ * a person would write a rule about (a Bash command, an edited path) with `*`
+ * as the only wildcard; `scope` is `*` or a repository path, which also
+ * covers the worktrees beneath it.
+ */
+export interface PermissionRule {
+  id: string;
+  tool: string;
+  pattern: string;
+  scope: string;
+  decision: PermissionDecision;
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -709,6 +730,10 @@ export interface SertumApi {
   revealPath(target: string): Promise<void>;
   /** Open an http(s) URL in the browser. Any other scheme is refused. */
   openExternal(url: string): Promise<boolean>;
+  /** Permission rules, as E2 lists and edits them. */
+  getPermissionRules(): Promise<PermissionRule[]>;
+  addPermissionRule(rule: Omit<PermissionRule, 'id'>): Promise<PermissionRule[]>;
+  removePermissionRule(id: string): Promise<PermissionRule[]>;
   /** Mute a session's notifications until it finishes (E5). */
   muteSession(id: string, muted: boolean): Promise<boolean>;
   /** Quiet one session for the configured snooze (C20 note 152). */

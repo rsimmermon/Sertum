@@ -33,6 +33,16 @@ export class HookServer extends EventEmitter {
   /** Sessions whose PreToolUse requests are denied until explicitly resumed. */
   private toolGates = new Set<string>();
 
+  /**
+   * Asks the permission rules about one tool call. Injected rather than
+   * imported so the hook server keeps knowing only about hook shapes, and so
+   * a session's cwd is resolved by whoever owns sessions.
+   */
+  evaluatePermission?: (
+    sessionId: string,
+    payload: Record<string, unknown>,
+  ) => { decision: 'allow' | 'deny'; reason: string } | { decision: 'ask' } | null;
+
   async start(): Promise<number> {
     if (this.server) return this.boundPort;
 
@@ -66,7 +76,7 @@ export class HookServer extends EventEmitter {
         const event = String(payload.hook_event_name ?? 'Unknown');
         this.emit('hook', { sessionId, event, payload } satisfies HookEvent);
 
-        const reply = this.controlReply(sessionId, event);
+        const reply = this.controlReply(sessionId, event, payload);
         if (reply) {
           // A command hook's stdout is its structured reply. curl writes this
           // body to stdout, so no shell or PTY interpretation is involved.
@@ -126,6 +136,7 @@ export class HookServer extends EventEmitter {
   private controlReply(
     sessionId: string,
     event: string,
+    payload: Record<string, unknown>,
   ): Record<string, unknown> | null {
     if (this.pendingInterrupts.delete(sessionId)) {
       return {
@@ -143,6 +154,23 @@ export class HookServer extends EventEmitter {
             'Tool use is paused in Sertum. Resume it from the session menu.',
         },
       };
+    }
+
+    // Rules are consulted only after the wholesale gate, which is the blunter
+    // instrument and must win. `ask` returns nothing at all, so Claude runs
+    // its own permission flow exactly as it would without Sertum -- an
+    // unmatched call is not an approval.
+    if (event === 'PreToolUse') {
+      const decision = this.evaluatePermission?.(sessionId, payload);
+      if (decision && decision.decision !== 'ask') {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: decision.decision,
+            permissionDecisionReason: decision.reason,
+          },
+        };
+      }
     }
 
     if (event !== 'UserPromptSubmit') return null;

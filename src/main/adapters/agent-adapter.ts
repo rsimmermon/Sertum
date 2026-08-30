@@ -166,6 +166,10 @@ class CodexAdapter implements AgentAdapter {
       ok: false,
       reason: 'Codex has no persistent structured tool gate in this client.',
     },
+    'permission-rules': {
+      ok: false,
+      reason: 'Rules need a structured per-call decision point, which Codex does not expose here.',
+    },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -274,6 +278,7 @@ class ClaudeAdapter extends InertAgentAdapter {
       'turn-steer': { ok: true },
       'turn-interrupt': { ok: true },
       'tool-gate': { ok: true },
+      'permission-rules': { ok: true },
     });
   }
 
@@ -367,6 +372,10 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok’s event log cannot deny tool execution.',
       },
+      'permission-rules': {
+        ok: false,
+        reason: 'Grok’s event log is read-only, so a rule has nothing to answer.',
+      },
     });
   }
 
@@ -423,6 +432,10 @@ export function createAgentAdapters(deps: {
         'tool-gate': {
           ok: false,
           reason: 'A shell has no agent tool policy to gate.',
+        },
+        'permission-rules': {
+          ok: false,
+          reason: 'A shell has no tool calls to rule on.',
         },
       }),
     ],

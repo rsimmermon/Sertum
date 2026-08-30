@@ -2,6 +2,7 @@ import {
   DEFAULT_SETTINGS,
   SCROLLBACK_CHOICES,
   type ManagedAgent,
+  type PermissionRule,
   type Settings,
   type TabPlacement,
 } from '../shared/types';
@@ -202,13 +203,107 @@ export function openSettingsDialog(
 
       pane.append(sectionHead('Permission rules'));
       pane.append(
-        declined(
-          'Allow, deny and ask rules',
-          'Per-command rules scoped to a repository',
-          'There is no permission-rules engine. Claude tool use can be paused ' +
-            'wholesale from a session’s row menu, which is the only gate that exists.',
+        note(
+          'Rules answer a tool call before it runs, through the same ' +
+            'structured hook the tool gate uses. Deny wins over allow when ' +
+            'several match, and an unmatched call falls through to the ' +
+            'agent’s own prompt — no rule is not an approval. Claude only; ' +
+            'the other agents expose no per-call decision point.',
         ),
       );
+
+      const list = el('div', 'rule-list');
+      const redraw = (rules: PermissionRule[]): void => {
+        list.replaceChildren();
+        if (!rules.length) {
+          list.append(note('No rules. Every tool call goes to the agent’s own prompt.'));
+          return;
+        }
+        for (const rule of rules) {
+          const row = el('div', 'rule-row');
+          const summary = el('div', 'rule-summary');
+          summary.append(
+            text('span', rule.pattern, 'rule-pattern'),
+            text(
+              'span',
+              `${rule.tool === '*' ? 'any tool' : rule.tool} · ${
+                rule.scope === '*' ? 'all repositories' : rule.scope
+              }`,
+              'rule-scope',
+            ),
+          );
+          const verdict = text('span', rule.decision, `minichip ${toneFor(rule.decision)}`);
+          const remove = button('×', 'btn ghost small', async () => {
+            redraw(await api.removePermissionRule(rule.id));
+          });
+          remove.title = `Remove this rule`;
+          row.append(summary, verdict, remove);
+          list.append(row);
+        }
+      };
+      pane.append(list);
+      void api.getPermissionRules().then(redraw);
+
+      // --- add ---------------------------------------------------------
+      const pattern = document.createElement('input');
+      pattern.type = 'text';
+      pattern.className = 'field';
+      pattern.spellcheck = false;
+      pattern.placeholder = 'dotnet build *';
+      const tool = document.createElement('input');
+      tool.type = 'text';
+      tool.className = 'field';
+      tool.spellcheck = false;
+      tool.placeholder = 'Bash, or * for any';
+      let decision: PermissionRule['decision'] = 'deny';
+      let scope = '*';
+
+      const scopeButton = button('All repositories', 'btn ghost', async () => {
+        const picked = await api.pickDirectory();
+        if (!picked) return;
+        scope = picked;
+        scopeButton.textContent = picked;
+      });
+      const clearScope = button('Any', 'btn ghost', () => {
+        scope = '*';
+        scopeButton.textContent = 'All repositories';
+      });
+
+      const add = button('Add rule', 'btn primary', async () => {
+        const value = pattern.value.trim();
+        if (!value) return;
+        redraw(
+          await api.addPermissionRule({
+            tool: tool.value.trim() || '*',
+            pattern: value,
+            scope,
+            decision,
+          }),
+        );
+        pattern.value = '';
+      });
+
+      const addRow = el('div', 'row');
+      addRow.append(
+        pattern,
+        tool,
+        select(
+          [
+            ['deny', 'Deny'],
+            ['allow', 'Allow'],
+            ['ask', 'Ask'],
+          ],
+          decision,
+          (v) => {
+            decision = v as PermissionRule['decision'];
+          },
+        ),
+      );
+      const scopeRow = el('div', 'row');
+      scopeRow.append(scopeButton, clearScope, spacer(), add);
+      const addStack = el('div', 'setting-stack');
+      addStack.append(addRow, scopeRow);
+      pane.append(field('Add a rule', addStack, 'Only * is a wildcard.', true));
       return pane;
     }
 
@@ -781,4 +876,8 @@ function el(tag: string, cls: string): HTMLElement {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
   return node;
+}
+
+function toneFor(decision: PermissionRule['decision']): string {
+  return decision === 'deny' ? 'err' : decision === 'allow' ? 'ok' : 'warn';
 }

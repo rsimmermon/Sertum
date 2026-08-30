@@ -43,6 +43,12 @@ import {
   readPullRequestContext,
 } from './main/pull-request';
 import { Notifier } from './main/notifications';
+import {
+  addRule,
+  evaluate,
+  getRules,
+  removeRule,
+} from './main/permission-rules';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import {
@@ -71,6 +77,7 @@ import type {
   AgentKind,
   BinaryDetection,
   DiffCommitRequest,
+  PermissionRule,
   ManagedAgent,
   MenuState,
   DiscoveredSession,
@@ -98,6 +105,33 @@ if (process.env.SERTUM_DEBUG_PORT) {
 }
 
 const hooks = new HookServer();
+
+/**
+ * Rules answer `PreToolUse` for the sessions Sertum owns.
+ *
+ * Injected here rather than imported by the hook server, because deciding a
+ * call needs the session's working directory -- a rule scoped to a repository
+ * has to know which one asked -- and sessions are owned by the PTY manager,
+ * not by the hook plumbing.
+ */
+hooks.evaluatePermission = (sessionId, payload) => {
+  const session = ptys.get(sessionId);
+  if (!session) return null;
+  const input =
+    payload.tool_input && typeof payload.tool_input === 'object'
+      ? (payload.tool_input as Record<string, unknown>)
+      : {};
+  const result = evaluate(String(payload.tool_name ?? ''), input, session.cwd);
+  if (result.decision === 'ask') return { decision: 'ask' };
+  return {
+    decision: result.decision,
+    reason: `${result.decision === 'deny' ? 'Denied' : 'Allowed'} by a Sertum permission rule: ${result.rule?.pattern ?? '*'}`,
+  };
+};
+
+ipcMain.handle('rules:get', () => getRules());
+ipcMain.handle('rules:add', (_e, rule: Omit<PermissionRule, 'id'>) => addRule(rule));
+ipcMain.handle('rules:remove', (_e, id: string) => removeRule(id));
 
 /**
  * Plane 2 wiring for Claude Code: every session is spawned pointing its hooks
