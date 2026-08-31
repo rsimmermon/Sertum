@@ -481,6 +481,59 @@ Two things that cost time and are not obvious from the types:
   wide `FileNameW` the Win32 docs point at), and the uri-list body is a plain
   `file:///C:/...` URL. A bitmap arrives as `image/png`.
 
+### The WebGL renderer must be allowed to die
+
+A WebGL context is not the pane's to keep. Every terminal's context lives in
+the one shared GPU process, so a GPU reset -- display sleep, a
+discrete/integrated switch, that process being recycled -- loses all of them
+at once. xterm goes on rendering into the dead addon regardless, which paints
+nothing: the canvas is left with no backing store and the pane reads as a
+blank rectangle with a broken-image mark in one corner, while the PTY behind
+it carries on unharmed and the status bar keeps saying `adapters ok`. It
+looks like every session died and is in fact only a display that stopped.
+
+`WebglAddon.onContextLoss` is the only signal that this happened, and leaving
+it unsubscribed -- which it was -- means an idle machine can blank every pane
+in the window with no way back but a restart. Switching the renderer setting
+does not rescue an open pane either, since an addon cannot be swapped under a
+live terminal.
+
+`TerminalPane` therefore answers the loss: dispose the addon, which returns
+xterm to its DOM renderer, then `refresh` the whole viewport, because that
+renderer only paints what changes from here and the screen it inherits was
+drawn by the addon that just died. Recovery is attempted once and waits for
+the window to be visible -- the loss usually arrives while the machine is
+asleep, so retrying at that moment would only fail again. A second loss means
+the GPU is unreliable here, and staying on DOM beats flapping between
+renderers for the rest of the session.
+
+**The addon sits on the loss for three seconds first.** `@xterm/addon-webgl`
+0.19.0 answers `webglcontextlost` by starting a 3s timer and firing
+`onContextLoss` only if no `webglcontextrestored` arrives before it expires --
+a real restore is cheaper than a renderer swap, so the wait is right, but it
+means a pane is legitimately blank for those three seconds and any test that
+samples inside the window sees nothing happen.
+
+Verified against a live pane by taking the addon's own canvas
+(`addon._renderer._canvas`) and calling `WEBGL_lose_context.loseContext()` --
+note that reaching for a context on any other canvas in `.term-host` creates
+a fresh one rather than finding xterm's, and killing that proves nothing:
+
+| t | State |
+|---|---|
+| 0ms | context lost for real (`isContextLost()` true) |
+| 500-2500ms | still on WebGL, inside the addon's grace window |
+| 3300ms | `onContextLoss` fires: addon disposed, DOM renderer painting the real scrollback |
+| 4200ms | the retry lands, WebGL back with three canvases |
+| 7000ms | stable, and the PTY echoes new input |
+
+Before the fix, everything from 3300ms on was a blank canvas for the life of
+the app.
+
+Note that `TerminalRenderer`'s `canvas` value names a renderer that no longer
+exists: xterm dropped the canvas addon, so anything other than `webgl` simply
+loads no addon and gets the DOM renderer.
+
 ## Committing from the review
 
 C15 is reached from C11's Commit & push button and writes through Git alone

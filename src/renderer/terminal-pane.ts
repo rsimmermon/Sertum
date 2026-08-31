@@ -24,6 +24,9 @@ export class TerminalPane {
   private attached = false;
   private renderer: Settings['terminalRenderer'];
   private copyOnSelect = false;
+  private webgl: WebglAddon | null = null;
+  private webglRestoreTried = false;
+  private restoreTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     readonly session: SessionSnapshot,
@@ -136,16 +139,96 @@ export class TerminalPane {
   attach(): void {
     if (this.attached) return;
     this.term.open(this.element);
-    if (this.renderer === 'webgl') {
-      try {
-        this.term.loadAddon(new WebglAddon());
-      } catch {
-        // Canvas fallback is automatic; nothing to do.
-      }
-    }
+    this.loadWebgl();
     this.attached = true;
     this.resizeObserver.observe(this.element);
     this.refit();
+  }
+
+  /**
+   * Loads the WebGL renderer, when that is the choice, and arranges for its
+   * death to be survivable.
+   *
+   * A WebGL context is not this pane's to keep. Every terminal's context
+   * lives in the one shared GPU process, so a GPU reset -- display sleep, a
+   * discrete/integrated switch, that process being recycled -- loses all of
+   * them at once. xterm goes on rendering into the dead addon regardless,
+   * which paints nothing: the canvas is left with no backing store and the
+   * pane reads as a blank rectangle with a broken-image mark in the corner
+   * while the PTY behind it carries on unharmed. `onContextLoss` is the only
+   * signal that this happened, so leaving it unsubscribed means an idle
+   * machine can blank every pane in the window with no way back but a
+   * restart.
+   *
+   * A failed load is left alone for the same reason a declined capability is:
+   * xterm's DOM renderer is already what a terminal without this addon uses,
+   * so there is nothing to fall back *to*.
+   */
+  private loadWebgl(): void {
+    if (this.renderer !== 'webgl') return;
+    try {
+      const addon = new WebglAddon();
+      addon.onContextLoss(() => this.onWebglLost());
+      this.term.loadAddon(addon);
+      this.webgl = addon;
+    } catch {
+      this.webgl = null;
+    }
+  }
+
+  /**
+   * Answers a lost context: drop the addon, then try WebGL once more.
+   *
+   * Disposing is what returns xterm to its DOM renderer, and it is done first
+   * because correct pixels now matter more than fast ones. That renderer only
+   * paints what changes from here, though, and the screen it inherits was
+   * drawn by the addon that just died -- hence the explicit refresh, without
+   * which the pane stays blank until the agent's next redraw.
+   *
+   * The retry waits for the window to be visible, since the loss usually
+   * arrives while the machine is asleep and retrying then would only fail
+   * again. It happens once. A second loss means the GPU is unreliable here,
+   * and a pane that stays on DOM is better than one that spends the session
+   * flapping between renderers.
+   */
+  private onWebglLost(): void {
+    this.webgl?.dispose();
+    this.webgl = null;
+    this.term.refresh(0, this.term.rows - 1);
+
+    if (this.webglRestoreTried) return;
+    this.webglRestoreTried = true;
+    this.whenVisible(() => {
+      if (!this.attached) return;
+      this.loadWebgl();
+      this.term.refresh(0, this.term.rows - 1);
+    });
+  }
+
+  /**
+   * Runs `task` once the window is on screen, or now if it already is.
+   *
+   * The small delay is for the case where the GPU process is on its way back
+   * up: Chromium spawns a replacement on demand, and asking for a context in
+   * the same tick as the loss tends to be answered by the corpse.
+   */
+  private whenVisible(task: () => void): void {
+    const run = () => {
+      this.restoreTimer = setTimeout(task, 500);
+    };
+    if (document.visibilityState === 'visible') {
+      run();
+      return;
+    }
+    const onChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      document.removeEventListener('visibilitychange', onChange);
+      run();
+    };
+    document.addEventListener('visibilitychange', onChange);
+    this.disposers.push(() =>
+      document.removeEventListener('visibilitychange', onChange),
+    );
   }
 
   /** Detach from the DOM without destroying the buffer. */
@@ -242,6 +325,7 @@ export class TerminalPane {
   }
 
   dispose(): void {
+    if (this.restoreTimer !== null) clearTimeout(this.restoreTimer);
     this.resizeObserver.disconnect();
     for (const d of this.disposers) d();
     this.term.dispose();
