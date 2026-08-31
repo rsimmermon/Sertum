@@ -452,10 +452,7 @@ export function openNewSessionDialog(
     }
 
     function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        void done(true);
-      } else if (e.key === 'Enter' && !create.hasAttribute('disabled')) {
+      if (e.key === 'Enter' && !create.hasAttribute('disabled')) {
         e.preventDefault();
         void done();
       }
@@ -463,9 +460,9 @@ export function openNewSessionDialog(
 
     folderInput.addEventListener('change', () => void refresh());
     folderInput.addEventListener('blur', () => void refresh());
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) done(true);
-    });
+    // Neither a backdrop click nor Escape is an answer: every route out of a
+    // modal goes through one of its own buttons. See "Modals answer, they do
+    // not vanish" in AGENTS.md.
     document.addEventListener('keydown', onKey, true);
 
     document.body.append(overlay);

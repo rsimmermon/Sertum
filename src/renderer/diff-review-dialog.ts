@@ -20,14 +20,11 @@ export async function openDiffReviewDialog(cwd: string): Promise<void> {
   document.body.append(overlay);
 
   const close = (): void => overlay.remove();
-  overlay.onmousedown = (e) => {
-    if (e.target === overlay) close();
-  };
-  overlay.onkeydown = (e) => {
-    if (e.key === 'Escape') close();
-  };
+  // Neither a backdrop click nor Escape is an answer: every route out of a
+  // modal goes through one of its own buttons. See "Modals answer, they do
+  // not vanish" in AGENTS.md.
 
-  dlg.textContent = 'Reading changes…';
+  loading(dlg, close);
   const inventory = await api.readDiff(cwd).catch(() => null);
   if (!inventory) {
     dlg.replaceChildren(
@@ -72,7 +69,7 @@ function render(inv: DiffInventory, dlg: HTMLElement, close: () => void): void {
       dlg.insertBefore(error, dlg.lastElementChild);
       return;
     }
-    dlg.textContent = 'Reading changes…';
+    loading(dlg, close);
     const refreshed = await api.readDiff(inv.root);
     if (refreshed) render(refreshed, dlg, close);
   };
@@ -83,7 +80,7 @@ function render(inv: DiffInventory, dlg: HTMLElement, close: () => void): void {
     // C15 commits the inventory this dialog is showing, so a commit sends us
     // back to Git for a fresh one rather than trusting what is on screen.
     if (!(await openCommitDialog(inv))) return;
-    dlg.textContent = 'Reading changes…';
+    loading(dlg, close);
     const refreshed = await api.readDiff(inv.root);
     if (refreshed) render(refreshed, dlg, close);
   };
@@ -191,6 +188,17 @@ function message(text: string): HTMLElement {
   el.className = 'diff-message';
   el.textContent = text;
   return el;
+}
+
+/**
+ * The waiting state, which carries its own way out.
+ *
+ * A modal closes only through one of its own buttons, so the seconds spent
+ * reading Git cannot be a stretch with no button on screen: a call that hangs
+ * would leave a dialog nothing could dismiss.
+ */
+function loading(dlg: HTMLElement, close: () => void): void {
+  dlg.replaceChildren(message('Reading changes…'), footer(close));
 }
 
 function actionButton(label: string, tone: string): HTMLButtonElement {

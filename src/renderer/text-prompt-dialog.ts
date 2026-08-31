@@ -45,10 +45,7 @@ export function openTextPrompt(options: {
     }
 
     function onKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        finish(null);
-      } else if (
+      if (
         event.key === 'Enter' &&
         (event.ctrlKey || event.metaKey) &&
         !submit.disabled
@@ -58,9 +55,9 @@ export function openTextPrompt(options: {
       }
     }
 
-    overlay.onmousedown = (event) => {
-      if (event.target === overlay) finish(null);
-    };
+    // Neither a backdrop click nor Escape is an answer: every route out of a
+    // modal goes through one of its own buttons. See "Modals answer, they do
+    // not vanish" in AGENTS.md.
     document.addEventListener('keydown', onKey, true);
     document.body.append(overlay);
     input.focus();

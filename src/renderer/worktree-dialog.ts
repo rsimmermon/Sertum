@@ -53,12 +53,9 @@ export async function openWorktreeDialog(
   document.body.append(overlay);
 
   const close = (): void => overlay.remove();
-  overlay.onmousedown = (e) => {
-    if (e.target === overlay) close();
-  };
-  overlay.onkeydown = (e) => {
-    if (e.key === 'Escape') close();
-  };
+  // Neither a backdrop click nor Escape is an answer: every route out of a
+  // modal goes through one of its own buttons. See "Modals answer, they do
+  // not vanish" in AGENTS.md.
 
   /** Folder the inventory was last read from; the repo root once resolved. */
   let target = opts.cwd;
@@ -351,7 +348,14 @@ export async function openWorktreeDialog(
     return out;
   };
 
-  dlg.textContent = 'Reading worktrees…';
+  // The waiting state carries its own way out. A modal closes only through
+  // one of its own buttons, so the seconds spent reading Git cannot be a
+  // stretch with no button on screen: a call that hangs would leave a dialog
+  // nothing could dismiss.
+  dlg.replaceChildren(
+    empty('Reading worktrees…'),
+    footer([button('Close', 'primary', close)]),
+  );
   await load(target);
 }
 

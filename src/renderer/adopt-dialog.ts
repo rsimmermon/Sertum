@@ -110,22 +110,13 @@ export function openAdoptDialog(): Promise<DiscoveredSession[] | null> {
     }
 
     function finish(cancelled: boolean): void {
-      document.removeEventListener('keydown', onKey, true);
       overlay.remove();
       resolve(cancelled ? null : found.filter((f) => chosen.has(f.sessionId)));
     }
 
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        finish(true);
-      }
-    }
-
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) finish(true);
-    });
-    document.addEventListener('keydown', onKey, true);
+    // Neither a backdrop click nor Escape is an answer: every route out of a
+    // modal goes through one of its own buttons. See "Modals answer, they do
+    // not vanish" in AGENTS.md.
     document.body.append(overlay);
     void scan();
   });

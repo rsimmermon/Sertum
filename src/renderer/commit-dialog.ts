@@ -145,10 +145,7 @@ export function openCommitDialog(inv: DiffInventory): Promise<boolean> {
     }
 
     function onKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        finish();
-      } else if (
+      if (
         event.key === 'Enter' &&
         (event.ctrlKey || event.metaKey) &&
         !submit.disabled
@@ -163,9 +160,9 @@ export function openCommitDialog(inv: DiffInventory): Promise<boolean> {
     footer.append(cancel, submit);
     dlg.append(title, sub, label, message, pushRow, prRow, status, footer);
 
-    overlay.onmousedown = (event) => {
-      if (event.target === overlay) finish();
-    };
+    // Neither a backdrop click nor Escape is an answer: every route out of a
+    // modal goes through one of its own buttons. See "Modals answer, they do
+    // not vanish" in AGENTS.md.
     document.addEventListener('keydown', onKey, true);
     document.body.append(overlay);
     message.focus();

@@ -27,10 +27,7 @@ export function openPullRequestDialog(root: string): Promise<void> {
 
     let submit: HTMLButtonElement | null = null;
     function onKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        finish();
-      } else if (
+      if (
         event.key === 'Enter' &&
         (event.ctrlKey || event.metaKey) &&
         submit &&
@@ -41,13 +38,17 @@ export function openPullRequestDialog(root: string): Promise<void> {
       }
     }
 
-    overlay.onmousedown = (event) => {
-      if (event.target === overlay) finish();
-    };
+    // Neither a backdrop click nor Escape is an answer: every route out of a
+    // modal goes through one of its own buttons. See "Modals answer, they do
+    // not vanish" in AGENTS.md.
     document.addEventListener('keydown', onKey, true);
     document.body.append(overlay);
 
-    dlg.textContent = 'Reading the branch…';
+    dlg.replaceChildren(
+      title('Open pull request'),
+      waiting('Reading the branch…'),
+      closeFooter(finish),
+    );
     void api
       .readPullRequest(root)
       .catch((): PullRequestContext | null => null)
@@ -214,6 +215,20 @@ function title(text: string): HTMLElement {
   const h = document.createElement('h3');
   h.textContent = text;
   return h;
+}
+
+/**
+ * The waiting state, which carries its own way out.
+ *
+ * A modal closes only through one of its own buttons, so the seconds spent
+ * reading `gh` cannot be a stretch with no button on screen: a call that hangs
+ * would leave a dialog nothing could dismiss.
+ */
+function waiting(text: string): HTMLElement {
+  const el = document.createElement('p');
+  el.className = 'dialog-sub';
+  el.textContent = text;
+  return el;
 }
 
 function span(text: string, className: string): HTMLElement {

@@ -769,17 +769,12 @@ export function openSettingsDialog(
       // Cancel puts back exactly what was showing when the dialog opened.
       if (!result) onPreview(opened);
       overlay.remove();
-      document.removeEventListener('keydown', onKey);
       resolve(result);
     }
 
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close(null);
-    };
-    document.addEventListener('keydown', onKey);
-    overlay.onclick = (e) => {
-      if (e.target === overlay) close(null);
-    };
+    // Neither a backdrop click nor Escape is an answer: every route out of a
+    // modal goes through one of its own buttons. See "Modals answer, they do
+    // not vanish" in AGENTS.md.
 
     show('general');
     document.body.append(overlay);

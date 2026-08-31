@@ -827,6 +827,34 @@ The whole feature is switchable in E2, and the switch is the presence of the
 handler: with none, the hook server never holds a call at all, so turning it
 off cannot leave a turn waiting on a bar that will not appear.
 
+## Modals answer, they do not vanish
+
+B5's bar is never dismissed by clicking away because every route off it has
+to answer the call. The same rule now covers every modal in the app, for a
+plainer reason: a stray click on the backdrop is not a decision, and treating
+it as Cancel throws away whatever was typed into the sheet behind it. A
+half-written commit message, a pull request body, a folder picked in C1 --
+all of them used to disappear on a misplaced click, silently and with no undo.
+
+So a modal closes only through one of its own buttons. Neither a backdrop
+click nor Escape does anything, and the invariant that makes this safe is
+that **every modal carries a button that closes it** -- Cancel, Close or
+Done. Adding a modal means adding that button; there is no ambient way out.
+
+That invariant has teeth while a modal is waiting on something slow. C11,
+C16 and C9 each used to blank themselves to a bare "Reading changes…" line
+during their first Git or `gh` call, which was survivable only because Escape
+was still a way out; with Escape gone it would have been an uncloseable
+dialog whenever a call hung. Their waiting states now render through the same
+footer as every other state, so the Close button is on screen from the first
+frame.
+
+Transient pickers are deliberately not modals and keep dismissing on
+click-away: the command palette, the layout picker, the agent picker and the
+sidebar row menu. None of them has a decision to record or a field to lose,
+and none has a confirm button to route a dismissal through, so click-away is
+the gesture that fits them.
+
 ## Shortcuts are a registry, not literals
 
 Accelerators lived as strings inside `buildMenu`, which made them unremappable
