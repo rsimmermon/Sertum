@@ -19,6 +19,33 @@ export interface HookEvent {
 export const APPROVAL_HOLD_MS = 120_000;
 
 /**
+ * Permission modes in which a bar must never appear.
+ *
+ * `permission_mode` rides on every hook payload and reports `bypassPermissions`,
+ * `dontAsk`, `acceptEdits` and `plan` faithfully -- but collapses both `auto`
+ * and `manual` to `default`, so it can never be the thing that decides whether
+ * a person is needed. It is only used to refuse, never to ask.
+ */
+const NEVER_ASK_MODES = new Set(['bypassPermissions', 'dontAsk']);
+
+/**
+ * A `PermissionRequest` reply. The decision nests under `decision` and names
+ * itself `behavior`, unlike `PreToolUse`'s flat `permissionDecision`; a reply
+ * in the wrong shape is rejected and the dialog stays up.
+ */
+function permissionRequestDecision(
+  behavior: 'allow' | 'deny',
+  message?: string,
+): Record<string, unknown> {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PermissionRequest',
+      decision: behavior === 'allow' ? { behavior } : { behavior, message },
+    },
+  };
+}
+
+/**
  * Plane 2 ingress for Claude Code.
  *
  * Each session is spawned with a settings blob whose hook URLs carry that
@@ -46,18 +73,22 @@ export class HookServer extends EventEmitter {
    * Asks the permission rules about one tool call. Injected rather than
    * imported so the hook server keeps knowing only about hook shapes, and so
    * a session's cwd is resolved by whoever owns sessions.
+   *
+   * `ruled` distinguishes the two things that arrive as `ask`: a rule the
+   * user deliberately set to ask, which should raise a question the agent
+   * would not have raised, and no matching rule at all, which is silence.
    */
   evaluatePermission?: (
     sessionId: string,
     payload: Record<string, unknown>,
   ) =>
     | { decision: 'allow' | 'deny'; reason: string }
-    | { decision: 'ask'; subject: string }
+    | { decision: 'ask'; subject: string; ruled: boolean }
     | null;
 
   /**
-   * Announces a tool call waiting on B5's approval bar. Absent means in-app
-   * approval is off and an unruled call goes straight to the agent's prompt.
+   * Announces a permission dialog waiting on B5's approval bar. Absent means
+   * in-app approval is off, and the question stays where Claude put it.
    */
   onApprovalNeeded?: (request: PendingApproval) => void;
 
@@ -75,8 +106,8 @@ export class HookServer extends EventEmitter {
    *
    * Holding the hook response is what makes B5 possible, and it is also the
    * one thing here that can stall an agent. On expiry the call is released
-   * with no decision, so Claude falls back to asking in its own TUI: a person
-   * who walked away costs a delay, never a wedged session.
+   * with no decision, and Claude's own dialog is still on screen to answer: a
+   * person who walked away costs a delay, never a wedged session.
    */
   approvalTimeoutMs = APPROVAL_HOLD_MS;
 
@@ -252,59 +283,9 @@ export class HookServer extends EventEmitter {
       };
     }
 
-    if (event === 'PreToolUse' && this.toolGates.has(sessionId)) {
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason:
-            'Tool use is paused in Sertum. Resume it from the session menu.',
-        },
-      };
-    }
-
-    // Rules are consulted only after the wholesale gate, which is the blunter
-    // instrument and must win. `ask` returns nothing at all, so Claude runs
-    // its own permission flow exactly as it would without Sertum -- an
-    // unmatched call is not an approval.
-    if (event === 'PreToolUse') {
-      const decision = this.evaluatePermission?.(sessionId, payload);
-      if (decision && decision.decision !== 'ask') {
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: decision.decision,
-            permissionDecisionReason: decision.reason,
-          },
-        };
-      }
-
-      // Nothing decided it, so ask a person -- wireframe B5. The turn is held
-      // here, which is precisely why `awaitApproval` always settles.
-      if (this.onApprovalNeeded) {
-        const answer = await this.awaitApproval(
-          sessionId,
-          payload,
-          decision?.decision === 'ask'
-            ? decision.subject
-            : String(payload.tool_name ?? ''),
-          onHold,
-        );
-        if (answer) {
-          return {
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              permissionDecision: answer.decision,
-              permissionDecisionReason:
-                answer.reason ??
-                (answer.decision === 'deny'
-                  ? 'Denied in Sertum.'
-                  : 'Approved in Sertum.'),
-            },
-          };
-        }
-        // Released with no decision: fall through so Claude asks in its TUI.
-      }
+    if (event === 'PreToolUse') return this.preToolUseReply(sessionId, payload);
+    if (event === 'PermissionRequest') {
+      return this.permissionRequestReply(sessionId, payload, onHold);
     }
 
     if (event !== 'UserPromptSubmit') return null;
@@ -317,6 +298,129 @@ export class HookServer extends EventEmitter {
         additionalContext: steer,
       },
     };
+  }
+
+  /**
+   * Answers the boundary that fires before *every* tool call.
+   *
+   * Nothing here ever holds. `PreToolUse` is Claude Code's "before tool
+   * execution" event, not a permission event: it fires for a Read the agent
+   * would have run silently exactly as it fires for a Bash command a person
+   * needs to see. Verified against Claude Code 2.1.251 -- it arrives under
+   * `bypassPermissions`, `dontAsk`, `acceptEdits` and `auto` alike, for calls
+   * that raise no dialog at all.
+   *
+   * So the answers given here are the ones Sertum can make *without* being
+   * asked: the wholesale gate, and rules the user wrote down. Waiting for a
+   * person belongs to `PermissionRequest`, which fires only when Claude
+   * actually needs a decision.
+   */
+  private preToolUseReply(
+    sessionId: string,
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    if (this.toolGates.has(sessionId)) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason:
+            'Tool use is paused in Sertum. Resume it from the session menu.',
+        },
+      };
+    }
+
+    // Rules are consulted only after the wholesale gate, which is the blunter
+    // instrument and must win.
+    const decision = this.evaluatePermission?.(sessionId, payload);
+    if (!decision) return null;
+    if (decision.decision !== 'ask') {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: decision.decision,
+          permissionDecisionReason: decision.reason,
+        },
+      };
+    }
+
+    // A rule the user set to `ask` is a request to be asked about calls the
+    // agent would otherwise run unprompted, so it answers `ask` here -- which
+    // makes Claude raise its dialog, which fires `PermissionRequest`, which is
+    // where the bar picks it up. A call *no* rule matched returns nothing at
+    // all, so Claude runs its own permission flow exactly as it would without
+    // Sertum: an unmatched call is not an approval, and it is not a question
+    // either.
+    if (!decision.ruled) return null;
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'ask',
+        permissionDecisionReason: 'A Sertum permission rule asks about this.',
+      },
+    };
+  }
+
+  /**
+   * Holds the one boundary that means a person is genuinely needed -- B5.
+   *
+   * Claude Code describes `PermissionRequest` as firing "when a permission
+   * dialog is displayed", so an arriving event is a question the agent is
+   * already blocked on. That is what makes holding it honest: the turn was
+   * stopped before Sertum touched it, and answering here is strictly faster
+   * than switching to the terminal.
+   *
+   * The reply shape is *not* `PreToolUse`'s. The decision nests under
+   * `decision`, and allow/deny is spelled `behavior`; a flat `behavior` is
+   * rejected and the dialog simply stays up. Verified end to end against
+   * Claude Code 2.1.251, which acknowledges it in the transcript with
+   * "Allowed by PermissionRequest hook".
+   */
+  private async permissionRequestReply(
+    sessionId: string,
+    payload: Record<string, unknown>,
+    onHold?: (cancel: () => void) => void,
+  ): Promise<Record<string, unknown> | null> {
+    // With no handler, in-app approval is off: never hold, so turning it off
+    // cannot leave a turn waiting on a bar that will not appear.
+    if (!this.onApprovalNeeded) return null;
+
+    // A backstop, not the mechanism. A mode that means "do not ask" should
+    // not produce a Sertum bar even if a dialog somehow reaches us, because a
+    // bar is a question and the user has already answered it for the session.
+    // Note this cannot recognise the mode in the screenshot everyone hits:
+    // `auto` and `manual` both arrive as `default`. That is fine -- the event
+    // itself already carries the fact that a dialog was displayed.
+    if (NEVER_ASK_MODES.has(String(payload.permission_mode ?? ''))) return null;
+
+    // Rules are re-consulted here rather than trusted from `PreToolUse`,
+    // because Claude issues tool calls in parallel: several can pass that
+    // boundary before "Always allow" writes a rule, and their dialogs arrive
+    // after it. Re-asking lets the new rule answer them instead of stacking
+    // more bars for a call the user has already decided.
+    const decision = this.evaluatePermission?.(sessionId, payload);
+    if (decision && decision.decision !== 'ask') {
+      return permissionRequestDecision(decision.decision, decision.reason);
+    }
+    // Injected and answered `null` means whoever owns sessions has never heard
+    // of this one, so there is no pane to raise a bar in -- and a bar nothing
+    // can release would sit there until the timeout.
+    if (this.evaluatePermission && !decision) return null;
+
+    const answer = await this.awaitApproval(
+      sessionId,
+      payload,
+      decision?.subject ?? String(payload.tool_name ?? ''),
+      onHold,
+    );
+    // Released with no decision -- expired, or the session went away. Answer
+    // nothing, and Claude's own dialog is still on screen to answer.
+    if (!answer) return null;
+    return permissionRequestDecision(
+      answer.decision,
+      answer.reason ??
+        (answer.decision === 'deny' ? 'Denied in Sertum.' : 'Approved in Sertum.'),
+    );
   }
 
   async stop(): Promise<void> {

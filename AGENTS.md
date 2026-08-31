@@ -99,7 +99,8 @@ What's built and verified so far:
       that already holds it
 - [x] **Permission rules and in-app approval** (wireframes E2, B5) — stored
       allow/deny/ask rules answered at Claude's `PreToolUse`, and an approval
-      bar that holds the turn open for calls no rule decides
+      bar that holds `PermissionRequest` open for the calls Claude actually
+      asks about
 - [x] **System notifications** (wireframes C20, E5) — fired from adapter
       events on a status transition, only when the window is unfocused, with
       per-session mute and snooze
@@ -136,8 +137,17 @@ Observed transitions for one real turn (`uname -a`), all hook-driven:
 | `Notification` (permission) | `needs-input` | Claude needs your permission to use Bash |
 | `UserPromptSubmit` | `working` | thinking |
 | `PreToolUse` | `working` | Bash… |
+| `PermissionRequest` | `needs-input` | approve Bash? |
 | `PostToolUse` | `working` | Bash |
 | `Stop` | `idle` | turn finished |
+
+`PreToolUse` and `PermissionRequest` are easy to conflate and must not be.
+`PreToolUse` fires before *every* tool call and says only that a tool is about
+to run; `PermissionRequest` fires when a permission dialog is displayed and is
+the only one of the two that means a person is wanted. Timed on one real turn:
+`PreToolUse` at 13.10s, `PermissionRequest` 112ms later -- and on a turn Claude
+did not need to ask about, the second never arrives at all. See "B5 holds the
+turn open".
 
 ### `Notification` carries two unlike things
 
@@ -636,6 +646,12 @@ interrupt returns `{ continue: false }`; the wholesale tool gate denies; then
 rules answer; then nothing. The gate is the blunter instrument and must
 outrank rules, or pausing tool use would be quietly overridden by an allow.
 
+Rules answer here, at the boundary before *every* tool call, precisely because
+they need no one present -- a deny rule should stop a call the agent was about
+to make unprompted. A rule the user set to `ask` is the exception, and it
+answers `ask`: that makes Claude raise its own dialog, which is what summons
+B5's bar below. Nothing here ever waits for a person.
+
 A rule matches on the field a person would actually write it about -- a Bash
 command, an edited path -- not on the tool name, which a bare `*` still
 covers.
@@ -646,20 +662,57 @@ than implying a fleet-wide policy.
 
 ## B5 holds the turn open
 
-Everything else here answers a hook immediately. B5 does not: when no rule
-decides a call, the HTTP response is held while a person looks at it. That
-hold *is* the feature -- it is what lets you answer without switching to the
-terminal, and what lets "Always allow" write a rule from the moment it
-matters -- and it is also the only thing in Sertum that can stall an agent.
-So every path out of it answers:
+Everything else here answers a hook immediately. B5 does not: it holds the
+HTTP response while a person looks at it. That hold *is* the feature -- it is
+what lets you answer without switching to the terminal, and what lets "Always
+allow" write a rule from the moment it matters -- and it is also the only
+thing in Sertum that can stall an agent.
+
+**Which event is held is the whole design.** It is `PermissionRequest`, which
+Claude Code describes as firing "when a permission dialog is displayed" -- so
+an arriving event is a question the agent is *already* blocked on, and holding
+it costs the turn nothing it was not already paying. Answering is strictly
+faster than walking over to the terminal.
+
+It is emphatically **not** `PreToolUse`, which this was built on first and
+which is a different kind of event entirely: Claude Code's own summary of it is
+"before tool execution". It fires for every tool call, before and independently
+of any permission check. Verified against Claude Code 2.1.251 by capturing real
+payloads: `PreToolUse` arrives under `bypassPermissions`, `dontAsk`,
+`acceptEdits` and `auto` alike, for calls that raise no dialog at all.
+
+Holding it therefore meant Sertum stopped every Read, Grep and Bash the agent
+was going to run unprompted, held each for up to two minutes, and captioned it
+"Bash needs permission" -- a claim Claude never made. A session in auto mode,
+which by definition had nothing to ask, was interrupted on every tool call.
+That is exactly the crying-wolf failure the two planes exist to prevent,
+arriving through Sertum's own UI rather than through parsed pixels. The lesson
+generalises: *an event named for a moment in the tool lifecycle is not an event
+about permission*, however convenient its position.
+
+`permission_mode` rides on every payload and is kept as a backstop only --
+`bypassPermissions` and `dontAsk` never raise a bar. It cannot be the
+mechanism, because `auto` and `manual` both arrive as `default`; the event
+itself is what carries the fact that a person is wanted.
+
+Every path out of the hold answers:
 
 | Ending | Response | Result |
 |---|---|---|
 | Someone chooses | `200` with the decision | the call proceeds or is refused |
-| Two minutes pass | `204` empty | Claude asks in its own TUI |
+| Two minutes pass | `204` empty | Claude's own dialog is still up |
 | The session exits | `204` empty | nothing is left waiting |
 | The client hangs up | nothing to answer | the bar comes down, unanswered |
 | The app quits | released, then closed | quit is not blocked |
+
+**The reply shape is not `PreToolUse`'s.** `PermissionRequest` nests its answer
+under `decision` and spells the verdict `behavior`:
+`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`,
+or `{"behavior":"deny","message":"..."}`. A flat `behavior` -- the obvious
+reading of the schema, and the first thing tried -- is rejected, and the
+failure is silent in the direction that matters: the dialog simply stays up as
+though no hook had answered. A correct answer is acknowledged in the
+transcript as `Allowed by PermissionRequest hook`.
 
 That last row was a real deadlock before it was tested. `server.close()` waits
 for in-flight requests to finish, and a held approval is deliberately an
@@ -669,35 +722,40 @@ before the server closes, with `closeAllConnections()` as a backstop for
 keep-alive sockets that outlive their request.
 
 **The hook command needs two deadlines, because only one event is ever held.**
-Every hook but `PreToolUse` is answered the moment it arrives and keeps a
-`-m 2` ceiling, so a Sertum that stops answering never stalls a turn.
-`PreToolUse` is the call the bar holds, so its curl must outlast the hold
-(`-m` = the hold plus five seconds), with `--connect-timeout 2` keeping the
-fast failure where it belongs: an endpoint that is gone refuses the connection
-at once. One shared `-m 2` made B5 impossible in a way that looked like working
-software -- the bar appeared, curl gave up two seconds later, the terminal
-filled with `PreToolUse:Bash hook error -- Failed with non-blocking status
-code: No stderr output` (exit 28, stderr silenced by `-s`), Claude fell back to
-asking in its own TUI, and every button on the bar wrote into a socket that had
-already gone.
+Every hook but `PermissionRequest` is answered the moment it arrives and keeps
+a `-m 2` ceiling, so a Sertum that stops answering never stalls a turn.
+`PermissionRequest` is the call the bar holds, so its curl must outlast the
+hold (`-m` = the hold plus five seconds), with `--connect-timeout 2` keeping
+the fast failure where it belongs: an endpoint that is gone refuses the
+connection at once. One shared `-m 2` made B5 impossible in a way that looked
+like working software -- the bar appeared, curl gave up two seconds later, the
+terminal filled with `hook error -- Failed with non-blocking status code: No
+stderr output` (exit 28, stderr silenced by `-s`), Claude fell back to its own
+dialog, and every button on the bar wrote into a socket that had already gone.
+The long deadline stays off `PreToolUse` for the same reason the hold does: it
+is the busiest hook of a turn and none of it is a question.
 
 That timeout is also why the client-hangup row exists. A held call has a turn
 behind it only while its connection lives, so the socket closing without an
 answer -- curl's own deadline, or the user interrupting Claude -- takes the bar
 down rather than leaving it asking about a turn that has ended.
 
-**A held call is `needs-input`, not `working`.** `PreToolUse` sets the session
-working, which is true of the agent and wrong about what it is waiting for, so
-the dot would read working beside a bar asking for permission. Holding the call
-is Sertum's own doing and therefore plane-2 truth, not an inference from
-pixels. The status returns to `working` only when the bar is *answered*: a call
-that expired or was abandoned leaves Claude asking in its own TUI, where it
-still needs you.
+**A held call is `needs-input`, not `working`.** The preceding `PreToolUse`
+sets the session working, which is true of the agent and wrong about what it is
+waiting for, so the dot would read working beside a bar asking for permission.
+Claude said it needs a decision by firing `PermissionRequest`, so this is
+plane-2 truth rather than an inference from pixels. The status returns to
+`working` only when the bar is *answered*: a call that expired or was abandoned
+leaves Claude's dialog on screen, where it still needs you.
 
 Claude issues tool calls in parallel, so the bar is a queue rather than a
 single slot, and it says how many are behind the one on screen. A later request
 replacing an earlier one would leave a turn held open with no way to answer it
-until the timeout.
+until the timeout. That parallelism is also why rules are re-consulted at
+`PermissionRequest` and not merely trusted from `PreToolUse`: several calls can
+pass that earlier boundary before "Always allow" writes a rule, and their
+dialogs arrive after it. Re-asking lets the new rule answer them instead of
+stacking more bars for a call the user has already decided.
 
 The bar sits above the terminal rather than over it, because deciding means
 reading the output that led to the request. It is never dismissed by clicking

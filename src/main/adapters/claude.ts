@@ -35,17 +35,22 @@ const HOOK_EVENTS = [
  * the command on stdin, which `--data-binary @-` forwards verbatim.
  *
  * **Two deadlines, because only one event is ever held.** Every hook but
- * `PreToolUse` is answered the moment it arrives, so it keeps a two-second
- * ceiling: a Sertum that has stopped answering must never stall a turn.
- * `PreToolUse` is the one call Sertum deliberately holds open while B5's
- * approval bar waits for a person, so its deadline has to outlast that hold.
- * One shared `-m 2` did not, and it failed in the worst way available -- the
- * bar appeared, curl gave up two seconds later, Claude printed
- * `PreToolUse:Bash hook error -- Failed with non-blocking status code` and
- * asked in its own TUI, and every button on the bar answered a socket that had
- * already gone. `--connect-timeout` keeps the fast failure where it belongs:
- * an endpoint that is gone refuses the connection at once, so only a live one
- * that is genuinely holding a call gets the long deadline.
+ * `PermissionRequest` is answered the moment it arrives, so it keeps a
+ * two-second ceiling: a Sertum that has stopped answering must never stall a
+ * turn. `PermissionRequest` is the one call Sertum deliberately holds open
+ * while B5's approval bar waits for a person, so its deadline has to outlast
+ * that hold. One shared `-m 2` did not, and it failed in the worst way
+ * available -- the bar appeared, curl gave up two seconds later, Claude
+ * printed `hook error -- Failed with non-blocking status code`, and every
+ * button on the bar answered a socket that had already gone.
+ * `--connect-timeout` keeps the fast failure where it belongs: an endpoint
+ * that is gone refuses the connection at once, so only a live one that is
+ * genuinely holding a call gets the long deadline.
+ *
+ * The long deadline belongs to `PermissionRequest` and *not* to `PreToolUse`,
+ * which is the busiest hook of a turn. `PreToolUse` fires before every tool
+ * call whether or not anyone needs to be asked, so a hold there stalled reads
+ * and greps the agent was going to run unprompted.
  */
 export function buildClaudeSettings(
   hookUrl: string,
@@ -63,7 +68,7 @@ export function buildClaudeSettings(
           hooks: [
             {
               type: 'command',
-              command: curl(event === 'PreToolUse' ? held : 2),
+              command: curl(event === 'PermissionRequest' ? held : 2),
             },
           ],
         },

@@ -144,7 +144,12 @@ hooks.evaluatePermission = (sessionId, payload) => {
   }
 
   const result = evaluate(tool, input, session.cwd);
-  if (result.decision === 'ask') return { decision: 'ask', subject };
+  // `ruled` separates a rule set to ask -- a deliberate request to be asked
+  // about calls the agent would run unprompted -- from no rule at all, which
+  // must stay silent rather than becoming a question Sertum invented.
+  if (result.decision === 'ask') {
+    return { decision: 'ask', subject, ruled: result.rule !== null };
+  }
   return {
     decision: result.decision,
     reason: `${result.decision === 'deny' ? 'Denied' : 'Allowed'} by a Sertum permission rule: ${result.rule?.pattern ?? '*'}`,
@@ -163,12 +168,12 @@ hooks.onApprovalGone = (id) => broadcast('approval:gone', id);
 function syncApprovalHandler(): void {
   hooks.onApprovalNeeded = getSettings().approvalsInApp
     ? (request) => {
-        // `PreToolUse` has just set this session working, which is true of the
-        // agent and wrong about what it is waiting for: from here until the
-        // bar is answered the turn is blocked on a person. Holding the call is
-        // Sertum's own doing, so this is plane 2 speaking, not a guess about
-        // pixels -- and without it a session reads "working" beside a bar
-        // asking for permission.
+        // The last `PreToolUse` left this session working, which is true of
+        // the agent and wrong about what it is waiting for: a permission
+        // dialog is up and the turn is blocked on a person. Claude said so
+        // itself by firing `PermissionRequest`, so this is plane 2 speaking,
+        // not a guess about pixels -- and without it a session reads
+        // "working" beside a bar asking for permission.
         ptys.applyUpdate(request.sessionId, {
           status: 'needs-input',
           activity: `approve ${request.tool}?`,
