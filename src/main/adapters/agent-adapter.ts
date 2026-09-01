@@ -171,6 +171,14 @@ class CodexAdapter implements AgentAdapter {
       reason: 'Rules need a structured per-call decision point, which Codex does not expose here.',
     },
     'conversation-view': { ok: true },
+    // The app server speaks a full thread/turn protocol, but Sertum has not
+    // yet adopted owning Codex threads outright — its sessions still live in
+    // the TUI, with the app server supplying status out-of-band.
+    'structured-conversation': {
+      ok: false,
+      reason:
+        'Codex conversations still run in its terminal UI; Sertum does not own app-server threads yet.',
+    },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -281,6 +289,9 @@ class ClaudeAdapter extends InertAgentAdapter {
       'tool-gate': { ok: true },
       'permission-rules': { ok: true },
       'conversation-view': { ok: true },
+      // --input-format/--output-format stream-json: a first-party,
+      // persistent, bidirectional chat protocol, verified across turns.
+      'structured-conversation': { ok: true },
     });
   }
 
@@ -380,6 +391,10 @@ class GrokAdapter extends InertAgentAdapter {
       },
       // Read-only is exactly what this capability asks for.
       'conversation-view': { ok: true },
+      'structured-conversation': {
+        ok: false,
+        reason: 'Grok has no input channel besides its terminal UI.',
+      },
     });
   }
 
@@ -444,6 +459,10 @@ export function createAgentAdapters(deps: {
         'conversation-view': {
           ok: false,
           reason: 'A shell keeps no conversation transcript to read.',
+        },
+        'structured-conversation': {
+          ok: false,
+          reason: 'A shell has no chat protocol — it is a terminal or nothing.',
         },
       }),
     ],

@@ -114,6 +114,12 @@ What's built and verified so far:
       PTY. Works for monitored sessions too, read-only. Declared as the
       `conversation-view` capability; a shell declines. See "The
       conversation view" below.
+- [x] **Conversation sessions** — stage 2: a session *type* with no terminal
+      at all, carried over Claude's stream-json protocol by a headless
+      process. Same sidebar, same status vocabulary, same permission rules
+      and hooks as a terminal session; the chat view is the whole surface.
+      Declared as `structured-conversation`; Codex, Grok and shell decline
+      with reasons. See "Conversation sessions" below.
 
 ## How status actually works
 
@@ -390,9 +396,56 @@ row no longer jumps to its owning window while its conversation is up.
 
 What stage 1 deliberately does not do: no markdown rendering, no synthetic
 "pending" messages (a sent message is acknowledged under the composer until
-the agent records it), and no structured input channel — that is stage 2
-(`--input-format stream-json` for Claude, app-server for Codex), which is a
-new session type, not a change to this view.
+the agent records it), and no structured input channel — that is stage 2,
+below.
+
+## Conversation sessions
+
+Stage 2 of `BROKER-HANDOFF.md`: a session whose transport is a structured
+stream rather than a PTY. `SessionSpec.transport` is `'pty' | 'stream'`, and
+a stream session has no terminal — not hidden, nonexistent — so the
+conversation view is its whole surface and the Chat/Terminal toggle says so
+instead of offering a terminal that isn't there. C1 offers it as an opt-in
+"Conversation session" toggle, shown only for an agent whose adapter
+declares `structured-conversation`: Claude answers ok; Codex declines (its
+sessions still live in the TUI, the app server supplying status
+out-of-band); Grok declines (no input channel); a shell declines.
+
+The Claude implementation, all verified against Claude Code 2.1.252:
+
+- **The process** is `claude --print --input-format stream-json
+  --output-format stream-json --include-partial-messages --verbose`, hosted
+  by `main/adapters/claude-chat.ts` over plain pipes. This is a persistent
+  bidirectional protocol, not one-shot: one process answered consecutive
+  turns on one session id. Input is one JSON user message per line on
+  stdin; killing the app takes the process with it, because its stdin *is*
+  the app.
+- **The stream is plane 2 at full width.** `system/init` names the session
+  and model, `stream_event` partials drive activity (a tool's name,
+  "responding", "thinking"), `result` closes the turn. Content is
+  deliberately not routed from the stream into the UI: a headless session
+  writes the same transcript an interactive one does, so the stage 1
+  conversation view reads stream sessions with zero new code.
+- **Hooks ride along.** Command hooks fire in `--print` mode —
+  UserPromptSubmit, PreToolUse, PostToolUse and Stop all verified arriving
+  — so the same `--settings` blob is attached and permission rules, the
+  tool gate, steer and interrupt all work unchanged. Verified end to end: a
+  deny rule answered a stream session's `PreToolUse` and the tool result
+  carried the rule's own reason. `PermissionRequest` (B5's held event) has
+  not been observed in print mode and the bar is simply never summoned.
+- **Identity is chosen at spawn.** `--session-id` mints the agent-side id
+  up front — the same move Grok's spawn makes — so the transcript is
+  matched exactly from the first poll, before any hook has named it.
+- **The registry stays one registry.** `PtyManager.registerStream` records
+  the snapshot with `StreamControls` (kill/terminate) supplied by the host,
+  so close, quit-drain, `ownedPids` discovery exclusion, rename, mute and
+  the sidebar treat both transports identically. The manager never learns
+  the chat protocol; the host never learns bookkeeping.
+
+What a stream session gives up is what the TUI was carrying: slash
+commands, plan mode, Claude's own diff and todo rendering. The C1 toggle
+copy says so. That inventory is why stage 2 is a session type alongside
+terminal sessions, not a migration of them.
 
 ## Adopting sessions started outside the app
 
@@ -1285,6 +1338,7 @@ src/
   main/adapters/session-meta.ts  Model/effort/context read from a live transcript
   main/adapters/transcript.ts    Per-agent transcript summaries
   main/adapters/conversation.ts  Transcript parsed into conversation items (chat view)
+  main/adapters/claude-chat.ts   Headless Claude over stream-json (conversation sessions)
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
   shared/types.ts             Contracts shared across processes

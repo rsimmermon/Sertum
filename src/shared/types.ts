@@ -68,7 +68,16 @@ export type AgentCapability =
    * plane 2 widened from status to content, never pixels parsed for meaning.
    * Input still goes to the PTY.
    */
-  | 'conversation-view';
+  | 'conversation-view'
+  /**
+   * Run a session over the agent's structured chat protocol instead of a PTY
+   * — stage 2 of BROKER-HANDOFF.md. A `stream` session has no terminal at
+   * all: input goes down the agent's own bidirectional channel and content
+   * comes back structured. A session type alongside terminal sessions, never
+   * a replacement — the TUI still carries slash commands, plan mode and the
+   * agent's own rendering, which this deliberately does not reimplement.
+   */
+  | 'structured-conversation';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -76,6 +85,16 @@ export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
 export type AgentCapabilities = Readonly<
   Record<AgentCapability, CapabilityAnswer>
 >;
+
+/**
+ * How a session's agent is carried.
+ *
+ * `pty` is a terminal: bytes in, pixels out, plane 1. `stream` is the agent's
+ * own structured chat protocol — for Claude, `--input-format stream-json` /
+ * `--output-format stream-json` on a headless process. A stream session has
+ * no terminal to show; its conversation view is the whole surface.
+ */
+export type SessionTransport = 'pty' | 'stream';
 
 /** What the user asked for when starting a session. */
 export interface SessionSpec {
@@ -85,6 +104,8 @@ export interface SessionSpec {
   /** Executable to spawn. */
   command: string;
   args: string[];
+  /** How the agent is carried. Every session before stage 2 was `pty`. */
+  transport: SessionTransport;
   /**
    * Start this session published for Remote Control, so it can be steered
    * from claude.ai or the Claude app.
@@ -925,6 +946,12 @@ export interface SertumApi {
    * an empty answer carries the reason.
    */
   readConversation(id: string): Promise<ConversationSnapshot>;
+  /**
+   * Send a message into a `stream` session over the agent's structured chat
+   * protocol. Resolves false when the session cannot take one — wrong
+   * transport, or its process has exited.
+   */
+  sendChatMessage(id: string, text: string): Promise<boolean>;
   /** Health of the plane 2 adapters. */
   adapterStatus(): Promise<AdapterStatus>;
   /** Agent sessions running outside this app. */

@@ -6,15 +6,19 @@ than re-deriving them. `AGENTS.md` stays the canonical description of what
 Sertum *is*; this describes a direction it could take and what that would
 cost.
 
-**Update, later the same day: stage 1 of section 6 is built.** The
+**Update, later the same day: stages 1 and 2 of section 6 are built.** The
 transcript-rendered conversation view exists, verified end to end against
 live Claude sessions (owned and monitored) and against real Codex and Grok
-transcripts; `AGENTS.md` ("The conversation view") now describes it,
-including the input byte sequence that section 7's attachment caveat hinted
-would need checking. Stages 2-4 remain unbuilt and everything in section 8
-remains unprobed except one item: what a PTY composer accepts as input is
-now partly answered -- a bracketed paste with a separately-delivered CR
-submits reliably, a single burst does not.
+transcripts; and conversation sessions exist for Claude -- a `stream`
+transport carried by a headless `--input-format stream-json` process, with
+hooks (and therefore permission rules, the tool gate, steer and interrupt)
+verified working in print mode. `AGENTS.md` ("The conversation view",
+"Conversation sessions") now describes both. Codex conversation sessions
+remain unbuilt -- the capability declines with that reason -- and stages 3-4
+remain unbuilt. Of section 8's questions, two are now partly answered: a PTY
+composer accepts a bracketed paste with a separately-delivered CR (a single
+burst is swallowed), and Claude's stream-json input accepts text content
+blocks (image blocks remain unprobed).
 
 Recorded 2026-09-01 against Claude Code 2.1.252, codex-cli 0.150.1,
 Electron 44.

@@ -25,12 +25,24 @@ export type SpawnDecorator = (
   adapterBound?: boolean;
 };
 
+/**
+ * What the registry needs to end a stream session's process. The process
+ * itself lives with its host (claude-chat.ts): this class stays plane 1 and
+ * bookkeeping, and never learns the chat protocol.
+ */
+export interface StreamControls {
+  kill(): void;
+  terminate(graceMs?: number): Promise<boolean>;
+}
+
 interface Session {
   snapshot: SessionSnapshot;
   /** Set once the process has written anything: proof it really started. */
   sawOutput?: boolean;
   /** Absent for monitored sessions: they run in someone else's terminal. */
   proc?: IPty;
+  /** Present for stream sessions, whose process a chat host owns. */
+  stream?: StreamControls;
 }
 
 const DEFAULT_COLS = 120;
@@ -55,6 +67,7 @@ export class PtyManager extends EventEmitter {
       cwd: spec.cwd ?? os.homedir(),
       command: spec.command ?? defaultShell(),
       args: spec.args ?? [],
+      transport: 'pty',
       remoteControl: spec.remoteControl ?? false,
     };
 
@@ -196,6 +209,74 @@ export class PtyManager extends EventEmitter {
   }
 
   /**
+   * Registers a session carried by a structured stream rather than a PTY —
+   * stage 2 of BROKER-HANDOFF.md. The process was already spawned by its
+   * chat host; this owns the bookkeeping: the snapshot, the exit state, and
+   * the controls that let close and quit end the process. The caller mints
+   * the id first because the hooks blob in the spawn arguments needs it.
+   */
+  registerStream(input: {
+    id: string;
+    label: string;
+    agent: SessionSpec['agent'];
+    cwd: string;
+    command: string;
+    args: string[];
+    pid: number;
+    /** The agent's own session id, chosen at spawn like Grok's. */
+    externalId: string;
+    controls: StreamControls;
+  }): SessionSnapshot {
+    const snapshot: SessionSnapshot = {
+      id: input.id,
+      toolsPaused: false,
+      muted: false,
+      origin: 'owned',
+      externalId: input.externalId,
+      label: input.label,
+      agent: input.agent,
+      cwd: input.cwd,
+      command: input.command,
+      args: input.args,
+      transport: 'stream',
+      remoteControl: false,
+      status: 'working',
+      pid: input.pid,
+      startedAt: Date.now(),
+      exitCode: null,
+      activity: 'starting…',
+      lastEventAt: null,
+      // The stream is the adapter: status arrives structured or not at all.
+      adapterBound: true,
+      model: null,
+      effort: null,
+      contextTokens: null,
+      contextLimit: null,
+      transcriptPath: null,
+    };
+    this.sessions.set(input.id, { snapshot, stream: input.controls });
+    this.emit('session-updated', { ...snapshot });
+    return { ...snapshot };
+  }
+
+  /**
+   * A stream session's process ended — reported by its host, since there is
+   * no IPty here to listen to. Mirrors the PTY exit handling exactly.
+   */
+  markExited(id: string, exitCode: number): void {
+    const session = this.sessions.get(id);
+    if (!session || session.snapshot.exitCode !== null) return;
+    session.snapshot.status = exitCode === 0 ? 'done' : 'attention';
+    session.snapshot.exitCode = exitCode;
+    session.snapshot.pid = null;
+    session.snapshot.toolsPaused = false;
+    session.snapshot.activity =
+      exitCode === 0 ? 'exited cleanly' : `exited with code ${exitCode}`;
+    this.emit('session-updated', { ...session.snapshot });
+    this.emit('exit', { id, exitCode });
+  }
+
+  /**
    * Registers a session running in another terminal. There is no PTY to own:
    * the OS gives its master fd to whoever spawned it, so this is a live status
    * row rather than a terminal.
@@ -224,6 +305,7 @@ export class PtyManager extends EventEmitter {
       cwd: input.cwd,
       command: '',
       args: [],
+      transport: 'pty',
       remoteControl: false,
       status: input.status,
       pid: input.pid,
@@ -335,7 +417,12 @@ export class PtyManager extends EventEmitter {
 
   kill(id: string): void {
     const session = this.sessions.get(id);
-    if (!session?.proc) return;
+    if (!session) return;
+    if (session.stream) {
+      session.stream.kill();
+      return;
+    }
+    if (!session.proc) return;
     try {
       session.proc.kill();
     } catch {
@@ -377,9 +464,12 @@ export class PtyManager extends EventEmitter {
    */
   async terminate(id: string, graceMs = 3000): Promise<boolean> {
     const session = this.sessions.get(id);
-    // Nothing of ours to end: a monitored session belongs to another terminal,
-    // and an exited one is already done.
-    if (!session?.proc || session.snapshot.exitCode !== null) return true;
+    if (!session || session.snapshot.exitCode !== null) return true;
+    // A stream session's host does the escalation; the answer is the same
+    // "confirmed gone" either way.
+    if (session.stream) return session.stream.terminate(graceMs);
+    // Nothing of ours to end: a monitored session belongs to another terminal.
+    if (!session.proc) return true;
 
     const exited = this.waitForExit(id, graceMs);
     try {
@@ -479,7 +569,7 @@ export class PtyManager extends EventEmitter {
  * hooks and Bash but never read as input; CLAUDE_PID only feeds a pkill guard
  * in the child's own Bash environment.
  */
-function agentSafeEnv(): Record<string, string> {
+export function agentSafeEnv(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(sessionEnv()).filter(
       ([key]) => !key.startsWith('CLAUDE_CODE_'),

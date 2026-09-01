@@ -68,6 +68,7 @@ export function openNewSessionDialog(
     let info: DirectoryInfo | null = null;
     let labelEdited = Boolean(presetLabel);
     let remoteControl = false;
+    let conversation = false;
 
     const overlay = el('div', 'overlay');
     const dlg = el('div', 'dialog');
@@ -139,6 +140,7 @@ export function openNewSessionDialog(
         if (!picked || picked === agent) return;
         agent = picked;
         drawAgent();
+        syncConversation();
         syncRemoteControl();
         if (!labelEdited) labelInput.value = suggestLabel();
       });
@@ -174,8 +176,10 @@ export function openNewSessionDialog(
     };
 
     function syncRemoteControl(): void {
+      // A conversation session is headless: there is no interactive session
+      // to publish, so the two choices are exclusive rather than combinable.
       const supported =
-        capabilities?.[agent]['remote-control'].ok === true;
+        capabilities?.[agent]['remote-control'].ok === true && !conversation;
       remoteWrap.hidden = !supported;
       if (!supported) {
         remoteBox.checked = false;
@@ -183,6 +187,36 @@ export function openNewSessionDialog(
       }
     }
     syncRemoteControl();
+
+    // --- conversation session (stage 2 of BROKER-HANDOFF.md) ---------------
+    // Opt-in per session: the agent runs over its structured chat protocol
+    // with no terminal at all. Offered only where the adapter declared it.
+    const convWrap = el('label', 'remote-control-check');
+    const convBox = document.createElement('input');
+    convBox.type = 'checkbox';
+    const convCopy = el('span', 'remote-control-copy');
+    const convTitle = el('span', 'remote-control-title');
+    convTitle.textContent = 'Conversation session';
+    const convNote = el('span', 'remote-control-note');
+    convNote.textContent =
+      'Chat only, no terminal. The agent runs headless over its own structured protocol; slash commands and its terminal UI are not available.';
+    convCopy.append(convTitle, convNote);
+    convWrap.append(convBox, convCopy);
+    convBox.onchange = () => {
+      conversation = convBox.checked;
+      syncRemoteControl();
+    };
+
+    function syncConversation(): void {
+      const supported =
+        capabilities?.[agent]['structured-conversation'].ok === true;
+      convWrap.hidden = !supported;
+      if (!supported) {
+        convBox.checked = false;
+        conversation = false;
+      }
+    }
+    syncConversation();
 
     // --- isolation (C1) ----------------------------------------------------
     // Defaults to the plain checkout. The wireframe draws New worktree
@@ -259,6 +293,7 @@ export function openNewSessionDialog(
       recentsWrap,
       labelEl('AGENT'),
       agentButton,
+      convWrap,
       remoteWrap,
       labelEl('ISOLATION'),
       isoSeg,
@@ -429,6 +464,7 @@ export function openNewSessionDialog(
           label: labelInput.value.trim() || suggestLabel(),
           cwd: chosen,
           args: AGENT_ARGS[agent],
+          transport: conversation ? 'stream' : 'pty',
           remoteControl,
         });
       } catch (err) {

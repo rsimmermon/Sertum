@@ -11,7 +11,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import { PtyManager } from './main/pty-manager';
+import { agentSafeEnv, PtyManager } from './main/pty-manager';
+import { ClaudeChatHost } from './main/adapters/claude-chat';
 import { defaultCwd, inspectDirectory } from './main/workspace';
 import { HookServer } from './main/hook-server';
 import {
@@ -345,6 +346,87 @@ const ptys = new PtyManager((id, spec) => {
   return remoteArgs.length ? { args } : {};
 });
 
+/**
+ * Stream sessions — stage 2 of BROKER-HANDOFF.md. The host owns the headless
+ * chat processes; the registry above owns their snapshots. Status flows from
+ * the stream, identity from its init event, and content stays with the
+ * transcript, which a headless session writes exactly like an interactive
+ * one (verified against Claude Code 2.1.252).
+ */
+const claudeChat = new ClaudeChatHost();
+claudeChat.on('update', ({ id, status, activity }) =>
+  ptys.applyUpdate(id, { status, activity }),
+);
+claudeChat.on('init', ({ id, sessionId, model }) =>
+  ptys.applyMeta(id, { externalId: sessionId, model }),
+);
+claudeChat.on('exit', ({ id, exitCode }) => ptys.markExited(id, exitCode));
+
+/**
+ * Starts a Claude session over stream-json instead of a PTY.
+ *
+ * The hooks blob rides along exactly as it does for terminal sessions —
+ * hooks fire in --print mode (verified: UserPromptSubmit, PreToolUse,
+ * PostToolUse and Stop all arrive) — so permission rules, the tool gate, B5
+ * and structured steer/interrupt cost nothing extra here. The agent's own
+ * session id is minted up front with --session-id, the same move Grok's
+ * spawn makes, so the transcript is attributable before the first hook.
+ */
+function createConversationSession(
+  spec: Partial<SessionSpec>,
+): SessionSnapshot {
+  const id = randomUUID();
+  const externalId = randomUUID();
+  const cwd = spec.cwd ?? defaultCwd();
+  const command = resolvedCommand('claude', spec.command);
+  if (!command) throw new Error('Claude Code binary not found');
+  const args = [
+    '--print',
+    '--input-format',
+    'stream-json',
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--session-id',
+    externalId,
+    ...(hooks.port
+      ? ['--settings', buildClaudeSettings(hooks.urlFor(id), hooks.approvalTimeoutMs)]
+      : []),
+  ];
+
+  const pid = claudeChat.spawn(id, {
+    command,
+    args,
+    cwd,
+    env: {
+      ...agentSafeEnv(),
+      SERTUM_SESSION_ID: id,
+    },
+  });
+  if (pid === null) {
+    throw new Error(`Could not start ${command} for a conversation session`);
+  }
+
+  const snapshot = ptys.registerStream({
+    id,
+    label: spec.label ?? 'conversation',
+    agent: 'claude',
+    cwd,
+    command,
+    args,
+    pid,
+    externalId,
+    controls: {
+      kill: () => claudeChat.kill(id),
+      terminate: (graceMs) => claudeChat.terminate(id, graceMs),
+    },
+  });
+  const model = readConfiguredModel('claude');
+  if (model) ptys.applyMeta(id, { model });
+  return snapshot;
+}
+
 grokEvents.on('events', (arrival: GrokEventArrival) => {
   const { sessionId, grokSessionId, events } = arrival;
 
@@ -485,6 +567,13 @@ function transcriptFor(s: SessionSnapshot): string | null {
   // unguarded this gave every shell the model and context of whichever agent
   // last worked there.
   if (s.agent === 'shell') return null;
+
+  // A stream session chose the agent's session id at spawn (--session-id),
+  // so its transcript is matched exactly — the same property the hook URL
+  // buys, arrived at from the other direction.
+  if (s.transport === 'stream' && s.externalId) {
+    return findTranscriptForSession(s.agent, s.externalId, s.cwd);
+  }
 
   // Claude tells us its exact transcript through the hook payload. Never
   // guess one by cwd: several sessions share a folder, and showing another
@@ -658,6 +747,21 @@ ipcMain.handle('session:snooze', (_e, id: string) => {
 });
 
 ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
+  // A stream session takes a different spawn entirely, and only an agent
+  // that declared the protocol gets one — the capability answer is the
+  // gate, exactly as it is for every per-agent method.
+  if (spec.transport === 'stream') {
+    const agent = spec.agent ?? 'claude';
+    const answer = agentAdapters.get(agent)?.capabilities['structured-conversation'];
+    if (!answer?.ok) {
+      throw new Error(
+        answer && !answer.ok
+          ? answer.reason
+          : `${agent} has no structured conversation protocol`,
+      );
+    }
+    return createConversationSession(spec);
+  }
   // Resolve the agent's binary here rather than trusting PATH: a packaged app
   // launched from Finder has only the bare launchd PATH, and a bare `claude`
   // would exit immediately.
@@ -865,6 +969,20 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
  * apply as for model and context readouts — a Claude session is only matched
  * exactly, never guessed by cwd.
  */
+/**
+ * Input for a stream session: one structured message, no PTY bytes anywhere.
+ * The status flip to working happens in the host, on the write itself.
+ */
+ipcMain.handle(
+  'chat:send',
+  (_e, { id, text }: { id: string; text: string }) => {
+    const session = ptys.get(id);
+    const message = text.trim();
+    if (!session || session.transport !== 'stream' || !message) return false;
+    return claudeChat.send(id, message);
+  },
+);
+
 ipcMain.handle('conversation:read', (_e, id: string) => {
   const session = ptys.get(id);
   if (!session) return noConversation('Session not found.');
@@ -1128,6 +1246,9 @@ function shutdown(): void {
   if (monitorTimer) clearInterval(monitorTimer);
   if (metaTimer) clearInterval(metaTimer);
   ptys.disposeAll();
+  // disposeAll already routed stream kills through their controls; this
+  // catches a host entry whose session was somehow never registered.
+  claudeChat.disposeAll();
   void hooks.stop();
   // The record is deliberately left in place. Confirming the kill is not
   // possible from inside a dying process, so the next launch verifies and

@@ -1287,8 +1287,16 @@ export class App {
       { label: 'Open in new window' },
       {
         label: this.chatMode.has(s.id) ? 'Show as terminal' : 'Show as conversation',
-        accel: conv && !conv.ok ? conv.reason : undefined,
-        onSelect: conv?.ok ? () => this.toggleChatMode(s.id) : undefined,
+        accel:
+          s.transport === 'stream'
+            ? 'This session has no terminal'
+            : conv && !conv.ok
+              ? conv.reason
+              : undefined,
+        onSelect:
+          s.transport !== 'stream' && conv?.ok
+            ? () => this.toggleChatMode(s.id)
+            : undefined,
       },
       SEPARATOR,
       {
@@ -1835,8 +1843,13 @@ export class App {
     if (this.showsChat(session.id)) {
       // The terminal keeps collecting the PTY's bytes while the chat view is
       // up (xterm buffers writes before open), so switching back shows the
-      // scrollback the pixels produced in the meantime.
-      if (session.origin !== 'monitored' && !this.panes.has(session.id)) {
+      // scrollback the pixels produced in the meantime. A stream session has
+      // no bytes to collect and never gets one.
+      if (
+        session.origin !== 'monitored' &&
+        session.transport !== 'stream' &&
+        !this.panes.has(session.id)
+      ) {
         this.panes.set(session.id, new TerminalPane(session, this.settings));
       }
       let chat = this.chatPanes.get(session.id);
@@ -1877,18 +1890,19 @@ export class App {
 
   /** True while this session is being shown as a conversation. */
   private showsChat(id: string): boolean {
-    if (!this.chatMode.has(id)) return false;
     const session = this.sessions.get(id);
-    return Boolean(
-      session &&
-        this.capabilities?.[session.agent]['conversation-view'].ok,
-    );
+    if (!session) return false;
+    // A stream session has no terminal at all: the conversation is not a
+    // view of it, it is the whole surface.
+    if (session.transport === 'stream') return true;
+    if (!this.chatMode.has(id)) return false;
+    return Boolean(this.capabilities?.[session.agent]['conversation-view'].ok);
   }
 
   /** Flip one session between its terminal and its conversation. */
   private toggleChatMode(id: string): void {
     const session = this.sessions.get(id);
-    if (!session) return;
+    if (!session || session.transport === 'stream') return;
     if (this.chatMode.has(id)) {
       this.chatMode.delete(id);
     } else {
@@ -2068,15 +2082,18 @@ export class App {
       ? this.capabilities?.[active.agent]['conversation-view']
       : undefined;
     const inChat = active ? this.showsChat(active.id) : false;
+    const streamOnly = active?.transport === 'stream';
     this.el.paneView.textContent = inChat ? 'Terminal' : 'Chat';
-    this.el.paneView.disabled = !active || !conv?.ok;
+    this.el.paneView.disabled = !active || streamOnly || !conv?.ok;
     this.el.paneView.title = !active
       ? 'No session in this pane'
-      : conv && !conv.ok
-        ? conv.reason
-        : inChat
-          ? 'Show the live terminal'
-          : 'Show the conversation, read from the agent’s own transcript';
+      : streamOnly
+        ? 'This session is a conversation — it has no terminal.'
+        : conv && !conv.ok
+          ? conv.reason
+          : inChat
+            ? 'Show the live terminal'
+            : 'Show the conversation, read from the agent’s own transcript';
 
     // Ends the process and keeps the row, exactly as Session > Stop Session
     // and the row menu do. Enabled only while there is a process to end, so

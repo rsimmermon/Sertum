@@ -155,15 +155,22 @@ export class ChatPane {
     const text = this.input.value.replace(/\s+$/, '');
     if (!text || this.input.disabled) return;
     const id = this.session.id;
-    if (text.includes('\n')) {
+    if (this.session.transport === 'stream') {
+      // A stream session takes the message whole, structured, no PTY bytes.
+      void api.sendChatMessage(id, text);
+      this.composerNote.textContent =
+        'Sent — it appears here once the agent records it.';
+    } else if (text.includes('\n')) {
       api.write(id, `\x1b[200~${text}\x1b[201~`);
       setTimeout(() => api.write(id, '\r'), 150);
+      this.composerNote.textContent =
+        'Sent to the terminal — it appears here once the agent records it.';
     } else {
       api.write(id, `${text}\r`);
+      this.composerNote.textContent =
+        'Sent to the terminal — it appears here once the agent records it.';
     }
     this.input.value = '';
-    this.composerNote.textContent =
-      'Sent to the terminal — it appears here once the agent records it.';
     this.composerNote.hidden = false;
   }
 
