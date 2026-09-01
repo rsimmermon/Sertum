@@ -536,10 +536,69 @@ const createWindow = () => {
     );
   }
 
+  watchForProcessDeath(mainWindow);
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 };
+
+/** How soon a second renderer death means reloading is not the answer. */
+const RELOAD_GRACE_MS = 30_000;
+
+/**
+ * Answers a helper process dying under the window, and says so in the log.
+ *
+ * These are the deaths that present as "the app froze", because none of them
+ * announces itself. A renderer that goes leaves the window an empty rectangle
+ * -- Electron does not bring it back, so every tab, pane and control is gone
+ * for good while the main process sits there healthy, still owning every PTY.
+ * A GPU process that goes takes every terminal's WebGL context with it, which
+ * `TerminalPane` recovers from, but only if someone can tell afterwards that
+ * it happened.
+ *
+ * Reloading is safe because sessions live here rather than in the renderer:
+ * it re-lists them on start, so what a reload actually costs is pane
+ * scrollback. Once, though -- if the replacement dies too then reloading is
+ * not the answer, and a window left alone beats one that spends the session
+ * flickering through fresh renderers.
+ */
+function watchForProcessDeath(win: BrowserWindow): void {
+  let reloadedAt = 0;
+
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error(
+      `[sertum] renderer gone: ${details.reason} (exit ${details.exitCode})`,
+    );
+    // A clean exit is the renderer going away because we are, and quitting
+    // must not be answered by building a new window to quit again.
+    if (shuttingDown || details.reason === 'clean-exit') return;
+    if (win.isDestroyed()) return;
+
+    const now = Date.now();
+    if (now - reloadedAt < RELOAD_GRACE_MS) {
+      console.error('[sertum] renderer died again after a reload; leaving it');
+      return;
+    }
+    reloadedAt = now;
+    console.error('[sertum] reloading the window; sessions are unaffected');
+    win.webContents.reload();
+  });
+
+  // Not recoverable from here -- the point is that it stops being invisible.
+  win.webContents.on('unresponsive', () =>
+    console.error('[sertum] renderer is not answering'),
+  );
+  win.webContents.on('responsive', () =>
+    console.warn('[sertum] renderer is answering again'),
+  );
+}
+
+app.on('child-process-gone', (_e, details) => {
+  console.error(
+    `[sertum] ${details.type}${details.serviceName ? ` (${details.serviceName})` : ''} gone: ${details.reason}`,
+  );
+});
 
 /** Forward PTY traffic to whichever window is alive. */
 const broadcast = (channel: string, payload: unknown) => {
@@ -1053,7 +1112,37 @@ function shutdown(): void {
   grokEvents.stopAll();
 }
 
-app.on('before-quit', shutdown);
+/**
+ * How long a quit waits for killed PTYs to report back. Short enough to be
+ * imperceptible, long enough that a handful of sessions all land.
+ */
+const QUIT_DRAIN_MS = 250;
+let quitDraining = false;
+
+/**
+ * Quit by draining first, then leaving -- rather than letting Node tear the
+ * environment down on top of node-pty's background threads.
+ *
+ * `disposeAll` kills every PTY, and node-pty reports each death from a
+ * `waitpid` thread through a ThreadSafeFunction. Quitting immediately after
+ * means those callbacks arrive while `node::FreeEnvironment` is already
+ * running: the call into JS fails, node-addon-api turns the failure into a
+ * C++ throw, and there is nothing above it to catch one -- `std::terminate`,
+ * SIGABRT, a crash report for what the user experienced as closing the app.
+ * Two on this machine, identical stacks, `Napi::ThreadSafeFunction::CallJS`
+ * under `node::Environment::CleanupHandles` in both.
+ *
+ * So the exits are given a moment to land while a live environment can still
+ * receive them, and the process then leaves through `app.exit`, which does
+ * not run the teardown that the race needs in order to happen at all.
+ */
+app.on('before-quit', (e) => {
+  if (quitDraining) return;
+  quitDraining = true;
+  e.preventDefault();
+  shutdown();
+  setTimeout(() => app.exit(0), QUIT_DRAIN_MS);
+});
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {

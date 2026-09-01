@@ -492,13 +492,41 @@ blank rectangle with a broken-image mark in one corner, while the PTY behind
 it carries on unharmed and the status bar keeps saying `adapters ok`. It
 looks like every session died and is in fact only a display that stopped.
 
-`WebglAddon.onContextLoss` is the only signal that this happened, and leaving
-it unsubscribed -- which it was -- means an idle machine can blank every pane
-in the window with no way back but a restart. Switching the renderer setting
-does not rescue an open pane either, since an addon cannot be swapped under a
-live terminal.
+Switching the renderer setting does not rescue an open pane either, since an
+addon cannot be swapped under a live terminal.
 
-`TerminalPane` therefore answers the loss: dispose the addon, which returns
+**`WebglAddon.onContextLoss` is the wrong signal, and subscribing to it alone
+left the bug in place.** The addon answers `webglcontextlost` by calling
+`preventDefault()` -- which asks Chromium to restore the context -- and
+starting a three-second timer, then fires `onContextLoss` only if nothing was
+restored before it expires. Chromium usually *does* restore, so the common
+case clears that timer and `onContextLoss` never fires at all. What follows a
+restore is the addon rebuilding its GL state in place, and that rebuild does
+not survive the round trip: the terminal is left with a live renderer that
+paints nothing, permanently.
+
+Verified by killing the GPU process of a running packaged build with two
+panes open. Both went blank and stayed blank -- through the window being
+raised, focused and left alone -- while `.xterm-rows` was absent, so no
+renderer was painting at all. The console carried the whole story:
+`webglcontextlost` at once, `webglcontextrestored` a second later (so
+`onContextLoss` never fired), then `WebGL: INVALID_OPERATION: delete: object
+does not belong to this context` from the failed rebuild. Typing into a blank
+pane still ran the command -- a `touch` landed from a terminal showing
+nothing -- which is exactly how this reads as a frozen app rather than a
+broken display.
+
+`webglcontextlost` is therefore what `TerminalPane` listens to, since it
+arrives on both branches. It does **not** bubble (verified: a listener on
+`.term-host` sees it only in the capture phase), so capture is not optional.
+Listening on the host element rather than the addon's canvas keeps this off
+xterm's private fields and covers whatever canvas a later reload creates, and
+the handler defers by a tick because disposing the addon tears down the very
+canvas the event is still being delivered to. `onContextLoss` is kept as a
+second subscription for the no-restore branch; both land in one idempotent
+handler.
+
+`TerminalPane` answers the loss: dispose the addon, which returns
 xterm to its DOM renderer, then `refresh` the whole viewport, because that
 renderer only paints what changes from here and the screen it inherits was
 drawn by the addon that just died. Recovery is attempted once and waits for
@@ -507,12 +535,9 @@ asleep, so retrying at that moment would only fail again. A second loss means
 the GPU is unreliable here, and staying on DOM beats flapping between
 renderers for the rest of the session.
 
-**The addon sits on the loss for three seconds first.** `@xterm/addon-webgl`
-0.19.0 answers `webglcontextlost` by starting a 3s timer and firing
-`onContextLoss` only if no `webglcontextrestored` arrives before it expires --
-a real restore is cheaper than a renderer swap, so the wait is right, but it
-means a pane is legitimately blank for those three seconds and any test that
-samples inside the window sees nothing happen.
+**On the no-restore branch the addon sits on the loss for three seconds
+first**, so a pane is legitimately blank for those three seconds and any test
+that samples inside that window sees nothing happen.
 
 Verified against a live pane by taking the addon's own canvas
 (`addon._renderer._canvas`) and calling `WEBGL_lose_context.loseContext()` --
@@ -533,6 +558,46 @@ the app.
 Note that `TerminalRenderer`'s `canvas` value names a renderer that no longer
 exists: xterm dropped the canvas addon, so anything other than `webgl` simply
 loads no addon and gets the DOM renderer.
+
+### A dead helper process must not be a dead window
+
+The pane blanking above has a louder sibling, and neither used to be
+survivable or even visible: nothing in the main process was subscribed to a
+child process dying. `watchForProcessDeath` in `main.ts` now is.
+
+- **The renderer.** Verified by killing it under a running build: the window
+  is left an empty rectangle painted in `backgroundColor`, answering nothing,
+  and Electron never brings it back -- every tab, pane and control gone for
+  good while the main process sits there healthy, still owning every PTY.
+  Reloading is safe precisely because sessions live in the main process and
+  the renderer re-lists them on start, so what a reload costs is pane
+  scrollback and nothing else. Verified after a kill: the window comes back,
+  the session is still listed, and its PTY still echoes. It reloads **once** --
+  a replacement that dies too means reloading is not the answer, and a window
+  left alone beats one flickering through fresh renderers all session.
+- **The GPU process.** Recovered by `TerminalPane`, but silently, so
+  `child-process-gone` is logged (`[sertum] GPU (GPU) gone: killed`) to make
+  the cause legible afterwards.
+- **Unresponsive.** Not recoverable from here; logged so it stops being
+  invisible.
+
+### Quitting drains before it exits
+
+`disposeAll` kills every PTY, and node-pty reports each death from a
+`waitpid` thread through a ThreadSafeFunction. Quitting immediately after
+means those callbacks arrive while `node::FreeEnvironment` is already
+running: the call into JS fails, node-addon-api turns the failure into a C++
+throw, and nothing above it catches one -- `std::terminate`, SIGABRT, and a
+crash report for what the user experienced as closing the app. Two such
+reports on this machine, identical stacks, `Napi::ThreadSafeFunction::CallJS`
+under `node::Environment::CleanupHandles` in both.
+
+`before-quit` therefore takes the quit over: shut down, give the exits
+`QUIT_DRAIN_MS` to land while a live environment can still receive them, then
+leave through `app.exit`, which does not run the teardown the race needs in
+order to happen at all. The signal path (`SIGINT`/`SIGTERM`/`SIGHUP`) is
+unchanged and was never affected -- `process.exit` does not run that teardown
+either, which is why every recorded abort came from a real quit.
 
 ## Committing from the review
 

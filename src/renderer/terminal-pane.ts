@@ -139,10 +139,46 @@ export class TerminalPane {
   attach(): void {
     if (this.attached) return;
     this.term.open(this.element);
+    this.watchForContextLoss();
     this.loadWebgl();
     this.attached = true;
     this.resizeObserver.observe(this.element);
     this.refit();
+  }
+
+  /**
+   * Subscribes to the one signal a lost GPU context always sends.
+   *
+   * `WebglAddon.onContextLoss` looks like the event for this and is not: the
+   * addon answers `webglcontextlost` by calling `preventDefault()` -- which
+   * asks Chromium to restore the context -- and starting a three-second
+   * timer, then fires `onContextLoss` only if nothing was restored before it
+   * expires. Chromium usually *does* restore, so the common case clears that
+   * timer and `onContextLoss` never fires at all.
+   *
+   * What follows a restore is the addon rebuilding its own GL state in place,
+   * and that rebuild does not survive the round trip: verified against a real
+   * GPU-process kill, the terminal is left with a live renderer that paints
+   * nothing, permanently, while the PTY behind it goes on running. Typing
+   * still reaches the shell -- a `touch` ran from a pane showing nothing --
+   * so the window reads as frozen when only its display has died.
+   *
+   * `webglcontextlost` is therefore what to listen to, since it arrives on
+   * both branches. It does not bubble (verified: a listener on this element
+   * sees it only in the capture phase), so capture is not optional here.
+   * Listening on the host rather than on the addon's canvas keeps this off
+   * xterm's private fields and covers whatever canvas a later reload creates.
+   */
+  private watchForContextLoss(): void {
+    const onLost = () => {
+      // Deferred out of the dispatch: disposing the addon tears down the very
+      // canvas this event is still being delivered to.
+      setTimeout(() => this.onWebglLost(), 0);
+    };
+    this.element.addEventListener('webglcontextlost', onLost, true);
+    this.disposers.push(() =>
+      this.element.removeEventListener('webglcontextlost', onLost, true),
+    );
   }
 
   /**
@@ -153,12 +189,13 @@ export class TerminalPane {
    * lives in the one shared GPU process, so a GPU reset -- display sleep, a
    * discrete/integrated switch, that process being recycled -- loses all of
    * them at once. xterm goes on rendering into the dead addon regardless,
-   * which paints nothing: the canvas is left with no backing store and the
-   * pane reads as a blank rectangle with a broken-image mark in the corner
-   * while the PTY behind it carries on unharmed. `onContextLoss` is the only
-   * signal that this happened, so leaving it unsubscribed means an idle
-   * machine can blank every pane in the window with no way back but a
-   * restart.
+   * which paints nothing: the pane reads as a blank rectangle while the PTY
+   * behind it carries on unharmed, so an idle machine can blank every pane in
+   * the window with no way back but a restart.
+   *
+   * `watchForContextLoss` above is what notices. `onContextLoss` is kept as a
+   * second subscription rather than the only one, for the branch where no
+   * restore is attempted; both land in the same idempotent handler.
    *
    * A failed load is left alone for the same reason a declined capability is:
    * xterm's DOM renderer is already what a terminal without this addon uses,
@@ -190,9 +227,13 @@ export class TerminalPane {
    * again. It happens once. A second loss means the GPU is unreliable here,
    * and a pane that stays on DOM is better than one that spends the session
    * flapping between renderers.
+   *
+   * Idempotent, because two subscriptions can report the same death: with no
+   * addon left there is nothing to drop and no second retry to schedule.
    */
   private onWebglLost(): void {
-    this.webgl?.dispose();
+    if (!this.webgl) return;
+    this.webgl.dispose();
     this.webgl = null;
     this.term.refresh(0, this.term.rows - 1);
 
