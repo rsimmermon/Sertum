@@ -107,6 +107,13 @@ export class App {
   /** Sessions currently shown as a conversation rather than a terminal. */
   private chatMode = new Set<string>();
   /**
+   * Sessions that predate this window — the daemon kept them alive across a
+   * GUI restart. Their terminals are repainted from the daemon's replay
+   * buffer, and live bytes are held back until the replay lands so nothing
+   * is drawn twice or out of order.
+   */
+  private needsReplay = new Set<string>();
+  /**
    * Which session each pane holds, in reading order; null is an empty pane.
    *
    * Design section 07. With more than one terminal on screen, "the active
@@ -224,7 +231,17 @@ export class App {
       if (this.activeId) this.toggleChatMode(this.activeId);
     };
 
-    api.onData(({ id, data }) => this.panes.get(id)?.write(data));
+    api.onData(({ id, data }) => {
+      // Held back for a session awaiting its replay: these bytes are inside
+      // the buffer the replay will deliver, so writing them now would show
+      // them twice.
+      if (this.needsReplay.has(id)) return;
+      this.panes.get(id)?.write(data);
+    });
+    api.onPtyReplay(({ id, data }) => {
+      this.needsReplay.delete(id);
+      this.panes.get(id)?.write(data);
+    });
 
     api.onExit(({ id, exitCode }) => {
       this.panes
@@ -320,7 +337,14 @@ export class App {
       this.capabilities = null;
     }
 
-    for (const s of await api.listSessions()) this.sessions.set(s.id, s);
+    for (const s of await api.listSessions()) {
+      this.sessions.set(s.id, s);
+      // Anything alive in this first listing ran before this window did, so
+      // its terminal has history only the daemon's buffer holds.
+      if (s.origin !== 'monitored' && s.transport !== 'stream') {
+        this.needsReplay.add(s.id);
+      }
+    }
     // Sessions outlive the renderer (reload, devtools). Re-select one, or the
     // empty state renders on top of tabs that already exist.
     if (!this.activeId) this.activeId = [...this.sessions.keys()][0] ?? null;
@@ -1526,6 +1550,11 @@ export class App {
         accel: '⌘,',
         run: () => void this.promptSettings(),
       },
+      {
+        glyph: '⏻',
+        label: 'Shut down agent daemon…',
+        run: () => void this.confirmStopDaemon(),
+      },
     ];
 
     openCommandPalette({
@@ -1541,6 +1570,29 @@ export class App {
       onCreateNamed: (label) => void this.promptNewSession(label),
       onClose: () => this.activeId && this.panes.get(this.activeId)?.focus(),
     });
+  }
+
+  /**
+   * The deliberate end of everything. Closing the window ends nothing —
+   * sessions live in the daemon — so this is the one gesture that does, and
+   * it says exactly what it will take down before doing it.
+   */
+  private async confirmStopDaemon(): Promise<void> {
+    const running = [...this.sessions.values()].filter(
+      (s) => s.origin === 'owned' && s.exitCode === null,
+    ).length;
+    const ok = await openConfirmDialog({
+      title: 'Shut down the agent daemon?',
+      body:
+        running > 0
+          ? `Every session ends with it — ${running} still running. Claude sessions started with --bg keep running under Claude's own daemon.`
+          : 'Every session it holds ends with it.',
+      warning:
+        'Closing the window never does this; only this action does. While Sertum stays open, a fresh empty daemon starts in its place.',
+      confirmLabel: 'Shut down daemon',
+    });
+    if (!ok) return;
+    await api.stopDaemon();
   }
 
   /**
@@ -1851,6 +1903,7 @@ export class App {
         !this.panes.has(session.id)
       ) {
         this.panes.set(session.id, new TerminalPane(session, this.settings));
+        if (this.needsReplay.has(session.id)) void api.replayPty(session.id);
       }
       let chat = this.chatPanes.get(session.id);
       if (!chat) {
@@ -1879,6 +1932,9 @@ export class App {
     if (!pane) {
       pane = new TerminalPane(session, this.settings);
       this.panes.set(session.id, pane);
+      // A session the daemon kept alive gets its history back the moment a
+      // terminal exists to draw it into.
+      if (this.needsReplay.has(session.id)) void api.replayPty(session.id);
     }
     return {
       header: chrome ? this.paneChrome(session, slot, focused) : null,

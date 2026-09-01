@@ -20,14 +20,28 @@ being force-killed, then reattached with terminal and history after
 relaunch. `AGENTS.md` ("The conversation view", "Conversation sessions",
 "Sessions that outlive the window") describes all three.
 
+**Later still: stage 3 proper is built.** sertumd owns the whole session
+fabric -- PTYs, hook server, Codex app-server, Grok logs, chat host,
+adapters, rules -- and the Electron app is a disposable client over a named
+pipe / unix socket, with the protocol handshake section 7 demanded in place
+from the first frame. Verified on Windows: the GUI was force-killed and
+every session survived -- Claude, and a plain shell, the case the `--bg`
+cut could not cover -- then a reopened window listed them, repainted their
+terminals from the daemon's replay buffer, and kept conversing. The
+quit-drain logic moved into the daemon exactly as section 7 predicted.
+Section 8's protocol question is answered: a separate socket with NDJSON
+frames, not an extension of the hook server -- the hook server moved into
+the daemon whole instead. `AGENTS.md` ("The daemon: sertumd") has the
+details, including what the GUI deliberately keeps.
+
 Still unbuilt: Codex conversation sessions (the capability declines with
-that reason), the Sertum daemon itself -- the uneven cut leans on Claude's
--- and stage 4. Of section 8's questions, three are now partly answered: a
-PTY composer accepts a bracketed paste with a separately-delivered CR (a
-single burst is swallowed); Claude's stream-json input accepts text content
-blocks (images unprobed); and a `--bg` session costs nothing in fidelity
-that these tests exposed -- the attach client renders the full TUI, and the
-roster supplies live status.
+that reason), packaged-build daemon operation (the RunAsNode fuse is flipped
+and sertumd.js unpacked, but no `npm run make` has exercised either), and
+stage 4 -- which now has the local protocol it was waiting on. Of section
+8's remaining questions: a PTY composer accepts a bracketed paste with a
+separately-delivered CR (a single burst is swallowed); Claude's stream-json
+input accepts text content blocks (images unprobed); a `--bg` session costs
+nothing in fidelity these tests exposed.
 
 Recorded 2026-09-01 against Claude Code 2.1.252, codex-cli 0.150.1,
 Electron 44.

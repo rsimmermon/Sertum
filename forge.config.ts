@@ -84,7 +84,10 @@ const config: ForgeConfig = {
     // an asar cannot be exec'd (posix_spawnp fails). The auto-unpack plugin
     // only covers *.node, so the whole module is unpacked; the plugin unions
     // its pattern with this one rather than replacing it.
-    asar: { unpack: '**/node_modules/node-pty/**/*' },
+    // sertumd.js is unpacked too: it runs under plain Node, which cannot
+    // read from inside an asar. (Packaged daemon operation is untested so
+    // far; dev is verified.)
+    asar: { unpack: '{**/node_modules/node-pty/**/*,**/.vite/build/sertumd.js}' },
     name: 'Sertum',
     executableName: 'Sertum',
     appBundleId: 'dev.sertum.app',
@@ -158,6 +161,14 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           target: 'preload',
         },
+        {
+          // sertumd, the session broker (stage 3 of BROKER-HANDOFF.md). A
+          // plain Node bundle: the GUI runs it under its own executable with
+          // ELECTRON_RUN_AS_NODE, so there is no second runtime to ship.
+          entry: 'src/sertumd.ts',
+          config: 'vite.main.config.ts',
+          target: 'main',
+        },
       ],
       renderer: [
         {
@@ -170,7 +181,12 @@ const config: ForgeConfig = {
     // at package time, before code signing the application
     new FusesPlugin({
       version: FuseVersion.V1,
-      [FuseV1Options.RunAsNode]: false,
+      // On: the GUI launches sertumd by running its own executable as Node
+      // (ELECTRON_RUN_AS_NODE), which this fuse gates in packaged builds.
+      // The cost is that anyone who can set that variable can use the app
+      // binary as a Node interpreter — the standard price of hosting a
+      // daemon this way, and the same trade VS Code ships with.
+      [FuseV1Options.RunAsNode]: true,
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,

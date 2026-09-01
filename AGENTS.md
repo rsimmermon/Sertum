@@ -128,6 +128,14 @@ What's built and verified so far:
       conversation history intact — after relaunch. Declared as
       `background-host`; Codex, Grok and shell decline. See "Sessions that
       outlive the window" below.
+- [x] **sertumd, the session broker** — stage 3 proper: the whole session
+      fabric (PTYs, hook server, Codex app-server, Grok logs, chat host,
+      adapters, rules) lives in a daemon; the Electron app is a disposable
+      client over a named pipe / unix socket. Every agent's sessions —
+      Claude, Codex, Grok, plain shells — survive the GUI closing, and a
+      reopened window lists them and repaints their terminals from the
+      daemon's replay buffer. Verified end to end on Windows, including a
+      force-killed GUI. See "The daemon: sertumd" below.
 
 ## How status actually works
 
@@ -498,6 +506,77 @@ construction — giving one a daemon is real stage 3 work), and any
 combination with Remote Control (unverified, so C1 makes the toggles
 exclusive rather than combining them silently).
 
+## The daemon: sertumd
+
+Stage 3 of `BROKER-HANDOFF.md`, made literal. The handoff observed that
+Sertum's main process was already a broker in every respect but two — its
+transport was Electron IPC and its payload was PTY bytes — and this change
+fixes exactly those two things while moving the code rather than redesigning
+it. The split:
+
+| Process | Owns |
+|---|---|
+| **sertumd** | PTYs, hook server, Codex app-server, Grok event logs, chat host, adapters, discovery, permission-rule evaluation and storage, meta/monitor polling |
+| **Sertum (Electron)** | windows, menus, dialogs, notifications, clipboard, settings storage, git/worktrees/PRs — and a socket client |
+
+Because the renderer's IPC channel names are unchanged — each main-process
+handler that used to *be* the fabric now forwards to it — the renderer
+needed almost nothing: the fabric moved to `src/daemon/fabric.ts` nearly
+verbatim, and main.ts shrank to UI concerns plus proxies.
+
+**Transport and lifecycle.** A named pipe on Windows
+(`\\.\pipe\sertumd-<user>`), a unix socket at `~/.sertum/sertumd.sock`
+elsewhere; both are user-scoped by the OS, so no token scheme is invented.
+Frames are newline-delimited JSON: requests with ids, responses, events.
+`~/.sertum/daemon.json` records the live daemon; `~/.sertum/sertumd.log` is
+its console. The GUI joins an existing daemon or spawns one — the app's own
+executable run with `ELECTRON_RUN_AS_NODE`, detached — and reconnects with
+backoff if the socket drops, re-priming its session mirror when it returns.
+A second daemon losing the listen race exits quietly, so two GUIs can race
+the spawn without harm.
+
+**The handshake is not deferred.** Version skew is routine in this design —
+a GUI update will find a daemon still running the previous build — so the
+first frame each side sends is `hello` with a protocol number
+(`shared/daemon-protocol.ts`), and a mismatch is answered with a refusal the
+GUI can show, never a best-effort conversation.
+
+**Terminals come back.** The daemon keeps a per-session ring of recent raw
+output (512KB). A reopened GUI asks `pty/replay` when it first builds a
+pane for a session that predates it, and holds live bytes back until the
+replay lands; because the daemon appends to the ring before emitting each
+byte, everything before the replay frame is inside it and everything after
+follows it — each byte drawn exactly once, verified against a force-killed
+and relaunched GUI whose terminal came back mid-conversation and kept
+working.
+
+**What the GUI keeps, and why.** Notifications stay beside the window they
+gate on, and mute stays with them: the daemon never learns who is muted, the
+GUI stamps it on each `session:updated` it forwards. Settings storage stays
+in userData with the GUI; the fabric receives only the slice it acts on
+(`approvalsInApp`, `agentBinaryPaths`), pushed on connect and on change.
+Permission rules moved wholesale — the daemon evaluates them at the hook
+boundary, so it owns the store, and E2 edits through proxies.
+
+**Quit means less now.** The GUI's quit is a socket disconnect; the
+quit-drain dance (`QUIT_DRAIN_MS`) and the node-pty teardown crash it dodged
+moved to the daemon, the process that actually owns the PTYs. The one
+deliberate way to end everything is "Shut down agent daemon…" in the
+command palette: it kills every session and the daemon — while the GUI
+stays open, its reconnect loop then starts a fresh empty daemon, which the
+confirm dialog says out loud. Claude `--bg` sessions survive even that,
+because they answer to Claude's daemon, not ours.
+
+**What is deliberately not solved yet.** Session restore in the *renderer*
+sense (which panes held what) is unchanged — the daemon restores existence
+and scrollback, not layout occupancy. The daemon dying takes every session
+with it, possibly with no window up to notice — same class of problem as
+`watchForProcessDeath`, now out of sight; the GUI logs the loss and
+reconnects, and the log file is the trail. Packaged builds are untested:
+the `RunAsNode` fuse is now on (the standard price of hosting a daemon
+under the app's own binary — the trade VS Code ships with) and
+`sertumd.js` is asar-unpacked, but no `npm run make` has exercised either.
+
 ## Adopting sessions started outside the app
 
 A PTY's master file descriptor belongs to whoever spawned it. A session started
@@ -744,23 +823,23 @@ child process dying. `watchForProcessDeath` in `main.ts` now is.
 - **Unresponsive.** Not recoverable from here; logged so it stops being
   invisible.
 
-### Quitting drains before it exits
+### Quitting drains before it exits — in the daemon, now
 
 `disposeAll` kills every PTY, and node-pty reports each death from a
-`waitpid` thread through a ThreadSafeFunction. Quitting immediately after
+`waitpid` thread through a ThreadSafeFunction. Exiting immediately after
 means those callbacks arrive while `node::FreeEnvironment` is already
 running: the call into JS fails, node-addon-api turns the failure into a C++
 throw, and nothing above it catches one -- `std::terminate`, SIGABRT, and a
-crash report for what the user experienced as closing the app. Two such
-reports on this machine, identical stacks, `Napi::ThreadSafeFunction::CallJS`
-under `node::Environment::CleanupHandles` in both.
+crash report. Two such reports on this machine, identical stacks,
+`Napi::ThreadSafeFunction::CallJS` under `node::Environment::CleanupHandles`
+in both.
 
-`before-quit` therefore takes the quit over: shut down, give the exits
-`QUIT_DRAIN_MS` to land while a live environment can still receive them, then
-leave through `app.exit`, which does not run the teardown the race needs in
-order to happen at all. The signal path (`SIGINT`/`SIGTERM`/`SIGHUP`) is
-unchanged and was never affected -- `process.exit` does not run that teardown
-either, which is why every recorded abort came from a real quit.
+This race lives wherever the PTYs live, and since sertumd that is the
+daemon: its `stop` gives the exits `QUIT_DRAIN_MS` to land in a live
+environment before `process.exit`. The GUI's quit stopped being dangerous at
+all -- it owns no PTYs, so `before-quit` is now a socket disconnect and
+nothing more, exactly the retirement `BROKER-HANDOFF.md` predicted for this
+logic ("moves rather than disappears").
 
 ## Committing from the review
 
@@ -1163,7 +1242,13 @@ npm start                                  # dev
 SERTUM_DEBUG_PORT=9222 npm start     # dev + remote debugging
 ```
 
-Main-process changes require a full restart; Vite only hot-reloads the renderer.
+Main-process changes require a full restart; Vite only hot-reloads the
+renderer. **Daemon changes require restarting the daemon too**: `npm start`
+joins a sertumd that is already running, which by design keeps executing the
+build it was started from. Shut it down from the command palette ("Shut down
+agent daemon…") or kill the pid in `~/.sertum/daemon.json`; the next GUI
+launch spawns one from the current build. `~/.sertum/sertumd.log` is the
+daemon's console.
 
 ## Verification
 
@@ -1371,8 +1456,12 @@ fixed along the way:
 ```
 SertumDesigns.pen             Design source of truth — wireframes, storyboards
 src/
-  main.ts                     Electron main: window, menu, IPC
-  main/pty-manager.ts         Plane 1 — PTY lifecycle
+  main.ts                     Electron main: window, menu, UI IPC, daemon proxies
+  sertumd.ts                  The session broker: socket server, lifecycle, log
+  daemon/fabric.ts            The session fabric, re-homed from main.ts
+  shared/daemon-protocol.ts   GUI <-> sertumd wire contract and endpoints
+  main/daemon-client.ts       GUI side: connect-or-spawn, requests, reconnect
+  main/pty-manager.ts         Plane 1 — PTY lifecycle (runs inside sertumd)
   main/workspace.ts           Folder validation, git/worktree detection
   main/hook-server.ts         Plane 2 ingress — loopback HTTP, per-session URLs
   main/settings.ts            Display/agent-path preferences, JSON in userData

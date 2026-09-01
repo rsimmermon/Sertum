@@ -43,7 +43,17 @@ interface Session {
   proc?: IPty;
   /** Present for stream sessions, whose process a chat host owns. */
   stream?: StreamControls;
+  /**
+   * Recent raw output, kept so a client that connects after the fact — a
+   * GUI reopened while the daemon kept the session alive — can repaint the
+   * terminal. A ring by bytes, not lines: PTY output has no line discipline.
+   */
+  scrollback: string[];
+  scrollbackBytes: number;
 }
+
+/** Per-session replay budget. Enough to repaint a TUI and its recent past. */
+const SCROLLBACK_CAP = 512 * 1024;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
@@ -136,6 +146,7 @@ export class PtyManager extends EventEmitter {
     };
 
     proc.onData((data) => {
+      this.buffer(id, data);
       this.emit('data', { id, data });
       this.markStarted(id);
     });
@@ -153,8 +164,31 @@ export class PtyManager extends EventEmitter {
       this.emit('exit', { id, exitCode, signal });
     });
 
-    this.sessions.set(id, { snapshot, proc });
+    this.sessions.set(id, { snapshot, proc, scrollback: [], scrollbackBytes: 0 });
     return { ...snapshot };
+  }
+
+  /** Appends to the session's replay ring, trimming oldest-first. */
+  private buffer(id: string, data: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    session.scrollback.push(data);
+    session.scrollbackBytes += data.length;
+    while (
+      session.scrollbackBytes > SCROLLBACK_CAP &&
+      session.scrollback.length > 1
+    ) {
+      session.scrollbackBytes -= session.scrollback.shift()!.length;
+    }
+  }
+
+  /**
+   * Everything a late-joining client needs to repaint this terminal. The
+   * buffer is appended before `data` is emitted, so a client that drops live
+   * bytes until the replay arrives sees every byte exactly once.
+   */
+  replay(id: string): string {
+    return this.sessions.get(id)?.scrollback.join('') ?? '';
   }
 
   /**
@@ -267,7 +301,12 @@ export class PtyManager extends EventEmitter {
       contextLimit: null,
       transcriptPath: null,
     };
-    this.sessions.set(input.id, { snapshot, stream: input.controls });
+    this.sessions.set(input.id, {
+      snapshot,
+      stream: input.controls,
+      scrollback: [],
+      scrollbackBytes: 0,
+    });
     this.emit('session-updated', { ...snapshot });
     return { ...snapshot };
   }
@@ -334,7 +373,11 @@ export class PtyManager extends EventEmitter {
       contextLimit: null,
       transcriptPath: null,
     };
-    this.sessions.set(snapshot.id, { snapshot });
+    this.sessions.set(snapshot.id, {
+      snapshot,
+      scrollback: [],
+      scrollbackBytes: 0,
+    });
     this.emit('session-updated', { ...snapshot });
     return { ...snapshot };
   }

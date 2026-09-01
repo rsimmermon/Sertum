@@ -1,4 +1,3 @@
-import { app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PermissionDecision, PermissionRule } from '../shared/types';
@@ -17,8 +16,22 @@ import type { PermissionDecision, PermissionRule } from '../shared/types';
  */
 let cached: PermissionRule[] | null = null;
 
+/**
+ * Where the rules file lives. Injected rather than asked of Electron: rules
+ * are evaluated in sertumd, which is not an Electron app. The daemon sets
+ * this at boot from the directory the GUI hands it, so the file stays where
+ * it always was — the GUI's userData folder.
+ */
+let storageDir: string | null = null;
+
+export function setRulesDir(dir: string): void {
+  storageDir = dir;
+  cached = null;
+}
+
 function file(): string {
-  return path.join(app.getPath('userData'), 'permission-rules.json');
+  if (!storageDir) throw new Error('permission-rules: storage dir not set');
+  return path.join(storageDir, 'permission-rules.json');
 }
 
 export function getRules(): PermissionRule[] {

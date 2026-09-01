@@ -7,28 +7,10 @@ import {
   Menu,
   shell,
 } from 'electron';
-import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import { agentSafeEnv, PtyManager } from './main/pty-manager';
-import { ClaudeChatHost } from './main/adapters/claude-chat';
+import { DaemonClient, daemonScriptPath } from './main/daemon-client';
 import { defaultCwd, inspectDirectory } from './main/workspace';
-import { HookServer } from './main/hook-server';
-import {
-  buildClaudeSettings,
-  mapClaudeHook,
-  type StatusUpdate,
-} from './main/adapters/claude';
-import {
-  CodexAppServer,
-  reapStrayAppServers,
-  recordAppServer,
-  resolveCodexBinary,
-} from './main/adapters/codex-app-server';
-import { createAgentAdapters } from './main/adapters/agent-adapter';
-import { hydrateLoginEnv } from './main/login-env';
 import {
   provisionWorktree,
   readWorktrees,
@@ -46,13 +28,6 @@ import {
 } from './main/pull-request';
 import { Notifier } from './main/notifications';
 import {
-  addRule,
-  evaluate,
-  getRules,
-  removeRule,
-  subjectOf,
-} from './main/permission-rules';
-import {
   accel,
   listKeybindings,
   resetKeybindings,
@@ -60,43 +35,14 @@ import {
 } from './main/keybindings';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
-import {
-  isUserThread,
-  mapCodexStatus,
-  threadSummary,
-  type CodexThread,
-  type CodexThreadStatus,
-} from './main/adapters/codex';
-import { discoverSessions } from './main/adapters/discovery';
-import { mapGrokEvent } from './main/adapters/grok';
-import {
-  GrokEventLog,
-  type GrokEventArrival,
-} from './main/adapters/grok-event-log';
-import {
-  readConfiguredModel,
-  readSessionMeta,
-} from './main/adapters/session-meta';
-import {
-  noConversation,
-  readConversation,
-} from './main/adapters/conversation';
-import {
-  findTranscriptForCwd,
-  findTranscriptForSession,
-} from './main/adapters/transcript';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
-  AgentKind,
-  BinaryDetection,
   DiffCommitRequest,
-  ApprovalAnswer,
   PermissionRule,
   ManagedAgent,
   MenuState,
   DiscoveredSession,
   SessionSnapshot,
-  SessionStatus,
   Settings,
 } from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
@@ -118,123 +64,46 @@ if (process.env.SERTUM_DEBUG_PORT) {
   );
 }
 
-const hooks = new HookServer();
+/**
+ * The session fabric lives in sertumd — stage 3 of BROKER-HANDOFF.md. This
+ * process owns windows, menus, dialogs and notifications; every session,
+ * adapter and hook endpoint belongs to the daemon, reached over its socket.
+ * Closing this app therefore closes nothing an agent needs, for every agent
+ * alike. The IPC channel names the renderer speaks are unchanged: each
+ * handler below that used to *be* the fabric now forwards to it.
+ */
+const daemon = new DaemonClient(
+  daemonScriptPath(),
+  app.getVersion(),
+  app.getPath('userData'),
+);
 
 /**
- * Rules answer `PreToolUse` for the sessions Sertum owns.
- *
- * Injected here rather than imported by the hook server, because deciding a
- * call needs the session's working directory -- a rule scoped to a repository
- * has to know which one asked -- and sessions are owned by the PTY manager,
- * not by the hook plumbing.
+ * The GUI's mirror of the daemon's sessions, fed by `session:updated`
+ * events and primed from `session/list`. UI-side consumers — worktree
+ * gating, the badge count, the mute re-broadcast — read this instead of
+ * making a round trip per lookup.
  */
-/**
- * "Allow this session" from B5. Deliberately not a rule: it is remembered
- * only while this process lives, and is dropped with the session, so an
- * approval given to one run cannot silently govern the next.
- */
-const sessionAllows = new Map<string, Set<string>>();
+const sessionCache = new Map<string, SessionSnapshot>();
 
-hooks.evaluatePermission = (sessionId, payload) => {
-  const session = ptys.get(sessionId);
-  if (!session) return null;
-  const input =
-    payload.tool_input && typeof payload.tool_input === 'object'
-      ? (payload.tool_input as Record<string, unknown>)
-      : {};
-  const tool = String(payload.tool_name ?? '');
-  const subject = subjectOf(tool, input);
-
-  if (sessionAllows.get(sessionId)?.has(`${tool}\u0000${subject}`)) {
-    return { decision: 'allow', reason: 'Allowed for this session in Sertum.' };
-  }
-
-  const result = evaluate(tool, input, session.cwd);
-  // `ruled` separates a rule set to ask -- a deliberate request to be asked
-  // about calls the agent would run unprompted -- from no rule at all, which
-  // must stay silent rather than becoming a question Sertum invented.
-  if (result.decision === 'ask') {
-    return { decision: 'ask', subject, ruled: result.rule !== null };
-  }
-  return {
-    decision: result.decision,
-    reason: `${result.decision === 'deny' ? 'Denied' : 'Allowed'} by a Sertum permission rule: ${result.rule?.pattern ?? '*'}`,
-  };
-};
-
-// B5's bar lives in the renderer; the turn is held in the hook server until
-// one of these comes back, the timeout fires, or the session ends.
-hooks.onApprovalGone = (id) => broadcast('approval:gone', id);
-
-/**
- * B5 is opt-outable, and the switch is the presence of the handler: with no
- * handler the hook server never holds a call at all, so turning it off cannot
- * leave a turn waiting on a bar that will not appear.
- */
-function syncApprovalHandler(): void {
-  hooks.onApprovalNeeded = getSettings().approvalsInApp
-    ? (request) => {
-        // The last `PreToolUse` left this session working, which is true of
-        // the agent and wrong about what it is waiting for: a permission
-        // dialog is up and the turn is blocked on a person. Claude said so
-        // itself by firing `PermissionRequest`, so this is plane 2 speaking,
-        // not a guess about pixels -- and without it a session reads
-        // "working" beside a bar asking for permission.
-        ptys.applyUpdate(request.sessionId, {
-          status: 'needs-input',
-          activity: `approve ${request.tool}?`,
-        });
-        broadcast('approval:needed', request);
-      }
-    : undefined;
-}
-syncApprovalHandler();
-
-ipcMain.handle(
-  'approval:answer',
-  (
-    _e,
-    {
-      id,
-      sessionId,
-      tool,
-      subject,
-      answer,
-    }: {
-      id: string;
-      sessionId: string;
-      tool: string;
-      subject: string;
-      answer: ApprovalAnswer;
-    },
-  ) => {
-    if (answer.decision === 'allow' && answer.scope === 'session') {
-      const set = sessionAllows.get(sessionId) ?? new Set<string>();
-      set.add(`${tool}\u0000${subject}`);
-      sessionAllows.set(sessionId, set);
-    }
-    if (answer.decision === 'allow' && answer.scope === 'always') {
-      // Scoped to the session's own repository rather than everywhere, and
-      // matched literally: a rule written by pressing a button should cover
-      // what was on screen and nothing broader.
-      const session = ptys.get(sessionId);
-      addRule({
-        tool: tool || '*',
-        pattern: subject,
-        scope: session?.cwd ?? '*',
-        decision: 'allow',
-      });
-    }
-    hooks.resolveApproval(id, answer);
-    // The agent is moving again, and will be before its next hook arrives.
-    // Deliberately not done for a call that expired or was abandoned: there
-    // Claude falls back to asking in its own TUI, so it still needs you and
-    // the dot should stay amber until an event says otherwise.
-    ptys.applyUpdate(sessionId, {
-      status: 'working',
-      activity: answer.decision === 'deny' ? `${tool} denied` : `${tool}…`,
+/** What the fabric needs from settings, pushed on connect and on change. */
+function pushFabricSettings(): void {
+  const s = getSettings();
+  void daemon
+    .request('settings/apply', {
+      approvalsInApp: s.approvalsInApp,
+      agentBinaryPaths: s.agentBinaryPaths,
+    })
+    .catch(() => {
+      // Disconnected; the reconnect path pushes again.
     });
-  },
+}
+
+// B5's bar lives in the renderer; the held call lives in the daemon's hook
+// server. The answer carries everything the fabric needs to write rules,
+// remember session allows, and release the turn.
+ipcMain.handle('approval:answer', (_e, payload: unknown) =>
+  daemon.request('approval/answer', payload),
 );
 
 ipcMain.handle('keys:get', () => listKeybindings());
@@ -253,427 +122,16 @@ ipcMain.handle('keys:reset', () => {
   buildMenu();
   return bindings;
 });
-ipcMain.handle('rules:get', () => getRules());
-ipcMain.handle('rules:add', (_e, rule: Omit<PermissionRule, 'id'>) => addRule(rule));
-ipcMain.handle('rules:remove', (_e, id: string) => removeRule(id));
-
-/**
- * Plane 2 wiring for Claude Code: every session is spawned pointing its hooks
- * at its own endpoint, so status comes from the agent telling us rather than
- * from watching its output.
- */
-const codex = new CodexAppServer(
-  () => getSettings().agentBinaryPaths.codex || resolveCodexBinary(),
+// Rules are evaluated at the daemon's hook boundary, so the daemon owns the
+// store; E2 edits it through these proxies.
+ipcMain.handle('rules:get', () => daemon.request('rules/get'));
+ipcMain.handle('rules:add', (_e, rule: Omit<PermissionRule, 'id'>) =>
+  daemon.request('rules/add', rule),
+);
+ipcMain.handle('rules:remove', (_e, id: string) =>
+  daemon.request('rules/remove', id),
 );
 
-/**
- * Plane 2 wiring for Grok: it pushes nothing, but it writes a structured
- * event log per session and lets us name the session before it starts, so
- * following that log is attributable to exactly one pane.
- */
-const grokEvents = new GrokEventLog();
-
-/**
- * The Grok session id minted for a spawn that has not happened yet.
- *
- * The id has to be chosen while the argument list is being built, which is
- * before node-pty is asked for a process -- so binding the log there would
- * leave a watcher polling for a session that never started every time a spawn
- * fails. One slot rather than a map: `create` is synchronous, so at most one
- * spawn is ever mid-flight, and the id check on collection means a spawn that
- * threw can never have its leftover claimed by the next session.
- */
-let mintedGrokSession: { sessionId: string; grokSessionId: string } | null = null;
-
-/**
- * One implementation per agent of everything the UI can ask of a session.
- * Callers below look an agent up here rather than switching on its kind.
- */
-const agentAdapters = createAgentAdapters({ codex, claudeControl: hooks });
-
-/**
- * Codex sessions awaiting their thread, oldest first.
- *
- * A spawned TUI does not know its thread id, and the thread announces itself
- * moments later over the app server. One spawn produces exactly one user
- * thread (the throwaway title thread is filtered out), so consuming this queue
- * in order binds correctly without matching on cwd, which several sessions can
- * share.
- */
-const awaitingThread: Array<{ id: string; cwd: string }> = [];
-
-const ptys = new PtyManager((id, spec) => {
-  const adapter = agentAdapters.get(spec.agent);
-  const remoteArgs =
-    spec.remoteControl && adapter?.capabilities['remote-control'].ok
-      ? adapter.remoteControlArgs(spec.label)
-      : [];
-  const args = [...spec.args, ...remoteArgs];
-
-  if (spec.agent === 'claude' && hooks.port) {
-    return {
-      args: [
-        ...args,
-        '--settings',
-        buildClaudeSettings(hooks.urlFor(id), hooks.approvalTimeoutMs),
-      ],
-      adapterBound: true,
-    };
-  }
-
-  // `-C` rather than the PTY's cwd: with `--remote` the thread's working
-  // directory comes from the app server's process, not the terminal's, so
-  // without this every session would silently run in Sertum's folder.
-  if (spec.agent === 'codex' && codex.connected) {
-    awaitingThread.push({ id, cwd: spec.cwd });
-    return {
-      args: [...args, '--remote', codex.remoteUrl, '-C', spec.cwd],
-      adapterBound: true,
-    };
-  }
-
-  // Grok has no way to be told where to report, but `--session-id` lets us
-  // name the session up front -- which is the same property the per-session
-  // hook URL buys for Claude, arrived at from the other direction.
-  if (spec.agent === 'grok') {
-    const grokSessionId = randomUUID();
-    mintedGrokSession = { sessionId: id, grokSessionId };
-    return {
-      args: [...args, '--session-id', grokSessionId],
-      adapterBound: true,
-    };
-  }
-
-  return remoteArgs.length ? { args } : {};
-});
-
-/**
- * Stream sessions — stage 2 of BROKER-HANDOFF.md. The host owns the headless
- * chat processes; the registry above owns their snapshots. Status flows from
- * the stream, identity from its init event, and content stays with the
- * transcript, which a headless session writes exactly like an interactive
- * one (verified against Claude Code 2.1.252).
- */
-const claudeChat = new ClaudeChatHost();
-claudeChat.on('update', ({ id, status, activity }) =>
-  ptys.applyUpdate(id, { status, activity }),
-);
-claudeChat.on('init', ({ id, sessionId, model }) =>
-  ptys.applyMeta(id, { externalId: sessionId, model }),
-);
-claudeChat.on('exit', ({ id, exitCode }) => ptys.markExited(id, exitCode));
-
-/**
- * Starts a Claude session over stream-json instead of a PTY.
- *
- * The hooks blob rides along exactly as it does for terminal sessions —
- * hooks fire in --print mode (verified: UserPromptSubmit, PreToolUse,
- * PostToolUse and Stop all arrive) — so permission rules, the tool gate, B5
- * and structured steer/interrupt cost nothing extra here. The agent's own
- * session id is minted up front with --session-id, the same move Grok's
- * spawn makes, so the transcript is attributable before the first hook.
- */
-function createConversationSession(
-  spec: Partial<SessionSpec>,
-): SessionSnapshot {
-  const id = randomUUID();
-  const externalId = randomUUID();
-  const cwd = spec.cwd ?? defaultCwd();
-  const command = resolvedCommand('claude', spec.command);
-  if (!command) throw new Error('Claude Code binary not found');
-  const args = [
-    '--print',
-    '--input-format',
-    'stream-json',
-    '--output-format',
-    'stream-json',
-    '--include-partial-messages',
-    '--verbose',
-    '--session-id',
-    externalId,
-    ...(hooks.port
-      ? ['--settings', buildClaudeSettings(hooks.urlFor(id), hooks.approvalTimeoutMs)]
-      : []),
-  ];
-
-  const pid = claudeChat.spawn(id, {
-    command,
-    args,
-    cwd,
-    env: {
-      ...agentSafeEnv(),
-      SERTUM_SESSION_ID: id,
-    },
-  });
-  if (pid === null) {
-    throw new Error(`Could not start ${command} for a conversation session`);
-  }
-
-  const snapshot = ptys.registerStream({
-    id,
-    label: spec.label ?? 'conversation',
-    agent: 'claude',
-    cwd,
-    command,
-    args,
-    pid,
-    externalId,
-    controls: {
-      kill: () => claudeChat.kill(id),
-      terminate: (graceMs) => claudeChat.terminate(id, graceMs),
-    },
-  });
-  const model = readConfiguredModel('claude');
-  if (model) ptys.applyMeta(id, { model });
-  return snapshot;
-}
-
-/**
- * Starts a daemon-hosted Claude session and opens a terminal onto it — the
- * first cut of BROKER-HANDOFF.md's stage 3, Claude-only by design because
- * Claude already solves background hosting for itself.
- *
- * `claude --bg -n <label>` returns immediately, printing the id that
- * `attach`, `logs`, `stop` and `rm` take; the roster then supplies the full
- * session id. The terminal Sertum shows is an attach client (origin
- * `attached`): killing it was verified to leave the session running, which
- * is exactly what makes closing Sertum survivable. Status for these rows
- * comes from the roster poll, the daemon's own account of its sessions.
- */
-async function createBackgroundSession(
-  spec: Partial<SessionSpec>,
-): Promise<SessionSnapshot> {
-  const command = resolvedCommand('claude', spec.command);
-  if (!command) throw new Error('Claude Code binary not found');
-  const cwd = spec.cwd ?? defaultCwd();
-  const label = spec.label?.trim() || 'background session';
-
-  const announced = await runClaude(command, ['--bg', '-n', label], cwd);
-  const short = /backgrounded · ([0-9a-f]{4,})/.exec(announced)?.[1];
-  if (!short) {
-    throw new Error(
-      `claude --bg did not announce a session id: ${announced.slice(0, 200)}`,
-    );
-  }
-
-  // The roster carries the full session id the transcript is filed under.
-  // It can lag the announcement by a beat, so it is asked more than once.
-  let externalId: string | null = null;
-  for (let attempt = 0; attempt < 5 && !externalId; attempt += 1) {
-    try {
-      const roster = JSON.parse(
-        await runClaude(command, ['agents', '--json'], cwd),
-      ) as Array<{ id?: string; sessionId?: string }>;
-      externalId =
-        roster.find((row) => row.id === short)?.sessionId ?? null;
-    } catch {
-      // Retry below.
-    }
-    if (!externalId) await new Promise((r) => setTimeout(r, 700));
-  }
-
-  return ptys.create(
-    {
-      label,
-      agent: 'claude',
-      cwd,
-      command,
-      args: ['attach', short],
-      background: true,
-    },
-    { origin: 'attached', externalId: externalId ?? short },
-  );
-}
-
-/** One non-interactive claude invocation, in the session's own folder. */
-function runClaude(
-  command: string,
-  args: string[],
-  cwd: string,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      command,
-      args,
-      { cwd, env: agentSafeEnv(), timeout: 30_000, windowsHide: true },
-      (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr.trim() || err.message));
-        else resolve(stdout);
-      },
-    );
-  });
-}
-
-grokEvents.on('events', (arrival: GrokEventArrival) => {
-  const { sessionId, grokSessionId, events } = arrival;
-
-  // One update per batch. Grok emits hundreds of records a turn and most
-  // carry no news; more to the point, an auto-approved tool asks and is
-  // granted within the same millisecond, so applying each in turn would flash
-  // "approval needed" for a permission nobody was ever asked about. The last
-  // word in a batch is the one still true. See GrokEventArrival.
-  const folded: StatusUpdate = {};
-  let model: string | undefined;
-  for (const event of events) {
-    const update = mapGrokEvent(event);
-    if (update.status) folded.status = update.status;
-    if (update.activity) folded.activity = update.activity;
-    // turn_started opens every turn and names the model, so a Grok pane
-    // learns what it is running from the agent itself rather than from a
-    // config file that may not describe this session.
-    if (typeof event.model_id === 'string') model = event.model_id;
-  }
-
-  if (folded.status || folded.activity) ptys.applyUpdate(sessionId, folded);
-  ptys.applyMeta(sessionId, { externalId: grokSessionId, model });
-});
-
-/** Thread id -> session id, for routing later status changes. */
-const threadToSession = new Map<string, string>();
-/** Sertum session id -> active Codex turn id. */
-const activeCodexTurns = new Map<string, string>();
-
-codex.on('notification', ({ method, params }) => {
-  if (method === 'thread/started') {
-    const thread = (params.thread ?? {}) as CodexThread;
-    if (!thread.id || !isUserThread(thread)) return;
-
-    // Prefer a pending session in the same folder; fall back to the oldest,
-    // which covers a thread whose cwd was rewritten (a `/cd`, say).
-    const match = awaitingThread.findIndex((w) => w.cwd === thread.cwd);
-    const waiting =
-      match >= 0 ? awaitingThread.splice(match, 1)[0] : awaitingThread.shift();
-    if (!waiting) return;
-
-    threadToSession.set(thread.id, waiting.id);
-    ptys.applyMeta(waiting.id, { externalId: thread.id });
-    ptys.applyUpdate(waiting.id, mapCodexStatus(thread.status));
-    return;
-  }
-
-  const threadId = typeof params.threadId === 'string' ? params.threadId : null;
-  const sessionId = threadId ? threadToSession.get(threadId) : undefined;
-  if (!sessionId) return;
-
-  if (method === 'turn/started') {
-    const turn = (params.turn ?? {}) as { id?: unknown };
-    if (typeof turn.id === 'string') activeCodexTurns.set(sessionId, turn.id);
-    return;
-  }
-
-  if (method === 'turn/completed') {
-    activeCodexTurns.delete(sessionId);
-    return;
-  }
-
-  if (method === 'thread/status/changed') {
-    const update = mapCodexStatus(params.status as CodexThreadStatus | undefined);
-    if (update.status || update.activity) ptys.applyUpdate(sessionId, update);
-    return;
-  }
-
-  // Codex titles a thread itself once the first turn lands; it reads better in
-  // the session list than the raw prompt does.
-  if (method === 'thread/name/updated') {
-    const name = threadSummary({ id: threadId!, name: params.threadName as string });
-    if (name) ptys.applyUpdate(sessionId, { activity: name });
-  }
-});
-
-codex.on('log', (line: string) => console.warn('[codex]', line));
-
-hooks.on('hook', ({ sessionId, event, payload }) => {
-  const update = mapClaudeHook(event, payload);
-  if (update.status || update.activity) ptys.applyUpdate(sessionId, update);
-
-  // Hooks report effort but not the model or token counts. Remember where the
-  // transcript lives; the poller below reads the rest, because the transcript
-  // is not always flushed by the time the hook fires.
-  const transcript = payload.transcript_path;
-  const effort = (payload.effort as { level?: string } | undefined)?.level;
-  if (typeof transcript === 'string' || effort) {
-    ptys.applyMeta(sessionId, {
-      transcriptPath: typeof transcript === 'string' ? transcript : undefined,
-      effort: effort ?? undefined,
-    });
-  }
-});
-
-/**
- * Model, effort and context pressure are read from each session's transcript
- * on a slow poll rather than on hook arrival: the transcript lags the hook,
- * and context usage keeps climbing between events anyway.
- */
-let metaTimer: NodeJS.Timeout | null = null;
-function startMetaPolling() {
-  if (metaTimer) return;
-  metaTimer = setInterval(() => {
-    for (const s of ptys.list()) {
-      if (s.pid === null) continue;
-
-      const transcript = transcriptFor(s);
-      if (!transcript) continue;
-
-      const meta = readSessionMeta(s.agent, transcript);
-      ptys.applyMeta(s.id, { ...meta, transcriptPath: transcript });
-    }
-  }, 4000);
-}
-/**
- * Which transcript belongs to a session, or null when nothing can be matched
- * without guessing.
- *
- * Monitored sessions are included: the transcript is on disk whoever owns the
- * process, which is the same property that lets discovery summarise them, so
- * there is no reason an adopted row should go without a model or a context
- * readout. They resolve by their discovered session id rather than by cwd.
- */
-function transcriptFor(s: SessionSnapshot): string | null {
-  if (s.transcriptPath) return s.transcriptPath;
-
-  if (s.origin === 'monitored') {
-    const sessionId = discoveredSessionId(s.externalId);
-    // Falling back to cwd is fine for Codex but not for Claude, per the note
-    // below -- a Claude row we cannot identify exactly gets nothing.
-    if (s.agent === 'claude' && !sessionId) return null;
-    return findTranscriptForSession(s.agent, sessionId, s.cwd);
-  }
-
-  // A shell is not an agent and writes no transcript, so anything a cwd
-  // search turns up belongs to some other session sharing the folder. Left
-  // unguarded this gave every shell the model and context of whichever agent
-  // last worked there.
-  if (s.agent === 'shell') return null;
-
-  // A stream session chose the agent's session id at spawn (--session-id),
-  // and an attached session learned its id from the daemon's roster: both
-  // are exact matches, never a guess by cwd.
-  if (
-    (s.transport === 'stream' || s.origin === 'attached') &&
-    discoveredSessionId(s.externalId)
-  ) {
-    return findTranscriptForSession(
-      s.agent,
-      discoveredSessionId(s.externalId),
-      s.cwd,
-    );
-  }
-
-  // Claude tells us its exact transcript through the hook payload. Never
-  // guess one by cwd: several sessions share a folder, and showing another
-  // session's context is worse than showing none.
-  if (s.agent === 'claude') return null;
-  return findTranscriptForCwd(s.agent, s.cwd, s.startedAt);
-}
-
-/**
- * A discovered id is either the agent's own session id or a `pid:N` stand-in
- * from the process scan, which identifies nothing on disk.
- */
-function discoveredSessionId(externalId: string | null): string | null {
-  if (!externalId || externalId.startsWith('pid:')) return null;
-  return externalId;
-}
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -786,19 +244,6 @@ const broadcast = (channel: string, payload: unknown) => {
 
 ipcMain.on('menu:state', (_e, state: MenuState) => applyMenuState(state));
 
-ptys.on('data', (e) => broadcast('pty:data', e));
-ptys.on('exit', (e) => {
-  grokEvents.unbind(e.id);
-  hooks.clearControl(e.id);
-  activeCodexTurns.delete(e.id);
-  for (const [threadId, sessionId] of threadToSession) {
-    if (sessionId === e.id) threadToSession.delete(threadId);
-  }
-  // A mute lasted "until it finishes", and it just did.
-  notifier.forget(e.id);
-  sessionAllows.delete(e.id);
-  broadcast('pty:exit', e);
-});
 /**
  * C20 rides on the same event the renderer does, so a notification can never
  * disagree with the dot beside it.
@@ -808,79 +253,100 @@ const notifier = new Notifier(
   () => getSettings(),
 );
 
-ptys.on('session-updated', (s) => {
-  s.muted = notifier.isMuted(s.id);
-  notifier.update(s);
-  notifier.updateBadge(
-    ptys.list().filter((row) => row.status === 'needs-input').length,
-  );
-  broadcast('session:updated', s);
+/**
+ * Everything the daemon says fans out to the renderer on the channel names
+ * it has always listened on. Mute is stamped here because it is ours, not
+ * the fabric's: notifications are a GUI concern, so the daemon never learns
+ * who is muted.
+ */
+daemon.on('daemon-event', (name: string, payload: unknown) => {
+  switch (name) {
+    case 'pty:data':
+      broadcast('pty:data', payload);
+      break;
+    case 'pty:replay':
+      broadcast('pty:replay', payload);
+      break;
+    case 'pty:exit': {
+      const e = payload as { id: string; exitCode: number };
+      // A mute lasted "until it finishes", and it just did.
+      notifier.forget(e.id);
+      broadcast('pty:exit', e);
+      break;
+    }
+    case 'session:updated': {
+      const s = payload as SessionSnapshot;
+      s.muted = notifier.isMuted(s.id);
+      sessionCache.set(s.id, s);
+      notifier.update(s);
+      notifier.updateBadge(
+        [...sessionCache.values()].filter((row) => row.status === 'needs-input')
+          .length,
+      );
+      broadcast('session:updated', s);
+      break;
+    }
+    case 'approval:needed':
+      broadcast('approval:needed', payload);
+      break;
+    case 'approval:gone':
+      broadcast('approval:gone', payload);
+      break;
+  }
+});
+
+/**
+ * A lost daemon looks like every button breaking at once, so it is said out
+ * loud; a regained one re-primes the mirror and repaints the renderer.
+ */
+daemon.on('state', ({ connected }: { connected: boolean }) => {
+  if (!connected) {
+    console.error('[sertum] lost sertumd; reconnecting');
+    return;
+  }
+  console.log('[sertum] connected to sertumd');
+  pushFabricSettings();
+  void daemon
+    .request<SessionSnapshot[]>('session/list')
+    .then((sessions) => {
+      sessionCache.clear();
+      for (const s of sessions) {
+        sessionCache.set(s.id, s);
+        broadcast('session:updated', { ...s, muted: notifier.isMuted(s.id) });
+      }
+    })
+    .catch(() => {});
 });
 
 ipcMain.handle(
   'session:mute',
   (_e, { id, muted }: { id: string; muted: boolean }) => {
     notifier.setMuted(id, muted);
-    const session = ptys.get(id);
+    const session = sessionCache.get(id);
     if (session) broadcast('session:updated', { ...session, muted });
-    return muted;
-  },
+    return muted;  },
 );
 ipcMain.handle('session:snooze', (_e, id: string) => {
   notifier.snooze(id, getSettings().notifySnoozeMinutes);
 });
 
-ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
-  // A stream session takes a different spawn entirely, and only an agent
-  // that declared the protocol gets one — the capability answer is the
-  // gate, exactly as it is for every per-agent method.
-  if (spec.transport === 'stream') {
-    const agent = spec.agent ?? 'claude';
-    const answer = agentAdapters.get(agent)?.capabilities['structured-conversation'];
-    if (!answer?.ok) {
-      throw new Error(
-        answer && !answer.ok
-          ? answer.reason
-          : `${agent} has no structured conversation protocol`,
-      );
-    }
-    return createConversationSession(spec);
-  }
-  // A daemon-hosted session, gated the same way: only an agent that
-  // declared `background-host` gets one.
-  if (spec.background) {
-    const agent = spec.agent ?? 'claude';
-    const answer = agentAdapters.get(agent)?.capabilities['background-host'];
-    if (!answer?.ok) {
-      throw new Error(
-        answer && !answer.ok
-          ? answer.reason
-          : `${agent} cannot host a session in the background`,
-      );
-    }
-    return createBackgroundSession(spec);
-  }
-  // Resolve the agent's binary here rather than trusting PATH: a packaged app
-  // launched from Finder has only the bare launchd PATH, and a bare `claude`
-  // would exit immediately.
-  const snapshot = ptys.create({
-    ...spec,
-    command: resolvedCommand(spec.agent, spec.command),
-  });
-  // The spawn succeeded, so there is now a process whose log is worth
-  // following. See mintedGrokSession.
-  if (mintedGrokSession?.sessionId === snapshot.id) {
-    grokEvents.bind(snapshot.id, mintedGrokSession.grokSessionId);
-    mintedGrokSession = null;
-  }
-
-  // Claude never reports its model on a live session, so record what its
-  // configuration says it will use.
-  const model = readConfiguredModel(snapshot.agent);
-  if (model) ptys.applyMeta(snapshot.id, { model });
-  return { ...snapshot, model: model ?? snapshot.model };
+ipcMain.handle('session:create', async (_e, spec: Partial<SessionSpec>) => {
+  const snapshot = await daemon.request<SessionSnapshot>(
+    'session/create',
+    spec,
+  );
+  sessionCache.set(snapshot.id, snapshot);
+  return snapshot;
 });
-ipcMain.handle('session:list', () => ptys.list());
+ipcMain.handle('session:list', async () => {
+  const sessions = await daemon.request<SessionSnapshot[]>('session/list');
+  sessionCache.clear();
+  for (const s of sessions) {
+    s.muted = notifier.isMuted(s.id);
+    sessionCache.set(s.id, s);
+  }
+  return sessions;
+});
 ipcMain.handle('clipboard:write', async (_e, text: string) => {
   await clipboard.writeText(text);
 });
@@ -895,8 +361,7 @@ ipcMain.handle('clipboard:read', () => readClipboardPaste());
  * rather than at the moment the manager was opened.
  */
 const sessionCwds = (): Map<string, string> =>
-  new Map(ptys.list().map((s) => [s.id, s.cwd]));
-
+  new Map([...sessionCache.values()].map((s) => [s.id, s.cwd]));
 ipcMain.handle('worktree:list', (_e, cwd: string) =>
   readWorktrees(cwd, sessionCwds()),
 );
@@ -964,98 +429,32 @@ ipcMain.handle('shell:automation-settings', () =>
     'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   ),
 );
-ipcMain.handle('session:kill', (_e, id: string) => ptys.kill(id));
-ipcMain.handle(
-  'session:steer',
-  async (_e, { id, text }: { id: string; text: string }) => {
-    const session = ptys.get(id);
-    const adapter = session && agentAdapters.get(session.agent);
-    const guidance = text.trim();
-    if (!session || !adapter?.capabilities['turn-steer'].ok || !guidance) {
-      return false;
-    }
-    const accepted = await adapter.steerTurn(
-      {
-        id,
-        externalId: session.externalId,
-        activeTurnId: activeCodexTurns.get(id) ?? null,
-        cwd: session.cwd,
-      },
-      guidance,
-    );
-    if (accepted) {
-      ptys.applyUpdate(id, { activity: 'guidance accepted' });
-    } else {
-      ptys.applyUpdate(id, { activity: 'could not steer — no active turn' });
-    }
-    return accepted;
-  },
+ipcMain.handle('session:kill', (_e, id: string) =>
+  daemon.request('session/kill', id),
 );
-ipcMain.handle('session:interrupt-turn', async (_e, id: string) => {
-  const session = ptys.get(id);
-  const adapter = session && agentAdapters.get(session.agent);
-  if (!session || !adapter?.capabilities['turn-interrupt'].ok) return false;
-  const accepted = await adapter.interruptTurn({
-    id,
-    externalId: session.externalId,
-    activeTurnId: activeCodexTurns.get(id) ?? null,
-    cwd: session.cwd,
-  });
-  if (accepted) ptys.applyUpdate(id, { activity: 'interrupting…' });
-  else ptys.applyUpdate(id, { activity: 'could not interrupt — no active turn' });
-  return accepted;
+ipcMain.handle('session:steer', (_e, p: { id: string; text: string }) =>
+  daemon.request('session/steer', p),
+);
+ipcMain.handle('session:interrupt-turn', (_e, id: string) =>
+  daemon.request('session/interrupt-turn', id),
+);
+ipcMain.handle('session:tool-gate', (_e, p: { id: string; paused: boolean }) =>
+  daemon.request('session/tool-gate', p),
+);
+ipcMain.handle('session:rename', (_e, p: { id: string; label: string }) =>
+  daemon.request('session/rename', p),
+);
+ipcMain.handle('session:remove', async (_e, id: string) => {
+  const gone = await daemon.request<boolean>('session/remove', id);
+  if (gone) sessionCache.delete(id);
+  return gone;
 });
-ipcMain.handle(
-  'session:tool-gate',
-  async (_e, { id, paused }: { id: string; paused: boolean }) => {
-    const session = ptys.get(id);
-    const adapter = session && agentAdapters.get(session.agent);
-    if (!session || !adapter?.capabilities['tool-gate'].ok) return false;
-    const accepted = await adapter.setToolGate(
-      {
-        id,
-        externalId: session.externalId,
-        activeTurnId: activeCodexTurns.get(id) ?? null,
-        cwd: session.cwd,
-      },
-      paused,
-    );
-    return accepted && ptys.setToolsPaused(id, paused);
-  },
-);
-ipcMain.handle(
-  'session:rename',
-  (_e, { id, label }: { id: string; label: string }) => {
-    const stored = ptys.rename(id, label);
-    if (stored === null) return null;
-    const session = ptys.get(id);
-    const adapter = session && agentAdapters.get(session.agent);
-    // Only an agent that declared the capability is asked. A declining one
-    // has already said why, and the sidebar showed it before the edit began.
-    if (session && adapter?.capabilities['rename-remote'].ok) {
-      // Not awaited: the local name is authoritative and already applied, so
-      // the rename must not wait on an agent that may be slow or gone.
-      void adapter.renameRemote(
-        {
-          id,
-          externalId: session.externalId,
-          activeTurnId: activeCodexTurns.get(id) ?? null,
-          cwd: session.cwd,
-        },
-        stored,
-      );
-    }
-    return stored;
-  },
-);
-ipcMain.handle('session:remove', (_e, id: string) => ptys.remove(id));
 ipcMain.handle('workspace:default-cwd', () => defaultCwd());
 ipcMain.handle('settings:get', () => getSettings());
 ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
   const before = getSettings().paneLayout;
   const stored = setSettings(patch);
-  syncApprovalHandler();
-  // The View menu carries the layout radio set, so it has to be rebuilt when
+  pushFabricSettings();  // The View menu carries the layout radio set, so it has to be rebuilt when
   // the layout is changed from anywhere else -- the picker, a shortcut, or a
   // pane close collapsing back to Single.
   if (stored.paneLayout !== before) buildMenu();
@@ -1071,34 +470,14 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
  * Input for a stream session: one structured message, no PTY bytes anywhere.
  * The status flip to working happens in the host, on the write itself.
  */
-ipcMain.handle(
-  'chat:send',
-  (_e, { id, text }: { id: string; text: string }) => {
-    const session = ptys.get(id);
-    const message = text.trim();
-    if (!session || session.transport !== 'stream' || !message) return false;
-    return claudeChat.send(id, message);
-  },
+ipcMain.handle('chat:send', (_e, p: { id: string; text: string }) =>
+  daemon.request('chat/send', p),
+);
+ipcMain.handle('conversation:read', (_e, id: string) =>
+  daemon.request('conversation/read', id),
 );
 
-ipcMain.handle('conversation:read', (_e, id: string) => {
-  const session = ptys.get(id);
-  if (!session) return noConversation('Session not found.');
-  const answer = agentAdapters.get(session.agent)?.capabilities['conversation-view'];
-  if (answer && !answer.ok) return noConversation(answer.reason);
-  const transcript = transcriptFor(session);
-  if (!transcript) {
-    return noConversation(
-      'No transcript yet — the conversation appears once the agent records its first turn.',
-    );
-  }
-  return readConversation(session.agent, transcript);
-});
-
-ipcMain.handle('discovery:list', () =>
-  discoverSessions(ptys.ownedPids(), resolvedCommand),
-);
-ipcMain.handle('discovery:focus', (_e, pid: number) =>
+ipcMain.handle('discovery:list', () => daemon.request('discovery/list'));ipcMain.handle('discovery:focus', (_e, pid: number) =>
   focusExternalSession(pid),
 );
 
@@ -1107,77 +486,21 @@ ipcMain.handle('discovery:focus', (_e, pid: number) =>
  * the supervisor -- not another terminal emulator -- owns the PTY.
  */
 ipcMain.handle('discovery:attach', (_e, d: DiscoveredSession) =>
-  // Origin `attached`: this terminal is a client onto a daemon-hosted
-  // session, so closing it detaches — it does not end the agent, and the
-  // close flow must not claim otherwise.
-  ptys.create(
-    {
-      label: d.name,
-      agent: d.agent,
-      cwd: d.cwd || defaultCwd(),
-      command: resolvedCommand('claude'),
-      args: ['attach', d.sessionId],
-      background: true,
-    },
-    { origin: 'attached', externalId: d.sessionId },
-  ),
+  daemon.request('discovery/attach', d),
 );
 
 ipcMain.handle('discovery:monitor', (_e, d: DiscoveredSession) =>
-  ptys.registerMonitored({
-    label: d.name,
-    agent: d.agent,
-    cwd: d.cwd,
-    externalId: d.sessionId,
-    pid: d.pid,
-    status: d.status,
-  }),
+  daemon.request('discovery/monitor', d),
 );
 
 // Declared once per adapter and fixed for the app's life; the renderer reads
 // them at startup so the UI can say what an agent cannot do before trying.
 ipcMain.handle('agent:capabilities', () =>
-  Object.fromEntries(
-    [...agentAdapters].map(([agent, adapter]) => [agent, adapter.capabilities]),
-  ),
+  daemon.request('agent/capabilities'),
 );
-ipcMain.handle('adapters:status', () => ({
-  claude: {
-    connected: hooks.port > 0,
-    port: hooks.port,
-    events: hooks.eventCount,
-    binaryFound: binaryFound('claude'),
-  },
-  codex: {
-    connected: codex.connected,
-    url: codex.connected ? codex.remoteUrl : '',
-    events: codex.eventCount,
-    binaryFound: binaryFound('codex'),
-  },
-  grok: {
-    watching: grokEvents.watching,
-    events: grokEvents.eventCount,
-    binaryFound: binaryFound('grok'),
-  },
-}));
-ipcMain.handle(
-  'agent:detect',
-  (_e, agent: ManagedAgent): BinaryDetection => {
-    // Auto-detection only -- a saved override is deliberately not consulted
-    // here, so this always answers "what would Sertum find on its own?",
-    // which is what both the Settings "Detect" button and validating a
-    // freshly-typed path need.
-    const candidate = agentAdapters.get(agent)?.resolveBinary();
-    if (!candidate) return { path: null };
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return { path: candidate };
-    } catch {
-      // A bare command name (the last-resort fallback every adapter returns)
-      // is not a path fs can confirm -- nothing was actually found.
-      return { path: null };
-    }
-  },
+ipcMain.handle('adapters:status', () => daemon.request('adapters/status'));
+ipcMain.handle('agent:detect', (_e, agent: ManagedAgent) =>
+  daemon.request('agent/detect', agent),
 );
 ipcMain.handle('workspace:inspect', (_e, dir: string) => inspectDirectory(dir));
 ipcMain.handle('dialog:pick-directory', async (_e, startIn?: string) => {
@@ -1198,65 +521,40 @@ ipcMain.handle('dialog:pick-file', async (_e, startIn?: string) => {
   });
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
-ipcMain.on('pty:input', (_e, { id, data }: { id: string; data: string }) =>
-  ptys.write(id, data),
+// Keystrokes are the hot path: fire-and-forget, no response round trip.
+ipcMain.on('pty:input', (_e, p: { id: string; data: string }) =>
+  daemon.send('pty/input', p),
 );
-ipcMain.on('pty:resize', (_e, { id, ...size }: { id: string } & PtySize) =>
-  ptys.resize(id, size),
+ipcMain.on('pty:resize', (_e, p: { id: string } & PtySize) =>
+  daemon.send('pty/resize', p),
 );
-
+// The renderer asks for a repaint of a session that predates it — a GUI
+// reopened onto a daemon that kept the session alive. The daemon answers on
+// the event stream so the replay is ordered against live output.
+ipcMain.handle('pty:replay', (_e, id: string) =>
+  daemon.request('pty/replay', id),
+);
+// The deliberate way to end everything: kills every session, then the
+// daemon itself. Without this there would be orphaned agents with no UI
+// left to reclaim them.
+ipcMain.handle('daemon:stop', () => daemon.request('daemon/stop'));
 app.on('ready', async () => {
   app.setAboutPanelOptions({
     applicationName: 'Sertum',
     applicationVersion: app.getVersion(),
     credits: 'One window for every coding agent you have running.',
   });
-  try {
-    const port = await hooks.start();
-    console.log(`[sertum] hook endpoint on 127.0.0.1:${port}`);
-  } catch (err) {
-    // Without hooks the app still runs; status falls back to process
-    // lifecycle only, which is worth saying out loud rather than hiding.
-    console.error('[sertum] hook server failed to start:', err);
-  }
 
-  // Codex is optional: a machine with only Claude installed should still get a
-  // working app, so a failure here degrades that agent rather than the window.
-  // Before anything is spawned: a GUI app inherits the launchd environment,
-  // not the user's, and every session and agent would otherwise run without
-  // the PATH their machine is actually set up with.
-  const hydrated = await hydrateLoginEnv();
-  console.log(
-    hydrated
-      ? '[sertum] environment taken from your login shell'
-      : '[sertum] using the inherited environment; login shell did not answer',
-  );
-
+  // Join the daemon, or start one. The window opens either way: a fabric
+  // that failed to come up presents as an empty session list plus a console
+  // trail, not as an app that never appears.
   try {
-    const reaped = await reapStrayAppServers(appServerRecordFile());
-    if (reaped) {
-      console.log(`[sertum] reaped ${reaped} orphaned codex app server(s)`);
-    }
-    const up = await codex.start();
-    console.log(
-      up
-        ? `[sertum] codex app server on ${codex.remoteUrl}`
-        : '[sertum] codex not available; codex sessions run unmonitored',
-    );
-    if (up && codex.serverPid !== null) {
-      recordAppServer(appServerRecordFile(), {
-        ownerPid: process.pid,
-        serverPid: codex.serverPid,
-        port: codex.port,
-      });
-    }
+    await daemon.ensure();
   } catch (err) {
-    console.error('[sertum] codex app server failed to start:', err);
+    console.error('[sertum] could not reach sertumd:', err);
   }
 
   buildMenu();
-  startMonitorPolling();
-  startMetaPolling();
   createWindow();
 });
 
@@ -1264,79 +562,6 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-/**
- * Monitored sessions emit no hooks to us -- they were not spawned with our
- * settings -- so their status is polled from the agent's own roster.
- */
-let monitorTimer: NodeJS.Timeout | null = null;
-function startMonitorPolling() {
-  if (monitorTimer) return;
-  monitorTimer = setInterval(async () => {
-    // Attached rows ride the same sweep: their PTY is only a client, so the
-    // daemon's roster is the honest source for whether the agent is busy.
-    const monitored = ptys
-      .list()
-      .filter(
-        (s) =>
-          (s.origin === 'monitored' || s.origin === 'attached') &&
-          s.externalId,
-      );
-    if (monitored.length === 0) return;
-    const found = await discoverSessions(new Set(), resolvedCommand);
-    ptys.syncMonitored(
-      found.map((f: { sessionId: string; status: SessionStatus }) => ({
-        externalId: f.sessionId,
-        status: f.status,
-      })),
-    );
-  }, 3000);
-}
-
-/**
- * The executable to spawn for an agent, asking that agent's adapter.
- *
- * An explicit command from the caller always wins -- someone naming a binary
- * means it -- and a shell with no command falls through to the adapter too, so
- * every session resolves the same way.
- */
-function resolvedCommand(
-  agent: AgentKind | undefined,
-  explicit?: string,
-): string | undefined {
-  if (explicit) return explicit;
-  if (!agent) return undefined;
-  // A saved override always wins over auto-detection: it exists precisely for
-  // the case where detection guessed wrong, so it must not be second-guessed.
-  if (agent !== 'shell') {
-    const override = getSettings().agentBinaryPaths[agent];
-    if (override) return override;
-  }
-  return agentAdapters.get(agent)?.resolveBinary();
-}
-
-/**
- * Whether `resolvedCommand(agent)` currently points at a real, executable
- * file -- override or auto-detected, doesn't matter which. Shared by the
- * status bar (`adapters:status`) and the Settings "Detect" affordance
- * (`agent:detect`), so both report exactly the same fact.
- */
-function binaryFound(agent: ManagedAgent): boolean {
-  const cmd = resolvedCommand(agent);
-  if (!cmd) return false;
-  try {
-    fs.accessSync(cmd, fs.constants.X_OK);
-    return true;
-  } catch {
-    // Either nothing was found (the adapter fell back to a bare command name,
-    // which is not a path fs can check) or an override points at nothing.
-    return false;
-  }
-}
-
-/** Where the spawned codex app server is remembered between runs. */
-function appServerRecordFile(): string {
-  return path.join(app.getPath('userData'), 'codex-app-server.json');
-}
 
 /**
  * Everything that must happen before the process goes away, exactly once.
@@ -1354,51 +579,13 @@ let shuttingDown = false;
 function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (monitorTimer) clearInterval(monitorTimer);
-  if (metaTimer) clearInterval(metaTimer);
-  ptys.disposeAll();
-  // disposeAll already routed stream kills through their controls; this
-  // catches a host entry whose session was somehow never registered.
-  claudeChat.disposeAll();
-  void hooks.stop();
-  // The record is deliberately left in place. Confirming the kill is not
-  // possible from inside a dying process, so the next launch verifies and
-  // reaps whatever actually survived -- and drops the record when nothing did.
-  codex.stop();
-  grokEvents.stopAll();
+  // Disconnect, nothing more. Sessions belong to the daemon now, so the
+  // quit-drain dance this function used to perform — and the node-pty
+  // teardown crash it existed to dodge — left this process with the PTYs.
+  daemon.dispose();
 }
 
-/**
- * How long a quit waits for killed PTYs to report back. Short enough to be
- * imperceptible, long enough that a handful of sessions all land.
- */
-const QUIT_DRAIN_MS = 250;
-let quitDraining = false;
-
-/**
- * Quit by draining first, then leaving -- rather than letting Node tear the
- * environment down on top of node-pty's background threads.
- *
- * `disposeAll` kills every PTY, and node-pty reports each death from a
- * `waitpid` thread through a ThreadSafeFunction. Quitting immediately after
- * means those callbacks arrive while `node::FreeEnvironment` is already
- * running: the call into JS fails, node-addon-api turns the failure into a
- * C++ throw, and there is nothing above it to catch one -- `std::terminate`,
- * SIGABRT, a crash report for what the user experienced as closing the app.
- * Two on this machine, identical stacks, `Napi::ThreadSafeFunction::CallJS`
- * under `node::Environment::CleanupHandles` in both.
- *
- * So the exits are given a moment to land while a live environment can still
- * receive them, and the process then leaves through `app.exit`, which does
- * not run the teardown that the race needs in order to happen at all.
- */
-app.on('before-quit', (e) => {
-  if (quitDraining) return;
-  quitDraining = true;
-  e.preventDefault();
-  shutdown();
-  setTimeout(() => app.exit(0), QUIT_DRAIN_MS);
-});
+app.on('before-quit', () => shutdown());
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {

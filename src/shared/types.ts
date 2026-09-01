@@ -984,6 +984,19 @@ export interface SertumApi {
   resize(id: string, size: PtySize): void;
   onData(cb: (e: PtyDataEvent) => void): () => void;
   onExit(cb: (e: PtyExitEvent) => void): () => void;
+  /**
+   * Ask the daemon to replay a session's recent output. The replay arrives
+   * through `onPtyReplay`, ordered against the live `onData` stream: every
+   * byte before it is inside it, every byte after follows it. Used for
+   * sessions that predate this window — the daemon kept them alive.
+   */
+  replayPty(id: string): Promise<void>;
+  onPtyReplay(cb: (e: PtyDataEvent) => void): () => void;
+  /**
+   * Stop sertumd and every session it owns — the deliberate end of
+   * everything, distinct from closing the window, which ends nothing.
+   */
+  stopDaemon(): Promise<void>;
   onSessionUpdated(cb: (s: SessionSnapshot) => void): () => void;
   /** Persisted display preferences. */
   getSettings(): Promise<Settings>;
