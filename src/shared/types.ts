@@ -58,7 +58,17 @@ export type AgentCapability =
   /** Deny tool execution until the user explicitly resumes it. */
   | 'tool-gate'
   /** Decide individual tool calls from stored rules (wireframe E2). */
-  | 'permission-rules';
+  | 'permission-rules'
+  /**
+   * Render the session as a conversation read from the agent's own
+   * transcript on disk — stage 1 of the chat direction in BROKER-HANDOFF.md.
+   *
+   * Read-only by construction: the transcript is the agent's own account of
+   * the conversation (the same class of source as a hook payload), so this is
+   * plane 2 widened from status to content, never pixels parsed for meaning.
+   * Input still goes to the PTY.
+   */
+  | 'conversation-view';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -129,6 +139,36 @@ export interface SessionSnapshot extends SessionSpec {
   contextLimit: number | null;
   /** Where this session's transcript lives, once known. */
   transcriptPath: string | null;
+}
+
+/**
+ * One rendered item in a session's conversation, read from the agent's own
+ * transcript (the `conversation-view` capability).
+ *
+ * `at` is the record's own timestamp where the agent writes one; Grok's
+ * chat history carries none, so null means "not recorded" rather than "now".
+ */
+export type ChatItem =
+  | { kind: 'message'; role: 'user' | 'assistant'; text: string; at: number | null }
+  | { kind: 'thinking'; text: string; at: number | null }
+  | {
+      kind: 'tool';
+      name: string;
+      /** The part of the input a person would read: a command, a path. */
+      detail: string | null;
+      /** The result, paired by the agent's own call id. Null while running. */
+      output: string | null;
+      at: number | null;
+    };
+
+export interface ConversationSnapshot {
+  items: ChatItem[];
+  path: string | null;
+  updatedAt: number | null;
+  /** The read window cut off older records; the full history stays on disk. */
+  truncated: boolean;
+  /** Why there is nothing to show, when `items` is empty. */
+  reason: string | null;
 }
 
 export interface PtyDataEvent {
@@ -878,6 +918,13 @@ export interface SertumApi {
   defaultCwd(): Promise<string>;
   /** Validates a folder before we try to spawn an agent in it. */
   inspectDirectory(dir: string): Promise<DirectoryInfo>;
+  /**
+   * The session's conversation, read from the agent's own transcript on
+   * disk. Works for owned and monitored sessions alike, because the
+   * transcript is on disk whoever owns the process. Polled by the chat view;
+   * an empty answer carries the reason.
+   */
+  readConversation(id: string): Promise<ConversationSnapshot>;
   /** Health of the plane 2 adapters. */
   adapterStatus(): Promise<AdapterStatus>;
   /** Agent sessions running outside this app. */

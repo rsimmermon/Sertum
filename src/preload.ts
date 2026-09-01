@@ -97,6 +97,7 @@ const api: SertumApi = {
   defaultCwd: () => ipcRenderer.invoke('workspace:default-cwd'),
   inspectDirectory: (dir: string) =>
     ipcRenderer.invoke('workspace:inspect', dir),
+  readConversation: (id: string) => ipcRenderer.invoke('conversation:read', id),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),
   discoverSessions: () => ipcRenderer.invoke('discovery:list'),
   attachSession: (d) => ipcRenderer.invoke('discovery:attach', d),

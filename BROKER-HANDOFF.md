@@ -1,10 +1,20 @@
 # Handoff: a broker, a daemon, and a chat UI
 
-**Status: exploration, not a decision.** Nothing here is built. This records a
-design conversation so the next person -- or the next agent -- starts from the
-conclusions rather than re-deriving them. `AGENTS.md` stays the canonical
-description of what Sertum *is*; this describes a direction it could take and
-what that would cost.
+**Status: exploration, not a decision.** This records a design conversation
+so the next person -- or the next agent -- starts from the conclusions rather
+than re-deriving them. `AGENTS.md` stays the canonical description of what
+Sertum *is*; this describes a direction it could take and what that would
+cost.
+
+**Update, later the same day: stage 1 of section 6 is built.** The
+transcript-rendered conversation view exists, verified end to end against
+live Claude sessions (owned and monitored) and against real Codex and Grok
+transcripts; `AGENTS.md` ("The conversation view") now describes it,
+including the input byte sequence that section 7's attachment caveat hinted
+would need checking. Stages 2-4 remain unbuilt and everything in section 8
+remains unprobed except one item: what a PTY composer accepts as input is
+now partly answered -- a bracketed paste with a separately-delivered CR
+submits reliably, a single burst does not.
 
 Recorded 2026-09-01 against Claude Code 2.1.252, codex-cli 0.150.1,
 Electron 44.

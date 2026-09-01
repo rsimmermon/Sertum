@@ -108,6 +108,12 @@ What's built and verified so far:
       each pane sized to its own PTY; gutters clamp at a readable terminal,
       focus moves spatially, and a session dropped on a pane moves rather
       than duplicates. See "Pane layouts" below.
+- [x] **Conversation view** — stage 1 of the chat direction recorded in
+      `BROKER-HANDOFF.md`: any session can be shown as a conversation read
+      from the agent's own transcript, with a composer that writes to the
+      PTY. Works for monitored sessions too, read-only. Declared as the
+      `conversation-view` capability; a shell declines. See "The
+      conversation view" below.
 
 ## How status actually works
 
@@ -334,6 +340,59 @@ command-palette action, and TOOLS PAUSED pane chip. Process exit clears both
 the hook-server gate and the snapshot flag. Codex currently declines because
 Sertum has not verified a persistent structured tool gate for its TUI-owned
 turns; Grok's event log is read-only and shell has no agent policy to gate.
+
+## The conversation view
+
+Stage 1 of `BROKER-HANDOFF.md`: plane 2 widened from status to content,
+without a new channel. The Chat button in the pane header (or "Show as
+conversation" in the row menu) swaps a session's terminal for a transcript
+rendered as a conversation — user and assistant messages, collapsed thinking,
+and tool calls paired with their results. The terminal keeps running
+underneath, still collecting the PTY's bytes, so toggling costs nothing.
+
+What it reads is each agent's own transcript on disk, through
+`main/adapters/conversation.ts` — the same class of source as a hook payload,
+so this does not touch the two-planes rule. Record shapes were verified
+against real files, not documentation: Claude's `message.content` blocks
+(`text`/`thinking`/`tool_use`/`tool_result`, with `isMeta` and `isSidechain`
+marking what is not conversation), Codex's `response_item` payloads
+(`function_call`/`custom_tool_call` and their `*_output` twins paired by
+`call_id`), and Grok's role-as-type records with `tool_calls` and
+`tool_result` paired by `tool_call_id`. Injected context is skipped by its
+tag opener, never by a blanket "starts with `<`", so pasted XML still shows.
+Prose renders as plain text on purpose — inventing formatting the agent did
+not send is the same class of mistake as inventing a commit message.
+
+The renderer polls `conversation:read` once a second while the view is on
+screen, for the reasons Grok's event log established: the file may not exist
+yet, watch semantics differ by platform, and one update per batch is the
+point. Transcript resolution reuses `transcriptFor`, so a Claude session is
+only ever matched exactly and a shell never inherits another agent's
+transcript.
+
+Input still goes to the PTY, and the byte sequence matters. The composer
+sends the body as a bracketed paste and the final CR **separately, a beat
+later**, so it arrives as a real Enter press. Encoding newlines as ESC CR
+with a trailing CR in one burst was tried first and failed silently: Claude's
+TUI read the whole burst as a paste, swallowed the CR into it, and left the
+message sitting unsent in its composer. A single line goes as one plain
+write, verified, which keeps the common case free of paste markers for any
+agent that never enabled bracketed paste.
+
+`conversation-view` is a declared capability: Claude, Codex and Grok answer
+ok (Grok's read-only event plane is exactly what a read-only view asks for);
+a shell declines with its reason on the disabled button. Monitored sessions
+get the view too — the transcript is on disk whoever owns the process, which
+is the property that already let discovery summarise them — with the
+composer disabled and saying where input actually lives. This is the part of
+an adopted session that genuinely can live here, so selecting a monitored
+row no longer jumps to its owning window while its conversation is up.
+
+What stage 1 deliberately does not do: no markdown rendering, no synthetic
+"pending" messages (a sent message is acknowledged under the composer until
+the agent records it), and no structured input channel — that is stage 2
+(`--input-format stream-json` for Claude, app-server for Codex), which is a
+new session type, not a change to this view.
 
 ## Adopting sessions started outside the app
 
@@ -1225,11 +1284,13 @@ src/
   main/adapters/process-scan.ts  Universal agent-process scanner
   main/adapters/session-meta.ts  Model/effort/context read from a live transcript
   main/adapters/transcript.ts    Per-agent transcript summaries
+  main/adapters/conversation.ts  Transcript parsed into conversation items (chat view)
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
   shared/types.ts             Contracts shared across processes
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
   renderer/terminal-pane.ts   One xterm bound to one PTY
+  renderer/chat-pane.ts       A session as a conversation; composer writes to the PTY
   renderer/chips.ts           Model/effort badges, read by shape and colour
   renderer/command-palette.ts     ⌘K command palette — wireframe C13
   renderer/confirm-dialog.ts      Destructive-action confirm gate — wireframe C7

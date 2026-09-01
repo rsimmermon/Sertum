@@ -76,6 +76,10 @@ import {
   readSessionMeta,
 } from './main/adapters/session-meta';
 import {
+  noConversation,
+  readConversation,
+} from './main/adapters/conversation';
+import {
   findTranscriptForCwd,
   findTranscriptForSession,
 } from './main/adapters/transcript';
@@ -855,6 +859,26 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
   if (stored.paneLayout !== before) buildMenu();
   return stored;
 });
+/**
+ * The chat view's one data source: the session's transcript, parsed into
+ * conversation items. Resolution reuses `transcriptFor`, so the same rules
+ * apply as for model and context readouts — a Claude session is only matched
+ * exactly, never guessed by cwd.
+ */
+ipcMain.handle('conversation:read', (_e, id: string) => {
+  const session = ptys.get(id);
+  if (!session) return noConversation('Session not found.');
+  const answer = agentAdapters.get(session.agent)?.capabilities['conversation-view'];
+  if (answer && !answer.ok) return noConversation(answer.reason);
+  const transcript = transcriptFor(session);
+  if (!transcript) {
+    return noConversation(
+      'No transcript yet — the conversation appears once the agent records its first turn.',
+    );
+  }
+  return readConversation(session.agent, transcript);
+});
+
 ipcMain.handle('discovery:list', () =>
   discoverSessions(ptys.ownedPids(), resolvedCommand),
 );

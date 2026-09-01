@@ -170,6 +170,7 @@ class CodexAdapter implements AgentAdapter {
       ok: false,
       reason: 'Rules need a structured per-call decision point, which Codex does not expose here.',
     },
+    'conversation-view': { ok: true },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -279,6 +280,7 @@ class ClaudeAdapter extends InertAgentAdapter {
       'turn-interrupt': { ok: true },
       'tool-gate': { ok: true },
       'permission-rules': { ok: true },
+      'conversation-view': { ok: true },
     });
   }
 
@@ -376,6 +378,8 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok’s event log is read-only, so a rule has nothing to answer.',
       },
+      // Read-only is exactly what this capability asks for.
+      'conversation-view': { ok: true },
     });
   }
 
@@ -436,6 +440,10 @@ export function createAgentAdapters(deps: {
         'permission-rules': {
           ok: false,
           reason: 'A shell has no tool calls to rule on.',
+        },
+        'conversation-view': {
+          ok: false,
+          reason: 'A shell keeps no conversation transcript to read.',
         },
       }),
     ],
