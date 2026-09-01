@@ -1184,6 +1184,13 @@ node scripts/drive.js "document.querySelectorAll('.tab').length"
 which is the only way to read terminal contents while the WebGL renderer is
 active.
 
+Restarting the app quickly on the same `SERTUM_DEBUG_PORT` can come up with
+no debugger at all: the previous instance's sockets sit in TIME_WAIT, the
+bind fails, and Chromium treats that as non-fatal and silent — the app runs
+normally while `/json/list` answers nothing. Cost two blind restarts before
+it was recognised. Use a fresh port per restart when driving the app
+headlessly.
+
 ## Windows notes
 
 Development so far has mostly happened on macOS. Running on Windows 11
