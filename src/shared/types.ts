@@ -77,7 +77,16 @@ export type AgentCapability =
    * a replacement — the TUI still carries slash commands, plan mode and the
    * agent's own rendering, which this deliberately does not reimplement.
    */
-  | 'structured-conversation';
+  | 'structured-conversation'
+  /**
+   * Host the session in the agent's own daemon so it outlives this app —
+   * the first cut of BROKER-HANDOFF.md's stage 3, uneven by design. Claude
+   * solves background hosting for itself (`--bg`, `claude attach`); closing
+   * Sertum then only ends the attach client, verified leaving the session
+   * running. Agents with no daemon decline, and the unevenness is stated
+   * here rather than hidden.
+   */
+  | 'background-host';
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
@@ -106,6 +115,13 @@ export interface SessionSpec {
   args: string[];
   /** How the agent is carried. Every session before stage 2 was `pty`. */
   transport: SessionTransport;
+  /**
+   * Start the session daemon-hosted, so it keeps running when Sertum
+   * closes. Opt-in per session; ignored for an agent whose adapter declines
+   * `background-host`. The terminal shown is an attach client, and closing
+   * it detaches rather than ends the agent.
+   */
+  background: boolean;
   /**
    * Start this session published for Remote Control, so it can be steered
    * from claude.ai or the Claude app.

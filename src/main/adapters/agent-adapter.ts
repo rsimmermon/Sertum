@@ -179,6 +179,11 @@ class CodexAdapter implements AgentAdapter {
       reason:
         'Codex conversations still run in its terminal UI; Sertum does not own app-server threads yet.',
     },
+    'background-host': {
+      ok: false,
+      reason:
+        'Codex’s app-server daemon is Unix-only in this release, and Sertum has not adopted it.',
+    },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -292,6 +297,9 @@ class ClaudeAdapter extends InertAgentAdapter {
       // --input-format/--output-format stream-json: a first-party,
       // persistent, bidirectional chat protocol, verified across turns.
       'structured-conversation': { ok: true },
+      // claude --bg is daemon-hosted; the attach client's death was verified
+      // leaving the session running, which is the whole property.
+      'background-host': { ok: true },
     });
   }
 
@@ -395,6 +403,10 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok has no input channel besides its terminal UI.',
       },
+      'background-host': {
+        ok: false,
+        reason: 'Grok has no daemon to host a session outside its terminal.',
+      },
     });
   }
 
@@ -463,6 +475,10 @@ export function createAgentAdapters(deps: {
         'structured-conversation': {
           ok: false,
           reason: 'A shell has no chat protocol — it is a terminal or nothing.',
+        },
+        'background-host': {
+          ok: false,
+          reason: 'A shell dies with its terminal; there is no daemon to hold it.',
         },
       }),
     ],

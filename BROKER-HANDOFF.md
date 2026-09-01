@@ -6,19 +6,28 @@ than re-deriving them. `AGENTS.md` stays the canonical description of what
 Sertum *is*; this describes a direction it could take and what that would
 cost.
 
-**Update, later the same day: stages 1 and 2 of section 6 are built.** The
-transcript-rendered conversation view exists, verified end to end against
-live Claude sessions (owned and monitored) and against real Codex and Grok
-transcripts; and conversation sessions exist for Claude -- a `stream`
+**Update, later the same day: stages 1 and 2 of section 6 are built, and
+stage 3's Claude-only first cut (section 4's "shortcut for Claude only") is
+too.** The transcript-rendered conversation view exists, verified end to end
+against live Claude sessions (owned and monitored) and against real Codex
+and Grok transcripts. Conversation sessions exist for Claude -- a `stream`
 transport carried by a headless `--input-format stream-json` process, with
 hooks (and therefore permission rules, the tool gate, steer and interrupt)
-verified working in print mode. `AGENTS.md` ("The conversation view",
-"Conversation sessions") now describes both. Codex conversation sessions
-remain unbuilt -- the capability declines with that reason -- and stages 3-4
-remain unbuilt. Of section 8's questions, two are now partly answered: a PTY
-composer accepts a bracketed paste with a separately-delivered CR (a single
-burst is swallowed), and Claude's stream-json input accepts text content
-blocks (image blocks remain unprobed).
+verified working in print mode. And sessions can now outlive the window
+through Claude's own daemon: a C1 toggle starts them with `--bg`, Sertum
+holds only an attach client, and a session was verified surviving Sertum
+being force-killed, then reattached with terminal and history after
+relaunch. `AGENTS.md` ("The conversation view", "Conversation sessions",
+"Sessions that outlive the window") describes all three.
+
+Still unbuilt: Codex conversation sessions (the capability declines with
+that reason), the Sertum daemon itself -- the uneven cut leans on Claude's
+-- and stage 4. Of section 8's questions, three are now partly answered: a
+PTY composer accepts a bracketed paste with a separately-delivered CR (a
+single burst is swallowed); Claude's stream-json input accepts text content
+blocks (images unprobed); and a `--bg` session costs nothing in fidelity
+that these tests exposed -- the attach client renders the full TUI, and the
+roster supplies live status.
 
 Recorded 2026-09-01 against Claude Code 2.1.252, codex-cli 0.150.1,
 Electron 44.

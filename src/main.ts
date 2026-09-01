@@ -7,6 +7,7 @@ import {
   Menu,
   shell,
 } from 'electron';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -427,6 +428,82 @@ function createConversationSession(
   return snapshot;
 }
 
+/**
+ * Starts a daemon-hosted Claude session and opens a terminal onto it — the
+ * first cut of BROKER-HANDOFF.md's stage 3, Claude-only by design because
+ * Claude already solves background hosting for itself.
+ *
+ * `claude --bg -n <label>` returns immediately, printing the id that
+ * `attach`, `logs`, `stop` and `rm` take; the roster then supplies the full
+ * session id. The terminal Sertum shows is an attach client (origin
+ * `attached`): killing it was verified to leave the session running, which
+ * is exactly what makes closing Sertum survivable. Status for these rows
+ * comes from the roster poll, the daemon's own account of its sessions.
+ */
+async function createBackgroundSession(
+  spec: Partial<SessionSpec>,
+): Promise<SessionSnapshot> {
+  const command = resolvedCommand('claude', spec.command);
+  if (!command) throw new Error('Claude Code binary not found');
+  const cwd = spec.cwd ?? defaultCwd();
+  const label = spec.label?.trim() || 'background session';
+
+  const announced = await runClaude(command, ['--bg', '-n', label], cwd);
+  const short = /backgrounded · ([0-9a-f]{4,})/.exec(announced)?.[1];
+  if (!short) {
+    throw new Error(
+      `claude --bg did not announce a session id: ${announced.slice(0, 200)}`,
+    );
+  }
+
+  // The roster carries the full session id the transcript is filed under.
+  // It can lag the announcement by a beat, so it is asked more than once.
+  let externalId: string | null = null;
+  for (let attempt = 0; attempt < 5 && !externalId; attempt += 1) {
+    try {
+      const roster = JSON.parse(
+        await runClaude(command, ['agents', '--json'], cwd),
+      ) as Array<{ id?: string; sessionId?: string }>;
+      externalId =
+        roster.find((row) => row.id === short)?.sessionId ?? null;
+    } catch {
+      // Retry below.
+    }
+    if (!externalId) await new Promise((r) => setTimeout(r, 700));
+  }
+
+  return ptys.create(
+    {
+      label,
+      agent: 'claude',
+      cwd,
+      command,
+      args: ['attach', short],
+      background: true,
+    },
+    { origin: 'attached', externalId: externalId ?? short },
+  );
+}
+
+/** One non-interactive claude invocation, in the session's own folder. */
+function runClaude(
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      { cwd, env: agentSafeEnv(), timeout: 30_000, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr.trim() || err.message));
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
 grokEvents.on('events', (arrival: GrokEventArrival) => {
   const { sessionId, grokSessionId, events } = arrival;
 
@@ -569,10 +646,17 @@ function transcriptFor(s: SessionSnapshot): string | null {
   if (s.agent === 'shell') return null;
 
   // A stream session chose the agent's session id at spawn (--session-id),
-  // so its transcript is matched exactly — the same property the hook URL
-  // buys, arrived at from the other direction.
-  if (s.transport === 'stream' && s.externalId) {
-    return findTranscriptForSession(s.agent, s.externalId, s.cwd);
+  // and an attached session learned its id from the daemon's roster: both
+  // are exact matches, never a guess by cwd.
+  if (
+    (s.transport === 'stream' || s.origin === 'attached') &&
+    discoveredSessionId(s.externalId)
+  ) {
+    return findTranscriptForSession(
+      s.agent,
+      discoveredSessionId(s.externalId),
+      s.cwd,
+    );
   }
 
   // Claude tells us its exact transcript through the hook payload. Never
@@ -761,6 +845,20 @@ ipcMain.handle('session:create', (_e, spec: Partial<SessionSpec>) => {
       );
     }
     return createConversationSession(spec);
+  }
+  // A daemon-hosted session, gated the same way: only an agent that
+  // declared `background-host` gets one.
+  if (spec.background) {
+    const agent = spec.agent ?? 'claude';
+    const answer = agentAdapters.get(agent)?.capabilities['background-host'];
+    if (!answer?.ok) {
+      throw new Error(
+        answer && !answer.ok
+          ? answer.reason
+          : `${agent} cannot host a session in the background`,
+      );
+    }
+    return createBackgroundSession(spec);
   }
   // Resolve the agent's binary here rather than trusting PATH: a packaged app
   // launched from Finder has only the bare launchd PATH, and a bare `claude`
@@ -1009,13 +1107,20 @@ ipcMain.handle('discovery:focus', (_e, pid: number) =>
  * the supervisor -- not another terminal emulator -- owns the PTY.
  */
 ipcMain.handle('discovery:attach', (_e, d: DiscoveredSession) =>
-  ptys.create({
-    label: d.name,
-    agent: d.agent,
-    cwd: d.cwd || defaultCwd(),
-    command: resolvedCommand('claude'),
-    args: ['attach', d.sessionId],
-  }),
+  // Origin `attached`: this terminal is a client onto a daemon-hosted
+  // session, so closing it detaches — it does not end the agent, and the
+  // close flow must not claim otherwise.
+  ptys.create(
+    {
+      label: d.name,
+      agent: d.agent,
+      cwd: d.cwd || defaultCwd(),
+      command: resolvedCommand('claude'),
+      args: ['attach', d.sessionId],
+      background: true,
+    },
+    { origin: 'attached', externalId: d.sessionId },
+  ),
 );
 
 ipcMain.handle('discovery:monitor', (_e, d: DiscoveredSession) =>
@@ -1167,9 +1272,15 @@ let monitorTimer: NodeJS.Timeout | null = null;
 function startMonitorPolling() {
   if (monitorTimer) return;
   monitorTimer = setInterval(async () => {
+    // Attached rows ride the same sweep: their PTY is only a client, so the
+    // daemon's roster is the honest source for whether the agent is busy.
     const monitored = ptys
       .list()
-      .filter((s) => s.origin === 'monitored' && s.externalId);
+      .filter(
+        (s) =>
+          (s.origin === 'monitored' || s.origin === 'attached') &&
+          s.externalId,
+      );
     if (monitored.length === 0) return;
     const found = await discoverSessions(new Set(), resolvedCommand);
     ptys.syncMonitored(

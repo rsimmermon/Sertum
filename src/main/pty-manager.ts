@@ -60,7 +60,18 @@ export class PtyManager extends EventEmitter {
     super();
   }
 
-  create(spec: Partial<SessionSpec>): SessionSnapshot {
+  create(
+    spec: Partial<SessionSpec>,
+    opts?: {
+      /**
+       * `attached` marks a terminal that is only a client onto a
+       * daemon-hosted session: closing it detaches, it never ends the agent.
+       */
+      origin?: 'owned' | 'attached';
+      /** The agent's own id for the session this terminal attaches to. */
+      externalId?: string | null;
+    },
+  ): SessionSnapshot {
     const resolved: SessionSpec = {
       label: spec.label ?? 'session',
       agent: spec.agent ?? 'shell',
@@ -68,6 +79,7 @@ export class PtyManager extends EventEmitter {
       command: spec.command ?? defaultShell(),
       args: spec.args ?? [],
       transport: 'pty',
+      background: spec.background ?? false,
       remoteControl: spec.remoteControl ?? false,
     };
 
@@ -107,8 +119,8 @@ export class PtyManager extends EventEmitter {
       id,
       toolsPaused: false,
       muted: false,
-      origin: 'owned',
-      externalId: null,
+      origin: opts?.origin ?? 'owned',
+      externalId: opts?.externalId ?? null,
       status: 'working',
       pid: proc.pid,
       startedAt: Date.now(),
@@ -239,6 +251,7 @@ export class PtyManager extends EventEmitter {
       command: input.command,
       args: input.args,
       transport: 'stream',
+      background: false,
       remoteControl: false,
       status: 'working',
       pid: input.pid,
@@ -306,6 +319,7 @@ export class PtyManager extends EventEmitter {
       command: '',
       args: [],
       transport: 'pty',
+      background: false,
       remoteControl: false,
       status: input.status,
       pid: input.pid,
@@ -325,14 +339,25 @@ export class PtyManager extends EventEmitter {
     return { ...snapshot };
   }
 
-  /** Refreshes monitored rows from a discovery sweep. */
+  /**
+   * Refreshes monitored and attached rows from a discovery sweep.
+   *
+   * Attached rows are included because their PTY is only a client: the
+   * agent's own daemon knows whether the session is busy, and the roster is
+   * that daemon speaking — the same class of source as any adapter event.
+   */
   syncMonitored(
     seen: Array<{ externalId: string; status: SessionStatus }>,
   ): void {
     const byId = new Map(seen.map((s) => [s.externalId, s]));
     for (const session of this.sessions.values()) {
       const snap = session.snapshot;
-      if (snap.origin !== 'monitored' || !snap.externalId) continue;
+      if (
+        (snap.origin !== 'monitored' && snap.origin !== 'attached') ||
+        !snap.externalId
+      ) {
+        continue;
+      }
       const hit = byId.get(snap.externalId);
       if (!hit) {
         if (snap.status !== 'done') {
@@ -345,7 +370,11 @@ export class PtyManager extends EventEmitter {
       if (hit.status !== snap.status) {
         snap.status = hit.status;
         snap.activity =
-          hit.status === 'working' ? 'working' : 'idle in another terminal';
+          hit.status === 'working'
+            ? 'working'
+            : snap.origin === 'attached'
+              ? 'idle in the background'
+              : 'idle in another terminal';
         snap.lastEventAt = Date.now();
         this.emit('session-updated', { ...snap });
       }

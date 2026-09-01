@@ -69,6 +69,7 @@ export function openNewSessionDialog(
     let labelEdited = Boolean(presetLabel);
     let remoteControl = false;
     let conversation = false;
+    let background = false;
 
     const overlay = el('div', 'overlay');
     const dlg = el('div', 'dialog');
@@ -141,6 +142,7 @@ export function openNewSessionDialog(
         agent = picked;
         drawAgent();
         syncConversation();
+        syncBackground();
         syncRemoteControl();
         if (!labelEdited) labelInput.value = suggestLabel();
       });
@@ -176,10 +178,13 @@ export function openNewSessionDialog(
     };
 
     function syncRemoteControl(): void {
-      // A conversation session is headless: there is no interactive session
-      // to publish, so the two choices are exclusive rather than combinable.
+      // A conversation session is headless — there is no interactive session
+      // to publish — and publishing a daemon-hosted one is unverified, so
+      // the choices are exclusive rather than silently combined.
       const supported =
-        capabilities?.[agent]['remote-control'].ok === true && !conversation;
+        capabilities?.[agent]['remote-control'].ok === true &&
+        !conversation &&
+        !background;
       remoteWrap.hidden = !supported;
       if (!supported) {
         remoteBox.checked = false;
@@ -204,12 +209,14 @@ export function openNewSessionDialog(
     convWrap.append(convBox, convCopy);
     convBox.onchange = () => {
       conversation = convBox.checked;
+      syncBackground();
       syncRemoteControl();
     };
 
     function syncConversation(): void {
       const supported =
-        capabilities?.[agent]['structured-conversation'].ok === true;
+        capabilities?.[agent]['structured-conversation'].ok === true &&
+        !background;
       convWrap.hidden = !supported;
       if (!supported) {
         convBox.checked = false;
@@ -217,6 +224,37 @@ export function openNewSessionDialog(
       }
     }
     syncConversation();
+
+    // --- background hosting (stage 3 first cut) ----------------------------
+    // The agent's own daemon owns the session; the terminal here is an
+    // attach client, so closing Sertum leaves the agent running.
+    const bgWrap = el('label', 'remote-control-check');
+    const bgBox = document.createElement('input');
+    bgBox.type = 'checkbox';
+    const bgCopy = el('span', 'remote-control-copy');
+    const bgTitle = el('span', 'remote-control-title');
+    bgTitle.textContent = 'Keep running after Sertum closes';
+    const bgNote = el('span', 'remote-control-note');
+    bgNote.textContent =
+      'Hosted by the agent’s own daemon. Closing this tab or quitting Sertum only detaches; reattach later from Import sessions.';
+    bgCopy.append(bgTitle, bgNote);
+    bgWrap.append(bgBox, bgCopy);
+    bgBox.onchange = () => {
+      background = bgBox.checked;
+      syncConversation();
+      syncRemoteControl();
+    };
+
+    function syncBackground(): void {
+      const supported =
+        capabilities?.[agent]['background-host'].ok === true && !conversation;
+      bgWrap.hidden = !supported;
+      if (!supported) {
+        bgBox.checked = false;
+        background = false;
+      }
+    }
+    syncBackground();
 
     // --- isolation (C1) ----------------------------------------------------
     // Defaults to the plain checkout. The wireframe draws New worktree
@@ -294,6 +332,7 @@ export function openNewSessionDialog(
       labelEl('AGENT'),
       agentButton,
       convWrap,
+      bgWrap,
       remoteWrap,
       labelEl('ISOLATION'),
       isoSeg,
@@ -465,6 +504,7 @@ export function openNewSessionDialog(
           cwd: chosen,
           args: AGENT_ARGS[agent],
           transport: conversation ? 'stream' : 'pty',
+          background,
           remoteControl,
         });
       } catch (err) {

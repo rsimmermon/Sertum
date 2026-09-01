@@ -120,6 +120,14 @@ What's built and verified so far:
       and hooks as a terminal session; the chat view is the whole surface.
       Declared as `structured-conversation`; Codex, Grok and shell decline
       with reasons. See "Conversation sessions" below.
+- [x] **Sessions that outlive the window** — the first cut of stage 3,
+      Claude-only by design: a C1 toggle starts the session under Claude's
+      own daemon (`--bg`), Sertum shows an attach client, and closing the
+      tab or quitting the app only detaches. Verified: the session survived
+      Sertum being force-killed and was reattached — terminal and
+      conversation history intact — after relaunch. Declared as
+      `background-host`; Codex, Grok and shell decline. See "Sessions that
+      outlive the window" below.
 
 ## How status actually works
 
@@ -446,6 +454,49 @@ What a stream session gives up is what the TUI was carrying: slash
 commands, plan mode, Claude's own diff and todo rendering. The C1 toggle
 copy says so. That inventory is why stage 2 is a session type alongside
 terminal sessions, not a migration of them.
+
+## Sessions that outlive the window
+
+Stage 3's crux is that sessions must not be children of the window process,
+and its first cut is deliberately uneven: Claude already solves background
+hosting for itself, so Sertum uses Claude's daemon before any Sertum daemon
+exists. The unevenness is declared, not hidden — `background-host` is a
+capability Claude answers ok and Codex (daemon Unix-only in this release,
+unadopted), Grok (no daemon) and shell decline with reasons the C1 toggle
+reads.
+
+The flow, verified end to end on Windows: C1's "Keep running after Sertum
+closes" runs `claude --bg -n <label>`, which returns immediately and prints
+the id that `attach`, `logs`, `stop` and `rm` take (`--bg` manages its own
+session id — a passed `--session-id` is ignored with a warning, so the
+printed id plus one `claude agents --json` lookup is the binding). Sertum
+then opens a terminal onto it with `claude attach`, registered with origin
+`attached` — a terminal that is only a client. Killing that client was
+verified leaving the session running, which is the entire property: quitting
+Sertum, even a force-kill, ends attach clients and nothing else. After
+relaunch, discovery lists the session as before and attaching brings back
+the terminal and — through the conversation view, matched exactly by the
+session id the roster reported — the history from before the app died.
+
+Three things follow from origin `attached` now being real:
+
+- **Closing an attached tab never confirms.** The confirm dialog exists to
+  warn that work mid-turn dies with the process; detaching kills nothing,
+  so the gate correctly does not apply (it keys on origin `owned`).
+- **Status comes from the roster, not the attach client.** The monitor
+  poll now sweeps attached rows too: `claude agents --json` is the daemon's
+  own account of whether a session is busy, the same class of source as any
+  adapter event. The attach client's PTY says nothing about the agent.
+- **The transcript is matched by the roster's session id** — exact, never
+  guessed by cwd — so the conversation view works on attached rows the
+  same way it does everywhere else.
+
+What this first cut deliberately does not do: auto-reattach on launch
+(sessions reappear through Import sessions, C18), background hosting for
+conversation sessions (a stream session's process dies with its stdin by
+construction — giving one a daemon is real stage 3 work), and any
+combination with Remote Control (unverified, so C1 makes the toggles
+exclusive rather than combining them silently).
 
 ## Adopting sessions started outside the app
 
