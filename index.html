@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     />
     <title>Sertum</title>
   </head>
@@ -90,9 +90,6 @@
                 aria-haspopup="dialog"
                 title="Pane layout  (⌘⌥L)"
               >▢ Single</button>
-              <!-- Stage 1 of the chat direction (BROKER-HANDOFF.md): show the
-                   focused session as a conversation read from its transcript. -->
-              <button class="btn ghost" id="pane-view" type="button">Chat</button>
               <button class="btn ghost" disabled>Info</button>
               <button class="btn ghost" disabled>Diff</button>
               <button class="btn ghost" id="pane-stop" type="button">Stop</button>

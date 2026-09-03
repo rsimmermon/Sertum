@@ -27,6 +27,8 @@ export class TerminalPane {
   private webgl: WebglAddon | null = null;
   private webglRestoreTried = false;
   private restoreTimer: ReturnType<typeof setTimeout> | null = null;
+  private replaying = false;
+  private outputAfterReplay: string[] = [];
 
   constructor(
     readonly session: SessionSnapshot,
@@ -53,9 +55,13 @@ export class TerminalPane {
 
     this.copyOnSelect = settings.terminalCopyOnSelect;
 
-    // Keystrokes go straight to the PTY.
+    // Keystrokes go straight to the PTY. During scrollback replay, xterm can
+    // answer historical terminal capability queries; those replies are not
+    // keystrokes and must never be injected into the live agent process.
     this.disposers.push(
-      this.term.onData((data) => api.write(this.session.id, data)).dispose,
+      this.term.onData((data) => {
+        if (!this.replaying) api.write(this.session.id, data);
+      }).dispose,
     );
 
     // Copy on select, when asked for. The selection is left in place: clearing
@@ -278,7 +284,26 @@ export class TerminalPane {
   }
 
   write(data: string): void {
+    if (this.replaying) {
+      this.outputAfterReplay.push(data);
+      return;
+    }
     this.term.write(data);
+  }
+
+  /**
+   * Repaint daemon-buffered history without treating xterm's answers to old
+   * device queries as new PTY input. `Terminal.write` completes only after
+   * parsing the bytes, which gives the suppression an exact boundary.
+   */
+  replay(data: string): void {
+    this.replaying = true;
+    this.term.write(data, () => {
+      this.replaying = false;
+      const queued = this.outputAfterReplay.join('');
+      this.outputAfterReplay = [];
+      if (queued) this.term.write(queued);
+    });
   }
 
   /** Terminal-visible notice, used for process exit. */

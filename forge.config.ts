@@ -10,7 +10,11 @@ import { MakerRpm } from '@electron-forge/maker-rpm';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
-import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import {
+  FuseV1Options,
+  FuseVersion,
+  getCurrentFuseWire,
+} from '@electron/fuses';
 
 /**
  * Modules that must ship as real files rather than bundled code.
@@ -29,6 +33,9 @@ function shipInPackage(file: string): boolean {
   // Packager paths always start with '/'; '' is the root being walked.
   if (!file) return true;
   if (file.startsWith('/.vite')) return true;
+  // Electron's tray needs a real cross-platform bitmap at runtime. The
+  // executable/bundle icon alone cannot be loaded portably on all desktops.
+  if (file === '/assets' || file === '/assets/icon.png') return true;
   if (file === '/package.json') return true;
   // Keep the directory itself, or packager never descends into it.
   if (file === '/node_modules') return true;
@@ -77,6 +84,42 @@ async function resignDarwinBundle(outputPaths: string[]): Promise<void> {
   }
 }
 
+/**
+ * Fails packaging if the two pieces that make sertumd launchable were lost.
+ * Both failures otherwise produce a perfectly healthy-looking installer and
+ * only surface after launch, when the GUI tries to start its session fabric.
+ */
+async function verifyPackagedDaemon(
+  platform: string,
+  outputPaths: string[],
+): Promise<void> {
+  for (const dir of outputPaths) {
+    const resources = platform === 'darwin'
+      ? path.join(dir, 'Sertum.app', 'Contents', 'Resources')
+      : path.join(dir, 'resources');
+    const executable = platform === 'darwin'
+      ? path.join(dir, 'Sertum.app')
+      : path.join(dir, platform === 'win32' ? 'Sertum.exe' : 'sertum');
+    const daemon = path.join(
+      resources,
+      'app.asar.unpacked',
+      '.vite',
+      'build',
+      'sertumd.js',
+    );
+    await fs.access(daemon);
+
+    const fuses = await getCurrentFuseWire(executable);
+    // FuseState.ENABLE is the byte value for ASCII "1". Avoid importing the
+    // package-private constants module just for this assertion.
+    if (fuses[FuseV1Options.RunAsNode] !== 49) {
+      throw new Error(
+        'packaged Sertum has RunAsNode disabled; sertumd cannot start',
+      );
+    }
+  }
+}
+
 const config: ForgeConfig = {
   packagerConfig: {
     // node-pty also ships plain executables it exec()s — spawn-helper on
@@ -85,9 +128,13 @@ const config: ForgeConfig = {
     // only covers *.node, so the whole module is unpacked; the plugin unions
     // its pattern with this one rather than replacing it.
     // sertumd.js is unpacked too: it runs under plain Node, which cannot
-    // read from inside an asar. (Packaged daemon operation is untested so
-    // far; dev is verified.)
-    asar: { unpack: '{**/node_modules/node-pty/**/*,**/.vite/build/sertumd.js}' },
+    // read from inside an asar. postPackage verifies both this file and the
+    // RunAsNode fuse before Forge is allowed to produce an artifact.
+    // `unpack` is matched against absolute filenames with matchBase enabled:
+    // a basename reaches sertumd through `.vite`, while a path glob does not.
+    // Keep node-pty as a directory rule because its helper executables matter
+    // just as much as its native addon.
+    asar: { unpack: 'sertumd.js', unpackDir: 'node_modules/node-pty' },
     name: 'Sertum',
     executableName: 'Sertum',
     appBundleId: 'dev.sertum.app',
@@ -139,6 +186,7 @@ const config: ForgeConfig = {
   hooks: {
     postPackage: async (_forgeConfig, { platform, outputPaths }) => {
       if (platform === 'darwin') await resignDarwinBundle(outputPaths);
+      await verifyPackagedDaemon(platform, outputPaths);
     },
   },
   plugins: [

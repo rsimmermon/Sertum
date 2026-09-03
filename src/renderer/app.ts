@@ -104,8 +104,6 @@ export class App {
    * toggling costs nothing and input always has somewhere to go.
    */
   private chatPanes = new Map<string, ChatPane>();
-  /** Sessions currently shown as a conversation rather than a terminal. */
-  private chatMode = new Set<string>();
   /**
    * Sessions that predate this window — the daemon kept them alive across a
    * GUI restart. Their terminals are repainted from the daemon's replay
@@ -182,7 +180,6 @@ export class App {
     approvalHost: qs('#approval-host'),
     paneHead: qs('#pane-head'),
     paneTitle: qs('#pane-title'),
-    paneView: qs('#pane-view') as HTMLButtonElement,
     layoutButton: qs('#pane-layout') as HTMLButtonElement,
     statusLeft: qs('#status-left'),
     statusRight: qs('#status-right'),
@@ -203,6 +200,13 @@ export class App {
     this.layout = this.settings.paneLayout;
     this.slots = Array.from({ length: PANE_COUNT[this.layout] }, () => null);
     this.installSplitter();
+
+    // DOM dialogs are modal to the renderer already; keep Electron's native
+    // menu in the same state. Watching the common overlay class covers every
+    // dialog and restores commands as soon as its own close path removes it.
+    new MutationObserver(() => this.syncMenuState()).observe(document.body, {
+      childList: true,
+    });
 
     // Row ages are derived from startedAt, so a sidebar that nothing else is
     // updating still has to be repainted for them to stay true.
@@ -227,9 +231,6 @@ export class App {
       if (this.activeId) void api.killSession(this.activeId);
     };
     this.el.layoutButton.onclick = () => this.openLayoutMenu(this.el.layoutButton);
-    this.el.paneView.onclick = () => {
-      if (this.activeId) this.toggleChatMode(this.activeId);
-    };
 
     api.onData(({ id, data }) => {
       // Held back for a session awaiting its replay: these bytes are inside
@@ -240,7 +241,7 @@ export class App {
     });
     api.onPtyReplay(({ id, data }) => {
       this.needsReplay.delete(id);
-      this.panes.get(id)?.write(data);
+      this.panes.get(id)?.replay(data);
     });
 
     api.onExit(({ id, exitCode }) => {
@@ -376,6 +377,7 @@ export class App {
     const snapshot = await openNewSessionDialog({
       startCwd,
       capabilities: this.capabilities,
+      agentBackground: this.settings.agentBackground,
       presetLabel,
       presetIsolation: preset?.isolation,
       presetAgent: preset?.agent,
@@ -383,10 +385,12 @@ export class App {
     if (!snapshot) return;
     this.lastCwd = snapshot.cwd;
     this.sessions.set(snapshot.id, snapshot);
-    this.panes.set(
-      snapshot.id,
-      new TerminalPane(snapshot, this.settings),
-    );
+    if (snapshot.transport === 'pty') {
+      this.panes.set(
+        snapshot.id,
+        new TerminalPane(snapshot, this.settings),
+      );
+    }
     this.activeId = snapshot.id;
     this.render();
   }
@@ -826,7 +830,6 @@ export class App {
     this.panes.delete(id);
     this.chatPanes.get(id)?.dispose();
     this.chatPanes.delete(id);
-    this.chatMode.delete(id);
     this.sessions.delete(id);
     // Ending a session vacates whatever pane held it. Backfilling only makes
     // sense in a single-pane window: with a split, an empty pane is a drop
@@ -906,6 +909,7 @@ export class App {
     const chosen = await openSettingsDialog(
       before,
       (preview) => this.applySettings(preview),
+      this.capabilities,
       {
         list: () =>
           [...this.sessions.values()]
@@ -998,12 +1002,13 @@ export class App {
     const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
     const panes = this.isSplit() ? PANE_COUNT[this.layout] : 0;
     const state: MenuState = {
+      modalOpen: Boolean(document.querySelector('.overlay:not(.palette-overlay)')),
       count: this.sessions.size,
       hasActive: Boolean(active),
       activeRunning: Boolean(active && active.pid !== null),
       gotoLimit: Math.max(this.sessions.size, panes),
     };
-    const key = `${state.count}|${state.hasActive}|${state.activeRunning}|${state.gotoLimit}`;
+    const key = `${state.modalOpen}|${state.count}|${state.hasActive}|${state.activeRunning}|${state.gotoLimit}`;
     if (key === this.lastMenuState) return;
     this.lastMenuState = key;
     menu.setState(state);
@@ -1289,7 +1294,6 @@ export class App {
     const steer = this.capabilities?.[s.agent]['turn-steer'];
     const interrupt = this.capabilities?.[s.agent]['turn-interrupt'];
     const toolGate = this.capabilities?.[s.agent]['tool-gate'];
-    const conv = this.capabilities?.[s.agent]['conversation-view'];
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1309,19 +1313,6 @@ export class App {
       // Two views onto one PTY is design G8, which is not built.
       { label: 'Mirror in new pane', accel: '⌘⌥M' },
       { label: 'Open in new window' },
-      {
-        label: this.chatMode.has(s.id) ? 'Show as terminal' : 'Show as conversation',
-        accel:
-          s.transport === 'stream'
-            ? 'This session has no terminal'
-            : conv && !conv.ok
-              ? conv.reason
-              : undefined,
-        onSelect:
-          s.transport !== 'stream' && conv?.ok
-            ? () => this.toggleChatMode(s.id)
-            : undefined,
-      },
       SEPARATOR,
       {
         label: s.toolsPaused ? 'Resume tool use' : 'Pause tool use',
@@ -1907,7 +1898,13 @@ export class App {
       }
       let chat = this.chatPanes.get(session.id);
       if (!chat) {
-        chat = new ChatPane(session);
+        chat = new ChatPane(
+          session,
+          this.capabilities?.[session.agent]['turn-interrupt'] ?? {
+            ok: false,
+            reason: 'Agent capabilities are still loading.',
+          },
+        );
         this.chatPanes.set(session.id, chat);
       }
       chat.update(session);
@@ -1944,31 +1941,12 @@ export class App {
     };
   }
 
-  /** True while this session is being shown as a conversation. */
+  /** Agents are always chat; a shell is always its terminal. */
   private showsChat(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
-    // A stream session has no terminal at all: the conversation is not a
-    // view of it, it is the whole surface.
-    if (session.transport === 'stream') return true;
-    if (!this.chatMode.has(id)) return false;
+    if (session.agent === 'shell') return false;
     return Boolean(this.capabilities?.[session.agent]['conversation-view'].ok);
-  }
-
-  /** Flip one session between its terminal and its conversation. */
-  private toggleChatMode(id: string): void {
-    const session = this.sessions.get(id);
-    if (!session || session.transport === 'stream') return;
-    if (this.chatMode.has(id)) {
-      this.chatMode.delete(id);
-    } else {
-      if (!this.capabilities?.[session.agent]['conversation-view'].ok) return;
-      this.chatMode.add(id);
-    }
-    // The same session in a different body: the grid must hand the slot its
-    // new element, and focus belongs in whichever view is now up.
-    this.focusKey = '';
-    this.render();
   }
 
   /**
@@ -2131,25 +2109,6 @@ export class App {
     }
     this.el.layoutButton.textContent = `${LAYOUT_GLYPH[this.layout]} ${layoutLabel(this.layout)}`;
     this.el.layoutButton.title = `Pane layout: ${layoutLabel(this.layout)}  (⌘⌥L)`;
-
-    // The view toggle reads the declared capability, so an agent that keeps
-    // no transcript says why instead of offering a button that does nothing.
-    const conv = active
-      ? this.capabilities?.[active.agent]['conversation-view']
-      : undefined;
-    const inChat = active ? this.showsChat(active.id) : false;
-    const streamOnly = active?.transport === 'stream';
-    this.el.paneView.textContent = inChat ? 'Terminal' : 'Chat';
-    this.el.paneView.disabled = !active || streamOnly || !conv?.ok;
-    this.el.paneView.title = !active
-      ? 'No session in this pane'
-      : streamOnly
-        ? 'This session is a conversation — it has no terminal.'
-        : conv && !conv.ok
-          ? conv.reason
-          : inChat
-            ? 'Show the live terminal'
-            : 'Show the conversation, read from the agent’s own transcript';
 
     // Ends the process and keeps the row, exactly as Session > Stop Session
     // and the row menu do. Enabled only while there is a process to end, so

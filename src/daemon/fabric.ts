@@ -88,7 +88,7 @@ export interface FabricSettings {
 export interface Fabric {
   start(): Promise<void>;
   /** Kill every session and stop every adapter. The daemon's own quit. */
-  shutdown(): void;
+  shutdown(): Promise<void>;
   handle(method: string, params: unknown): unknown;
   onEvent(cb: (name: string, payload: unknown) => void): void;
 }
@@ -809,7 +809,29 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       startMetaPolling();
     },
 
-    shutdown() {
+    async shutdown() {
+      // Background sessions Sertum created live under Claude's own daemon,
+      // so killing their attach PTYs is only a detach. A complete Sertum
+      // shutdown explicitly stops those owned background agents as well.
+      const backgroundStops = ptys.list()
+        .filter((session) => session.background && session.agent === 'claude')
+        .map(async (session) => {
+          const backgroundId = session.args[1] ?? session.externalId;
+          if (!backgroundId) return;
+          try {
+            await runClaude(
+              session.command,
+              ['stop', backgroundId],
+              session.cwd,
+            );
+          } catch (err) {
+            console.error(
+              `[sertumd] could not stop background session ${backgroundId}:`,
+              err,
+            );
+          }
+        });
+      await Promise.all(backgroundStops);
       if (metaTimer) clearInterval(metaTimer);
       if (monitorTimer) clearInterval(monitorTimer);
       ptys.disposeAll();

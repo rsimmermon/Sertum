@@ -113,7 +113,7 @@ async function handleFrame(client: Client, line: string): Promise<void> {
   if (method === 'daemon/stop') {
     send(client, { t: 'res', id, ok: true, result: null });
     console.log('[sertumd] stop requested; shutting down');
-    stop(0);
+    void stop(0);
     return;
   }
   if (method === 'daemon/ping') {
@@ -147,10 +147,10 @@ async function handleFrame(client: Client, line: string): Promise<void> {
  */
 const QUIT_DRAIN_MS = 250;
 let stopping = false;
-function stop(code: number): void {
+async function stop(code: number): Promise<void> {
   if (stopping) return;
   stopping = true;
-  fabric.shutdown();
+  await fabric.shutdown();
   try {
     fs.unlinkSync(daemonStateFile());
   } catch {
@@ -161,7 +161,7 @@ function stop(code: number): void {
 }
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.on(signal, () => stop(0));
+  process.on(signal, () => void stop(0));
 }
 
 const endpoint = daemonEndpoint();

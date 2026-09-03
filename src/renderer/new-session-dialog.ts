@@ -2,6 +2,7 @@ import type {
   AgentCapabilities,
   AgentKind,
   DirectoryInfo,
+  ManagedAgent,
   SessionSnapshot,
 } from '../shared/types';
 import { openAgentPicker } from './agent-picker';
@@ -40,6 +41,8 @@ export interface NewSessionOptions {
   startCwd: string;
   /** Declared adapter answers, used to show only supported controls. */
   capabilities: Record<AgentKind, AgentCapabilities> | null;
+  /** Persistent per-agent background-host defaults from Settings > Agents. */
+  agentBackground: Record<ManagedAgent, boolean>;
   /**
    * Seeds the name field and counts as user-edited, so the folder-derived
    * suggestion does not overwrite it.
@@ -57,8 +60,14 @@ export interface NewSessionOptions {
 export function openNewSessionDialog(
   opts: NewSessionOptions,
 ): Promise<SessionSnapshot | null> {
-  const { capabilities, startCwd, presetLabel, presetIsolation, presetAgent } =
-    opts;
+  const {
+    capabilities,
+    agentBackground,
+    startCwd,
+    presetLabel,
+    presetIsolation,
+    presetAgent,
+  } = opts;
   return new Promise((resolve) => {
     let agent: AgentKind =
       presetAgent ??
@@ -68,8 +77,11 @@ export function openNewSessionDialog(
     let info: DirectoryInfo | null = null;
     let labelEdited = Boolean(presetLabel);
     let remoteControl = false;
-    let conversation = false;
-    let background = false;
+
+    const usesBackgroundHost = (): boolean =>
+      agent !== 'shell' &&
+      agentBackground[agent] &&
+      capabilities?.[agent]['background-host'].ok === true;
 
     const overlay = el('div', 'overlay');
     const dlg = el('div', 'dialog');
@@ -141,8 +153,6 @@ export function openNewSessionDialog(
         if (!picked || picked === agent) return;
         agent = picked;
         drawAgent();
-        syncConversation();
-        syncBackground();
         syncRemoteControl();
         if (!labelEdited) labelInput.value = suggestLabel();
       });
@@ -178,13 +188,11 @@ export function openNewSessionDialog(
     };
 
     function syncRemoteControl(): void {
-      // A conversation session is headless — there is no interactive session
-      // to publish — and publishing a daemon-hosted one is unverified, so
-      // the choices are exclusive rather than silently combined.
+      // A structured chat session is headless — there is no interactive
+      // session to publish — and publishing a daemon-hosted one is unverified.
       const supported =
         capabilities?.[agent]['remote-control'].ok === true &&
-        !conversation &&
-        !background;
+        !usesBackgroundHost();
       remoteWrap.hidden = !supported;
       if (!supported) {
         remoteBox.checked = false;
@@ -192,69 +200,6 @@ export function openNewSessionDialog(
       }
     }
     syncRemoteControl();
-
-    // --- conversation session (stage 2 of BROKER-HANDOFF.md) ---------------
-    // Opt-in per session: the agent runs over its structured chat protocol
-    // with no terminal at all. Offered only where the adapter declared it.
-    const convWrap = el('label', 'remote-control-check');
-    const convBox = document.createElement('input');
-    convBox.type = 'checkbox';
-    const convCopy = el('span', 'remote-control-copy');
-    const convTitle = el('span', 'remote-control-title');
-    convTitle.textContent = 'Conversation session';
-    const convNote = el('span', 'remote-control-note');
-    convNote.textContent =
-      'Chat only, no terminal. The agent runs headless over its own structured protocol; slash commands and its terminal UI are not available.';
-    convCopy.append(convTitle, convNote);
-    convWrap.append(convBox, convCopy);
-    convBox.onchange = () => {
-      conversation = convBox.checked;
-      syncBackground();
-      syncRemoteControl();
-    };
-
-    function syncConversation(): void {
-      const supported =
-        capabilities?.[agent]['structured-conversation'].ok === true &&
-        !background;
-      convWrap.hidden = !supported;
-      if (!supported) {
-        convBox.checked = false;
-        conversation = false;
-      }
-    }
-    syncConversation();
-
-    // --- background hosting (stage 3 first cut) ----------------------------
-    // The agent's own daemon owns the session; the terminal here is an
-    // attach client, so closing Sertum leaves the agent running.
-    const bgWrap = el('label', 'remote-control-check');
-    const bgBox = document.createElement('input');
-    bgBox.type = 'checkbox';
-    const bgCopy = el('span', 'remote-control-copy');
-    const bgTitle = el('span', 'remote-control-title');
-    bgTitle.textContent = 'Keep running after Sertum closes';
-    const bgNote = el('span', 'remote-control-note');
-    bgNote.textContent =
-      'Hosted by the agent’s own daemon. Closing this tab or quitting Sertum only detaches; reattach later from Import sessions.';
-    bgCopy.append(bgTitle, bgNote);
-    bgWrap.append(bgBox, bgCopy);
-    bgBox.onchange = () => {
-      background = bgBox.checked;
-      syncConversation();
-      syncRemoteControl();
-    };
-
-    function syncBackground(): void {
-      const supported =
-        capabilities?.[agent]['background-host'].ok === true && !conversation;
-      bgWrap.hidden = !supported;
-      if (!supported) {
-        bgBox.checked = false;
-        background = false;
-      }
-    }
-    syncBackground();
 
     // --- isolation (C1) ----------------------------------------------------
     // Defaults to the plain checkout. The wireframe draws New worktree
@@ -331,8 +276,6 @@ export function openNewSessionDialog(
       recentsWrap,
       labelEl('AGENT'),
       agentButton,
-      convWrap,
-      bgWrap,
       remoteWrap,
       labelEl('ISOLATION'),
       isoSeg,
@@ -498,12 +441,23 @@ export function openNewSessionDialog(
 
       let snapshot: SessionSnapshot;
       try {
+        const background = usesBackgroundHost();
         snapshot = await api.createSession({
           agent,
           label: labelInput.value.trim() || suggestLabel(),
           cwd: chosen,
           args: AGENT_ARGS[agent],
-          transport: conversation ? 'stream' : 'pty',
+          // Chat is the product surface for every agent. Prefer a real
+          // structured transport where the adapter has one; otherwise keep
+          // the agent's PTY underneath its transcript-backed chat view.
+          // Shell alone remains a visible terminal.
+          transport:
+            agent !== 'shell' &&
+            capabilities?.[agent]['structured-conversation'].ok === true &&
+            !background &&
+            !remoteControl
+              ? 'stream'
+              : 'pty',
           background,
           remoteControl,
         });

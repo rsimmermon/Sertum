@@ -65,7 +65,9 @@ function sanitizeSplits(
 function sanitize(raw: Partial<Settings>, base: Settings): Settings {
   const placement = raw.tabPlacement;
   const layout = raw.paneLayout as PaneLayout | undefined;
+  const settingsVersion = raw.settingsVersion === 1 ? 1 : 0;
   return {
+    settingsVersion: 1,
     tabPlacement:
       placement === 'side' || placement === 'top' || placement === 'both'
         ? placement
@@ -88,6 +90,11 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
       claude: sanitizeBinaryPath(raw.agentBinaryPaths?.claude, base.agentBinaryPaths.claude),
       codex: sanitizeBinaryPath(raw.agentBinaryPaths?.codex, base.agentBinaryPaths.codex),
       grok: sanitizeBinaryPath(raw.agentBinaryPaths?.grok, base.agentBinaryPaths.grok),
+    },
+    agentBackground: {
+      claude: bool(raw.agentBackground?.claude, base.agentBackground.claude),
+      codex: bool(raw.agentBackground?.codex, base.agentBackground.codex),
+      grok: bool(raw.agentBackground?.grok, base.agentBackground.grok),
     },
     terminalFontFamily:
       typeof raw.terminalFontFamily === 'string'
@@ -131,7 +138,13 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
     approvalsInApp: bool(raw.approvalsInApp, base.approvalsInApp),
     notifyNeedsInput: bool(raw.notifyNeedsInput, base.notifyNeedsInput),
     notifyFailed: bool(raw.notifyFailed, base.notifyFailed),
-    notifyFinished: bool(raw.notifyFinished, base.notifyFinished),
+    // Version 0 used `false` as the default. The tray companion makes turn
+    // completion a core background signal, so migrate legacy files once.
+    // Once version 1 is persisted, an explicit switch back off is respected.
+    notifyFinished:
+      settingsVersion === 0
+        ? true
+        : bool(raw.notifyFinished, base.notifyFinished),
     // Only the thresholds E5 offers; 0 is "never".
     notifyLongTurnMinutes: [0, 5, 10, 30].includes(
       raw.notifyLongTurnMinutes as number,

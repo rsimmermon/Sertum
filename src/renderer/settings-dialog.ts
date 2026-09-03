@@ -1,6 +1,8 @@
 import {
   DEFAULT_SETTINGS,
   SCROLLBACK_CHOICES,
+  type AgentCapabilities,
+  type AgentKind,
   type Keybinding,
   type ManagedAgent,
   type PermissionRule,
@@ -29,6 +31,7 @@ const api = window.sertum;
 export function openSettingsDialog(
   current: Settings,
   onPreview: (s: Settings) => void,
+  capabilities: Record<AgentKind, AgentCapabilities> | null,
   muted: { list: () => Array<{ id: string; label: string }>; unmute: (id: string) => void } = {
     list: () => [],
     unmute: () => undefined,
@@ -197,10 +200,34 @@ export function openSettingsDialog(
           }
         });
 
-        const row = el('div', 'row');
+        const row = el('div', 'row agent-path-row');
         row.append(pathInput, browse, detect);
         const stack = el('div', 'setting-stack');
         stack.append(row, status);
+
+        const background = capabilities?.[a.key]['background-host'];
+        if (background?.ok) {
+          const copy = el('div', 'agent-default-copy');
+          copy.append(
+            text('div', 'Keep running after Sertum closes', 'agent-default-name'),
+            text(
+              'div',
+              'New sessions detach on close; import one later to reconnect.',
+              'setting-hint',
+            ),
+          );
+          const preference = el('div', 'agent-default');
+          preference.append(
+            copy,
+            checkbox(working.agentBackground[a.key], (v) => apply({
+              agentBackground: {
+                ...working.agentBackground,
+                [a.key]: v,
+              },
+            })),
+          );
+          stack.append(preference);
+        }
         pane.append(field(a.label, stack, 'Leave blank to auto-detect.', true));
       }
 
@@ -210,7 +237,7 @@ export function openSettingsDialog(
           'Answer permission requests in Sertum',
           working.approvalsInApp,
           (v) => apply({ approvalsInApp: v }),
-          'Shows an approval bar above the terminal. The agent’s turn waits ' +
+          'Shows an approval bar above the session. The agent’s turn waits ' +
             'for you, and falls back to its own prompt after two minutes.',
         ),
       );

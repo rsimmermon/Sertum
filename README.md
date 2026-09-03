@@ -3,9 +3,11 @@
 One window for every coding agent you have running.
 
 Sertum is a desktop app for managing Claude Code, Codex, and Grok sessions across
-different projects and Git worktrees. Every session gets a real embedded
-terminal, while agent events provide reliable at-a-glance status such as
-working, idle, or waiting for input.
+different projects and Git worktrees. Coding agents use a conversation UI;
+where an agent still requires a terminal protocol, Sertum keeps that PTY
+underneath as an implementation detail. Shell sessions remain real embedded
+terminals. Agent events provide reliable at-a-glance status such as working,
+idle, or waiting for input.
 
 ![Sertum social preview](assets/github-social.png)
 
@@ -15,7 +17,7 @@ working, idle, or waiting for input.
 - Keep sessions organized by project, folder, and worktree.
 - See which agents are working or need attention without reading terminal
   output heuristically.
-- Split the window into two or four panes, each sized to its own terminal.
+- Split the window into two or four independently sized panes.
 - Review changed files, read per-file diffs, then commit and open a pull
   request without leaving the app.
 - Approve or refuse a Claude tool call from a bar above the terminal, and turn
@@ -72,11 +74,14 @@ The Electron Forge startup process rebuilds native dependencies such as
 4. Choose Claude Code, Codex, or Grok.
 5. Select the desired isolation option. Use the existing folder for ordinary
    work, or create a worktree when the task should be isolated.
-6. Start the session and interact with the agent in its embedded terminal.
+6. Start the session and interact with the agent in its chat pane. Plain Shell
+   sessions open as embedded terminals.
 
 Sertum resolves installed agent binaries automatically. If an agent is not
 found, open **Settings > Agents & permissions** to detect it again or select its executable
-manually.
+manually. Agents that support their own background host also expose a
+per-agent **Keep running after Sertum closes** default there; it applies to new
+sessions and is off by default.
 
 ## Useful commands
 
@@ -93,7 +98,7 @@ error.
 
 ## Current scope
 
-Working: terminal sessions and live status for Claude Code, Codex, and Grok,
+Working: chat sessions and live status for Claude Code, Codex, and Grok,
 external session discovery, binary configuration, worktree management,
 split-pane layouts, diff review with commit and pull request, permission rules
 and in-app tool approval, system notifications, and settings.

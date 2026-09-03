@@ -189,6 +189,13 @@ export type ChatItem =
   | { kind: 'message'; role: 'user' | 'assistant'; text: string; at: number | null }
   | { kind: 'thinking'; text: string; at: number | null }
   | {
+      kind: 'image';
+      /** Agent-produced data URL from a structured tool result. */
+      src: string;
+      alt: string;
+      at: number | null;
+    }
+  | {
       kind: 'tool';
       name: string;
       /** The part of the input a person would read: a command, a path. */
@@ -270,6 +277,8 @@ export interface AdapterStatus {
  * of that, so the renderer states the conclusions rather than the inputs.
  */
 export interface MenuState {
+  /** An in-app dialog owns the window; outside commands must not act. */
+  modalOpen: boolean;
   /** Sessions that exist. */
   count: number;
   /** A session is focused, so the per-session commands have a target. */
@@ -668,6 +677,8 @@ export interface PaneSplits {
 }
 
 export interface Settings {
+  /** Persisted schema version for one-time preference-default migrations. */
+  settingsVersion: number;
   tabPlacement: TabPlacement;
   /** Pane layout, remembered until changed (design G4). */
   paneLayout: PaneLayout;
@@ -687,6 +698,8 @@ export interface Settings {
    * to, not a sentinel some other part of the app has to know about.
    */
   agentBinaryPaths: Record<ManagedAgent, string>;
+  /** Start supported agents in their own host so closing Sertum detaches. */
+  agentBackground: Record<ManagedAgent, boolean>;
 
   // ------------------------------------------------- E3 · Terminal
   /** Empty means the stylesheet's own mono stack, not a hardcoded family. */
@@ -764,6 +777,7 @@ export type AccentColour = 'blue' | 'violet' | 'green' | 'amber';
 export const SCROLLBACK_CHOICES = [1000, 5000, 10_000, 50_000, 100_000];
 
 export const DEFAULT_SETTINGS: Settings = {
+  settingsVersion: 1,
   tabPlacement: 'side',
   paneLayout: 'single',
   paneSplits: { columns: 0.5, rows: 0.5, gridCol: 0.5, gridRow: 0.5 },
@@ -774,6 +788,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarWidth: 280,
   showChips: true,
   agentBinaryPaths: { claude: '', codex: '', grok: '' },
+  agentBackground: { claude: false, codex: false, grok: false },
   terminalFontFamily: '',
   terminalLineHeight: 1.2,
   terminalCursorStyle: 'block-blink',
@@ -785,7 +800,7 @@ export const DEFAULT_SETTINGS: Settings = {
   approvalsInApp: true,
   notifyNeedsInput: true,
   notifyFailed: true,
-  notifyFinished: false,
+  notifyFinished: true,
   notifyLongTurnMinutes: 0,
   notifyOnlyWhenUnfocused: true,
   notifySound: false,

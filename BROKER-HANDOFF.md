@@ -14,7 +14,7 @@ and Grok transcripts. Conversation sessions exist for Claude -- a `stream`
 transport carried by a headless `--input-format stream-json` process, with
 hooks (and therefore permission rules, the tool gate, steer and interrupt)
 verified working in print mode. And sessions can now outlive the window
-through Claude's own daemon: a C1 toggle starts them with `--bg`, Sertum
+through Claude's own daemon: a persistent Agents setting starts them with `--bg`, Sertum
 holds only an attach client, and a session was verified surviving Sertum
 being force-killed, then reattached with terminal and history after
 relaunch. `AGENTS.md` ("The conversation view", "Conversation sessions",
@@ -34,10 +34,18 @@ frames, not an extension of the hook server -- the hook server moved into
 the daemon whole instead. `AGENTS.md` ("The daemon: sertumd") has the
 details, including what the GUI deliberately keeps.
 
+**Current product direction: chat is no longer optional.** Claude, Codex and
+Grok always render through the conversation surface; Shell alone exposes its
+PTY. C1 chooses the best declared transport automatically (Claude stream-json,
+or a PTY underneath the transcript-backed chat where no structured input
+exists), and the Chat/Terminal view control has been removed.
+
 Still unbuilt: Codex conversation sessions (the capability declines with
-that reason), packaged-build daemon operation (the RunAsNode fuse is flipped
-and sertumd.js unpacked, but no `npm run make` has exercised either), and
-stage 4 -- which now has the local protocol it was waiting on. Of section
+that reason), the clean-start/reconnect half of the installed-build daemon
+smoke test (the packaged Windows executable now loads the verified unpacked
+daemon entry under RunAsNode, but a live shell session prevented replacing the
+existing daemon), and stage 4 -- which now has the local protocol it was
+waiting on. Of section
 8's remaining questions: a PTY composer accepts a bracketed paste with a
 separately-delivered CR (a single burst is swallowed); Claude's stream-json
 input accepts text content blocks (images unprobed); a `--bg` session costs

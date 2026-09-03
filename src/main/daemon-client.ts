@@ -224,8 +224,8 @@ export class DaemonClient extends EventEmitter {
  * Where this build's sertumd.js lives: next to the built main.js. In a
  * packaged app that directory sits inside app.asar, which a Node process
  * cannot read — the packaged path swaps in the unpacked copy that
- * forge.config.ts's asar.unpack carries. Packaged operation is untested so
- * far; dev is verified.
+ * forge.config.ts's asar.unpack carries. The package hook verifies that copy
+ * and the RunAsNode fuse; a packaged daemon load is verified on Windows.
  */
 export function daemonScriptPath(): string {
   return path

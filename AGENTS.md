@@ -24,8 +24,9 @@ When changing the project:
 One window for every coding agent you have running.
 
 A desktop GUI that manages multiple AI coding agents — Claude Code, Codex and
-Grok — across separate working folders and git worktrees, with a live embedded
-terminal per session and status you can trust at a glance.
+Grok — across separate working folders and git worktrees, with a chat surface
+per agent session, a live terminal for Shell, and status you can trust at a
+glance. Agents without structured input retain a PTY underneath chat.
 
 Design source of truth: `SertumDesigns.pen`, tracked at the repo root and
 opened with pen.dev. The wireframe ids in code comments (`B3`, `C1`, …) are
@@ -109,19 +110,21 @@ What's built and verified so far:
       focus moves spatially, and a session dropped on a pane moves rather
       than duplicates. See "Pane layouts" below.
 - [x] **Conversation view** — stage 1 of the chat direction recorded in
-      `BROKER-HANDOFF.md`: any session can be shown as a conversation read
+      `BROKER-HANDOFF.md`: every agent session is shown as a conversation read
       from the agent's own transcript, with a composer that writes to the
-      PTY. Works for monitored sessions too, read-only. Declared as the
-      `conversation-view` capability; a shell declines. See "The
+      PTY where required. Works for monitored sessions too, read-only. Declared
+      as the `conversation-view` capability; a shell declines and remains a
+      terminal. See "The
       conversation view" below.
-- [x] **Conversation sessions** — stage 2: a session *type* with no terminal
+- [x] **Conversation sessions** — stage 2: the preferred transport has no terminal
       at all, carried over Claude's stream-json protocol by a headless
       process. Same sidebar, same status vocabulary, same permission rules
       and hooks as a terminal session; the chat view is the whole surface.
       Declared as `structured-conversation`; Codex, Grok and shell decline
-      with reasons. See "Conversation sessions" below.
+      with reasons and therefore retain PTYs underneath (visible only for
+      Shell). See "Conversation sessions" below.
 - [x] **Sessions that outlive the window** — the first cut of stage 3,
-      Claude-only by design: a C1 toggle starts the session under Claude's
+      Claude-only by design: an Agents setting makes new sessions start under Claude's
       own daemon (`--bg`), Sertum shows an attach client, and closing the
       tab or quitting the app only detaches. Verified: the session survived
       Sertum being force-killed and was reattached — terminal and
@@ -136,6 +139,11 @@ What's built and verified so far:
       reopened window lists them and repaints their terminals from the
       daemon's replay buffer. Verified end to end on Windows, including a
       force-killed GUI. See "The daemon: sertumd" below.
+- [x] **System tray companion** — starting Sertum creates a tray/menu-bar icon
+      on Windows, Linux and macOS. Closing the window hides the UI while the
+      tray continues to show truth-plane session state and deliver
+      notifications; sessions can be opened or ended there. “Quit Sertum
+      completely…” stops sertumd and every session it owns.
 
 ## How status actually works
 
@@ -366,11 +374,12 @@ turns; Grok's event log is read-only and shell has no agent policy to gate.
 ## The conversation view
 
 Stage 1 of `BROKER-HANDOFF.md`: plane 2 widened from status to content,
-without a new channel. The Chat button in the pane header (or "Show as
-conversation" in the row menu) swaps a session's terminal for a transcript
-rendered as a conversation — user and assistant messages, collapsed thinking,
-and tool calls paired with their results. The terminal keeps running
-underneath, still collecting the PTY's bytes, so toggling costs nothing.
+without a new channel. Every Claude, Codex and Grok pane renders the transcript
+as a conversation — user and assistant messages, collapsed thinking, and tool
+calls paired with their results. When the adapter still needs a PTY, it keeps
+running underneath and collecting bytes, but there is no terminal/chat choice
+in the product UI. Shell declines the conversation capability and remains a
+normal terminal.
 
 What it reads is each agent's own transcript on disk, through
 `main/adapters/conversation.ts` — the same class of source as a hook payload,
@@ -383,7 +392,10 @@ marking what is not conversation), Codex's `response_item` payloads
 `tool_result` paired by `tool_call_id`. Injected context is skipped by its
 tag opener, never by a blanket "starts with `<`", so pasted XML still shows.
 Prose renders as plain text on purpose — inventing formatting the agent did
-not send is the same class of mistake as inventing a commit message.
+not send is the same class of mistake as inventing a commit message. Explicit
+TeX spans (`\[...\]` and `\(...\)`) are the narrow exception: KaTeX typesets
+only their contents with trust disabled, while all surrounding transcript
+content remains text nodes rather than injectable HTML.
 
 The renderer polls `conversation:read` once a second while the view is on
 screen, for the reasons Grok's event log established: the file may not exist
@@ -391,6 +403,21 @@ yet, watch semantics differ by platform, and one update per batch is the
 point. Transcript resolution reuses `transcriptFor`, so a Claude session is
 only ever matched exactly and a shell never inherits another agent's
 transcript.
+
+Conversation reads keep complete transcripts up to a 32MB safety ceiling and
+cache the parsed snapshot by file size and mtime. A fixed 512KB tail was not a
+complete-turn boundary: one image-generation result embeds a multi-megabyte
+data URL in a single JSONL record and pushed the user's prompt, tool call and
+earlier conversation out of view. Structured `data:image/*` fields in tool
+results now become `image` chat items and render as bounded previews; ordinary
+prose is never interpreted as an image URL. Beyond the ceiling, the tail and
+its truncation notice remain the honest bounded fallback.
+
+Conversation content opts back into native text selection (`user-select:
+text`) beneath the app-wide chrome rule that prevents accidental interface
+selection. The selection tint uses the active accent, so copied text is
+visibly selected in both themes; composer controls remain outside that
+transcript selection surface.
 
 Input still goes to the PTY, and the byte sequence matters. The composer
 sends the body as a bracketed paste and the final CR **separately, a beat
@@ -401,6 +428,21 @@ message sitting unsent in its composer. A single line goes as one plain
 write, verified, which keeps the common case free of paste markers for any
 agent that never enabled bracketed paste.
 
+The delayed Enter boundary applies to single-line PTY messages too. Codex
+0.153.0 visibly accepted a one-write `text + CR` into its composer but did not
+submit it, leaving plane 2 at the startup `turn finished` state and writing no
+transcript. The body is now one write (bracketed only when multiline) and CR
+is always a second write 150ms later.
+
+The composer also carries a Stop button beside Send. It calls the declared
+`turn-interrupt` capability and is enabled only while plane 2 says a turn is
+active; it never writes Ctrl+C or Escape into the PTY. Before the transcript
+has conversational content, the pane renders a Sertum-owned welcome card from
+the session's real identity, cwd and model metadata. Agent startup protocols
+(Claude's `system/init` included) report readiness and identity but do not send
+the terminal's welcome banner as an assistant message, and the banner is not
+parsed from terminal pixels.
+
 `conversation-view` is a declared capability: Claude, Codex and Grok answer
 ok (Grok's read-only event plane is exactly what a read-only view asks for);
 a shell declines with its reason on the disabled button. Monitored sessions
@@ -410,22 +452,22 @@ composer disabled and saying where input actually lives. This is the part of
 an adopted session that genuinely can live here, so selecting a monitored
 row no longer jumps to its owning window while its conversation is up.
 
-What stage 1 deliberately does not do: no markdown rendering, no synthetic
+What stage 1 deliberately does not do: no general markdown rendering, no synthetic
 "pending" messages (a sent message is acknowledged under the composer until
 the agent records it), and no structured input channel — that is stage 2,
 below.
 
 ## Conversation sessions
 
-Stage 2 of `BROKER-HANDOFF.md`: a session whose transport is a structured
+Stage 2 of `BROKER-HANDOFF.md`: an agent whose transport is a structured
 stream rather than a PTY. `SessionSpec.transport` is `'pty' | 'stream'`, and
-a stream session has no terminal — not hidden, nonexistent — so the
-conversation view is its whole surface and the Chat/Terminal toggle says so
-instead of offering a terminal that isn't there. C1 offers it as an opt-in
-"Conversation session" toggle, shown only for an agent whose adapter
-declares `structured-conversation`: Claude answers ok; Codex declines (its
-sessions still live in the TUI, the app server supplying status
-out-of-band); Grok declines (no input channel); a shell declines.
+a stream session has no terminal — not hidden, nonexistent. C1 no longer asks
+the user to choose a transport: Claude declares `structured-conversation` and
+therefore starts as a stream unless Remote Control or background hosting needs
+its interactive process; the surface remains chat either way. Codex declines (its sessions still live in the
+TUI, the app server supplying status out-of-band); Grok declines (no input
+channel). Those agents retain PTYs beneath the same chat UI. A shell declines
+and is the one session kind whose PTY is shown.
 
 The Claude implementation, all verified against Claude Code 2.1.252:
 
@@ -458,10 +500,10 @@ The Claude implementation, all verified against Claude Code 2.1.252:
   the sidebar treat both transports identically. The manager never learns
   the chat protocol; the host never learns bookkeeping.
 
-What a stream session gives up is what the TUI was carrying: slash
-commands, plan mode, Claude's own diff and todo rendering. The C1 toggle
-copy says so. That inventory is why stage 2 is a session type alongside
-terminal sessions, not a migration of them.
+What a stream session gives up is what the TUI was carrying: slash commands,
+plan mode, Claude's own diff and todo rendering. This is now the deliberate
+Claude default; adapters without a verified structured transport retain their
+PTY instead of being forced through a fictional chat protocol.
 
 ## Sessions that outlive the window
 
@@ -470,11 +512,13 @@ and its first cut is deliberately uneven: Claude already solves background
 hosting for itself, so Sertum uses Claude's daemon before any Sertum daemon
 exists. The unevenness is declared, not hidden — `background-host` is a
 capability Claude answers ok and Codex (daemon Unix-only in this release,
-unadopted), Grok (no daemon) and shell decline with reasons the C1 toggle
-reads.
+unadopted), Grok (no daemon) and shell decline. Agents & permissions shows the
+persistent default only for an adapter that answered ok, so unsupported agents
+do not each consume a dead settings row.
 
-The flow, verified end to end on Windows: C1's "Keep running after Sertum
-closes" runs `claude --bg -n <label>`, which returns immediately and prints
+The flow, verified end to end on Windows: the per-agent "Keep running after
+Sertum closes" setting makes new Claude sessions run `claude --bg -n <label>`,
+which returns immediately and prints
 the id that `attach`, `logs`, `stop` and `rm` take (`--bg` manages its own
 session id — a passed `--session-id` is ignored with a warning, so the
 printed id plus one `claude agents --json` lookup is the binding). Sertum
@@ -550,6 +594,15 @@ follows it — each byte drawn exactly once, verified against a force-killed
 and relaunched GUI whose terminal came back mid-conversation and kept
 working.
 
+Replay is output-only even though xterm normally has a bidirectional terminal
+protocol. Historical output can contain device-attributes queries such as
+`CSI c`; replaying one makes xterm emit its `CSI ? 1 ; 2 c` answer through
+`onData`. Forwarding that answer into the live PTY injected visible
+`[?1;2c` prefixes into the agent's next prompt. `TerminalPane.replay` now
+suppresses xterm-generated input until the replay write callback proves all
+historical bytes were parsed, queues live output arriving during that window,
+then resumes the ordinary bidirectional path.
+
 **What the GUI keeps, and why.** Notifications stay beside the window they
 gate on, and mute stays with them: the daemon never learns who is muted, the
 GUI stamps it on each `session:updated` it forwards. Settings storage stays
@@ -558,24 +611,45 @@ in userData with the GUI; the fabric receives only the slice it acts on
 Permission rules moved wholesale — the daemon evaluates them at the hook
 boundary, so it owns the store, and E2 edits through proxies.
 
-**Quit means less now.** The GUI's quit is a socket disconnect; the
-quit-drain dance (`QUIT_DRAIN_MS`) and the node-pty teardown crash it dodged
-moved to the daemon, the process that actually owns the PTYs. The one
-deliberate way to end everything is "Shut down agent daemon…" in the
-command palette: it kills every session and the daemon — while the GUI
-stays open, its reconnect loop then starts a fresh empty daemon, which the
-confirm dialog says out loud. Claude `--bg` sessions survive even that,
-because they answer to Claude's daemon, not ours.
+**Window close and full quit are deliberately different.** Closing the GUI
+window is a detach: the Electron tray process stays connected and the daemon
+keeps every session alive. The quit-drain dance (`QUIT_DRAIN_MS`) and the
+node-pty teardown crash it dodged live in the daemon, the process that owns
+the PTYs. “Quit Sertum completely…” in the tray and application menus first
+requests `daemon/stop`, then exits the tray process. “Shut down agent
+daemon…” in the command palette remains useful while the window is open: it
+kills the daemon-owned sessions and reconnects to a fresh empty daemon.
+Claude `--bg` sessions created by Sertum are explicitly stopped through
+Claude's own daemon during the complete shutdown; merely imported attached
+and monitored rows are labelled Detach in the tray rather than claiming that
+Sertum can end an externally owned agent.
+
+**The tray is the persistent GUI surface.** The Electron process stays alive
+when its last window is closed and owns a cross-platform tray/menu-bar icon.
+It holds Electron's single-instance lock, so launching Sertum again reveals
+the existing window instead of creating a duplicate tray and notification
+client.
+Its menu is rebuilt from the GUI's daemon-fed `SessionSnapshot` mirror, so its
+status labels come only from adapter events and process lifecycle — never PTY
+pixels. It can reveal a session, end an owned session, or detach an externally
+hosted one. Reopening recreates or shows the same disposable window. The
+explicit “Quit Sertum completely…” action first requests `daemon/stop`, which
+drains all daemon-owned sessions, and only then exits the tray process.
 
 **What is deliberately not solved yet.** Session restore in the *renderer*
 sense (which panes held what) is unchanged — the daemon restores existence
 and scrollback, not layout occupancy. The daemon dying takes every session
 with it, possibly with no window up to notice — same class of problem as
 `watchForProcessDeath`, now out of sight; the GUI logs the loss and
-reconnects, and the log file is the trail. Packaged builds are untested:
-the `RunAsNode` fuse is now on (the standard price of hosting a daemon
-under the app's own binary — the trade VS Code ships with) and
-`sertumd.js` is asar-unpacked, but no `npm run make` has exercised either.
+reconnects, and the log file is the trail. Packaging now fails closed if the
+`RunAsNode` fuse is off or the asar-unpacked `sertumd.js` is absent (the first
+real `npm run make` audit found that the old dot-directory glob silently
+omitted it). A Windows packaged executable has loaded the daemon bundle under
+RunAsNode and safely lost the listen race to the live daemon. A clean-start
+and GUI reconnect test remains; it was not forced while that daemon owned a
+live shell session. Run Forge under Node 20 LTS for now: with Node 26.7.0,
+Electron Packager 18.4.4 silently exits after beginning Electron archive
+extraction, before package finalization or maker artifacts.
 
 ## Adopting sessions started outside the app
 
@@ -957,8 +1031,16 @@ gates keep it honest, all verified against a driven sequence of snapshots:
   updates for any other reason does not notify again.
 - **Only when you are not looking.** With the window focused, the sidebar dot
   has already said it.
-- **Only states blocked on you.** `working` never notifies. `needs-input` and
-  a failure are on by default; a clean finish is off.
+- **Only meaningful terminal states.** `working` never notifies.
+  `needs-input`, a failure and a clean finish are on by default. A finished
+  turn is the truth-plane transition `working → idle`; `done` means the
+  session process itself exited. Finished notifications cover both — checking
+  only `done` silently omits ordinary completed answers while their agent
+  processes correctly remain ready for another turn.
+
+Settings schema version 1 migrates legacy files from the former
+`notifyFinished: false` default to true once. After version 1 is persisted,
+turning the preference off is an explicit choice and remains off.
 
 The long-turn threshold is a timer started on entering `working` and cleared
 on leaving it, so "at most once per turn" is a property of the construction
@@ -976,6 +1058,13 @@ Two platform facts shape the surface rather than being hidden:
   Snooze buttons cannot render on Windows or Linux, so snooze lives in the
   session row menu where every platform reaches it, and the notification body
   is the whole affordance -- clicking it focuses the window and that session.
+- **Windows development notifications use the tray balloon.** A toast emitted
+  by bare `electron.exe` can render, but it has no installed Start-menu
+  shortcut containing Sertum's app path; clicking it launches Electron's
+  default welcome window. `process.defaultApp` therefore selects
+  `Tray.displayBalloon`, whose click is delivered to the running Sertum
+  process. Packaged Windows builds retain normal Electron notifications
+  through Squirrel's shortcut and stable AppUserModelID.
 - **`app.setBadgeCount` is macOS and Linux only.** E5 says so next to the
   control instead of offering a switch that appears to work.
 
@@ -1147,6 +1236,10 @@ So a modal closes only through one of its own buttons. Neither a backdrop
 click nor Escape does anything, and the invariant that makes this safe is
 that **every modal carries a button that closes it** -- Cancel, Close or
 Done. Adding a modal means adding that button; there is no ambient way out.
+While one is present, the renderer also marks the native application menu
+modal: File, Session, View and Window are disabled and their dispatch path
+rejects commands. A DOM backdrop cannot otherwise stop Electron's menu bar,
+which let an action mutate the window behind the dialog.
 
 That invariant has teeth while a modal is waiting on something slow. C11,
 C16 and C9 each used to blank themselves to a bare "Reading changes…" line
@@ -1192,7 +1285,7 @@ its numeric mnemonic, so neither is offered for remapping.
 
 ## Pane layouts
 
-Design section 07. A window shows one terminal by default; splitting is opt-in
+Design section 07. A window shows one session pane by default; splitting is opt-in
 and per window. Tabs stay the session registry — a layout only decides how many
 of them are visible at once, so nothing about a split starts, stops or hides a
 session.
@@ -1361,7 +1454,33 @@ fixed along the way:
   needs no override. On macOS this was already patched for dev via
   `dev-app-name.js`, but nothing did the equivalent for the title bar and
   taskbar on Windows. Fixed by passing an explicit `icon:` to `BrowserWindow`
-  whenever `MAIN_WINDOW_VITE_DEV_SERVER_URL` is set (i.e., only in dev).
+  whenever `MAIN_WINDOW_VITE_DEV_SERVER_URL` is set (i.e., only in dev) --
+  which turns out to fix the title bar and *not* the taskbar, see below.
+- **The taskbar reads an id, not the window's icon.** The `icon:` override
+  above is genuinely applied -- verified by asking the live window for it
+  (`WM_GETICON`), which answers Sertum's mark in dev -- and the title bar draws
+  it. The taskbar button ignored it and went on showing Electron's atom,
+  because Windows resolves that button's icon through the window's Application
+  User Model ID, and with no explicit id the shell derives one from the host
+  executable, which in dev is `electron.exe`. `app.setAppUserModelId` in
+  `main.ts` claims an id of our own and the button falls back to the window
+  icon; verified by capturing the real taskbar before and after. The dev id
+  includes the main-process pid so Windows cannot reuse an `electron.exe`
+  icon cached for an older dev run; packaged identity remains stable.
+
+  Two details worth keeping. A packaged build needs none of this: its window
+  sets no icon at all (`WM_GETICON` answers 0) and both surfaces read the
+  executable's own resource, verified against `out/Sertum-win32-x64`. And the
+  id stays dev-only rather than being claimed everywhere, because Windows
+  matches a toast notification to the Start Menu shortcut bearing the sender's
+  id -- Squirrel installs one carrying `com.squirrel.Sertum.Sertum`, so
+  overriding the id in a packaged build would trade a taskbar icon that is
+  already correct for C20's notifications quietly not arriving.
+
+  Note that the taskbar is invisible to `Graphics.CopyFromScreen`, which
+  returns whatever window sits under it; `PrintWindow(hwnd, hdc, 2)` on
+  `Shell_TrayWnd` captures it for real. Two screenshots that showed no taskbar
+  at all read as a capture failure rather than as the wrong API.
 - **The Windows icon has its own tighter vector master.** The 88px transparent
   margin in `assets/icon.png` is intentional for macOS, but made the same mark
   visibly undersized in the Windows taskbar and reduced its 38px segments to

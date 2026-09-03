@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Notification } from 'electron';
+import { app, BrowserWindow, Notification, Tray } from 'electron';
 import type { SessionSnapshot, SessionStatus, Settings } from '../shared/types';
 
 /**
@@ -24,10 +24,12 @@ export class Notifier {
   private readonly snoozedUntil = new Map<string, number>();
   private readonly muted = new Set<string>();
   private readonly turnTimers = new Map<string, NodeJS.Timeout>();
+  private balloonClick: (() => void) | null = null;
 
   constructor(
     private readonly window: () => BrowserWindow | null,
     private readonly settings: () => Settings,
+    private readonly tray?: () => Tray | null,
   ) {}
 
   /**
@@ -42,10 +44,12 @@ export class Notifier {
     this.trackLongTurn(snapshot, previous);
 
     const settings = this.settings();
+    const turnFinished =
+      snapshot.status === 'idle' && previous === 'working';
     const wanted =
       (snapshot.status === 'needs-input' && settings.notifyNeedsInput) ||
       (snapshot.status === 'attention' && settings.notifyFailed) ||
-      (snapshot.status === 'done' && settings.notifyFinished);
+      ((snapshot.status === 'done' || turnFinished) && settings.notifyFinished);
     if (!wanted) return;
 
     this.fire(snapshot, headline(snapshot));
@@ -125,7 +129,6 @@ export class Notifier {
   }
 
   private fire(snapshot: SessionSnapshot, title: string): void {
-    if (!Notification.isSupported()) return;
     if (this.muted.has(snapshot.id)) return;
 
     const until = this.snoozedUntil.get(snapshot.id);
@@ -137,6 +140,33 @@ export class Notifier {
     const window = this.window();
     if (this.settings().notifyOnlyWhenUnfocused && window?.isFocused()) return;
 
+    // A Windows development build runs through bare electron.exe and has no
+    // installed Start-menu shortcut carrying a relaunch command. A toast can
+    // still render, but clicking it makes Windows launch electron.exe without
+    // the app path and shows Electron's default welcome window. A tray balloon
+    // delivers its click to this already-running process instead. Packaged
+    // builds keep normal toasts, attributed through Squirrel's shortcut.
+    if (process.platform === 'win32' && process.defaultApp) {
+      const tray = this.tray?.();
+      if (tray) {
+        if (this.balloonClick) tray.off('balloon-click', this.balloonClick);
+        this.balloonClick = () => {
+          this.balloonClick = null;
+          this.reveal(snapshot.id);
+        };
+        tray.once('balloon-click', this.balloonClick);
+        tray.displayBalloon({
+          title,
+          content: snapshot.activity || 'Open Sertum to view the session.',
+          iconType: 'info',
+          noSound: !this.settings().notifySound,
+        });
+        return;
+      }
+    }
+
+    if (!Notification.isSupported()) return;
+
     const notification = new Notification({
       title,
       body: snapshot.activity ?? '',
@@ -144,15 +174,17 @@ export class Notifier {
     });
 
     // C20 note 150: the body takes you to the session it is about.
-    notification.on('click', () => {
-      const target = this.window();
-      if (!target || target.isDestroyed()) return;
-      if (target.isMinimized()) target.restore();
-      target.show();
-      target.focus();
-      target.webContents.send('session:reveal', snapshot.id);
-    });
+    notification.on('click', () => this.reveal(snapshot.id));
     notification.show();
+  }
+
+  private reveal(sessionId: string): void {
+    const target = this.window();
+    if (!target || target.isDestroyed()) return;
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
+    target.webContents.send('session:reveal', sessionId);
   }
 }
 

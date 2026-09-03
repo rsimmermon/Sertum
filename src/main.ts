@@ -5,7 +5,9 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   shell,
+  Tray,
 } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
@@ -53,7 +55,36 @@ import type { PtySize, SessionSpec } from './shared/types';
 // and Forge writes correctly for packaged builds.
 app.setName('Sertum');
 
+// Windows resolves a taskbar button's icon through the window's Application
+// User Model ID rather than through the icon the window itself carries, and
+// with no explicit id the shell derives one from the host executable. In dev
+// that executable is electron.exe, so `npm start` put Electron's atom on the
+// taskbar while the title bar right beside it drew Sertum's mark from the
+// BrowserWindow icon below -- the same split the icon override was written to
+// fix, only half fixed. Claiming an id of our own detaches the button from
+// electron.exe's identity and sends the shell to the window icon instead.
+//
+// Dev only, like the icon override, and for a second reason: a packaged build
+// already shows the right taskbar icon (its own executable's), and Squirrel
+// installs a Start Menu shortcut carrying com.squirrel.Sertum.Sertum. Windows
+// matches a toast to the shortcut bearing the sender's id, so overriding the
+// id there would trade a taskbar icon that is already correct for
+// notifications that quietly stop arriving -- C20's whole surface.
+if (process.platform === 'win32' && MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+  // Keep the semantic id but make each dev run a fresh shell identity. The
+  // Windows icon cache is keyed by AppUserModelID and can retain electron.exe's
+  // atom after an Electron upgrade or an earlier launch that had no window
+  // icon. Packaged builds keep their stable Squirrel id for toast routing.
+  app.setAppUserModelId(`dev.sertum.app.dev.${process.pid}`);
+}
+
 if (started) app.quit();
+
+// A tray companion must have one owner. Launching Sertum while it is already
+// hidden in the tray raises that instance instead of creating a second icon
+// and a second notification client for the same daemon.
+const hasSingleInstanceLock = started || app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 // Opt-in remote debugging, so the app can be driven and verified headlessly
 // (CI, cross-platform smoke checks) without shipping a debug build.
@@ -134,6 +165,20 @@ ipcMain.handle('rules:remove', (_e, id: string) =>
 
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let traySignature = '';
+
+function showMainWindow(sessionId?: string): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  const win = mainWindow;
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (sessionId) win.webContents.send('session:reveal', sessionId);
+}
+
+app.on('second-instance', () => showMainWindow());
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
@@ -173,10 +218,130 @@ const createWindow = () => {
 
   watchForProcessDeath(mainWindow);
 
+  // Closing the surface is a detach from the UI, not an exit from Sertum.
+  // The tray remains the visible owner of the daemon and its notifications.
+  mainWindow.on('close', (event) => {
+    if (shuttingDown) return;
+    event.preventDefault();
+    mainWindow?.hide();
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 };
+
+function trayIconPath(): string {
+  return path.join(app.getAppPath(), 'assets', 'icon.png');
+}
+
+function statusLabel(status: SessionSnapshot['status']): string {
+  switch (status) {
+    case 'needs-input': return 'Needs input';
+    case 'working': return 'Working';
+    case 'attention': return 'Attention';
+    case 'done': return 'Finished';
+    case 'idle': return 'Idle';
+  }
+}
+
+function isLive(session: SessionSnapshot): boolean {
+  return session.exitCode === null && session.status !== 'done';
+}
+
+async function removeSessionFromTray(session: SessionSnapshot): Promise<void> {
+  const verb = session.origin === 'owned' ? 'End' : 'Detach';
+  const result = await dialog.showMessageBox({
+    type: 'warning',
+    title: `${verb} ${session.label}?`,
+    message: session.origin === 'owned'
+      ? `End “${session.label}” and remove it from Sertum?`
+      : `Detach “${session.label}” from Sertum? The externally hosted agent may keep running.`,
+    buttons: [verb, 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (result.response !== 0) return;
+  const gone = await daemon.request<boolean>('session/remove', session.id);
+  if (gone) {
+    sessionCache.delete(session.id);
+    refreshTray(true);
+  }
+}
+
+async function quitCompletely(): Promise<void> {
+  const live = [...sessionCache.values()].filter(isLive).length;
+  const result = await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Quit Sertum completely?',
+    message: live
+      ? `Quit Sertum and end ${live} running session${live === 1 ? '' : 's'}?`
+      : 'Quit Sertum and stop the agent daemon?',
+    detail: 'Closing the window keeps sessions running. This action stops sertumd and every session it owns.',
+    buttons: ['Quit completely', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (result.response !== 0) return;
+  shuttingDown = true;
+  try {
+    await daemon.request('daemon/stop');
+  } catch {
+    // A clean daemon shutdown can close the socket immediately after its ack.
+  }
+  app.quit();
+}
+
+function refreshTray(force = false): void {
+  if (!tray) return;
+  const sessions = [...sessionCache.values()]
+    .filter(isLive)
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const signature = sessions
+    .map((s) => `${s.id}:${s.label}:${s.status}:${s.activity ?? ''}`)
+    .join('|');
+  if (!force && signature === traySignature) return;
+  traySignature = signature;
+
+  const sessionItems: Electron.MenuItemConstructorOptions[] = sessions.length
+    ? sessions.map((session) => ({
+        label: `${session.label} — ${statusLabel(session.status)}`,
+        submenu: [
+          { label: 'Show in Sertum', click: () => showMainWindow(session.id) },
+          {
+            label: session.origin === 'owned' ? 'End session…' : 'Detach…',
+            click: () => void removeSessionFromTray(session),
+          },
+        ],
+      }))
+    : [{ label: 'No running sessions', enabled: false }];
+
+  tray.setToolTip(
+    sessions.length
+      ? `Sertum — ${sessions.length} running session${sessions.length === 1 ? '' : 's'}`
+      : 'Sertum — no running sessions',
+  );
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Sertum', click: () => showMainWindow() },
+    { type: 'separator' },
+    ...sessionItems,
+    { type: 'separator' },
+    { label: 'Quit Sertum completely…', click: () => void quitCompletely() },
+  ]));
+}
+
+function createTray(): void {
+  const size = process.platform === 'darwin' ? 18 : 16;
+  const icon = nativeImage.createFromPath(trayIconPath()).resize({
+    width: size,
+    height: size,
+  });
+  tray = new Tray(icon);
+  tray.on('click', () => showMainWindow());
+  refreshTray(true);
+}
 
 /** How soon a second renderer death means reloading is not the answer. */
 const RELOAD_GRACE_MS = 30_000;
@@ -251,6 +416,7 @@ ipcMain.on('menu:state', (_e, state: MenuState) => applyMenuState(state));
 const notifier = new Notifier(
   () => mainWindow,
   () => getSettings(),
+  () => tray,
 );
 
 /**
@@ -272,6 +438,7 @@ daemon.on('daemon-event', (name: string, payload: unknown) => {
       // A mute lasted "until it finishes", and it just did.
       notifier.forget(e.id);
       broadcast('pty:exit', e);
+      refreshTray(true);
       break;
     }
     case 'session:updated': {
@@ -284,6 +451,7 @@ daemon.on('daemon-event', (name: string, payload: unknown) => {
           .length,
       );
       broadcast('session:updated', s);
+      refreshTray();
       break;
     }
     case 'approval:needed':
@@ -314,6 +482,7 @@ daemon.on('state', ({ connected }: { connected: boolean }) => {
         sessionCache.set(s.id, s);
         broadcast('session:updated', { ...s, muted: notifier.isMuted(s.id) });
       }
+      refreshTray(true);
     })
     .catch(() => {});
 });
@@ -555,11 +724,12 @@ app.on('ready', async () => {
   }
 
   buildMenu();
+  createTray();
   createWindow();
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // The tray is the persistent surface on every desktop platform.
 });
 
 
@@ -583,6 +753,8 @@ function shutdown(): void {
   // quit-drain dance this function used to perform — and the node-pty
   // teardown crash it existed to dodge — left this process with the PTYs.
   daemon.dispose();
+  tray?.destroy();
+  tray = null;
 }
 
 app.on('before-quit', () => shutdown());
@@ -595,7 +767,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
 }
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  showMainWindow();
 });
 
 /**
@@ -605,7 +777,9 @@ app.on('activate', () => {
  */
 function buildMenu() {
   const isMac = process.platform === 'darwin';
-  const send = (channel: string) => () => broadcast(channel, null);
+  const send = (channel: string) => () => {
+    if (!menuModalOpen) broadcast(channel, null);
+  };
   // The radio ticks have to start where the stored layout is, or the menu
   // disagrees with the window until the user opens the picker.
   const layout = getSettings().paneLayout;
@@ -627,13 +801,18 @@ function buildMenu() {
       { role: 'hideOthers' },
       { role: 'unhide' },
       { type: 'separator' },
-      { role: 'quit', label: 'Quit Sertum' },
+      {
+        label: 'Quit Sertum Completely…',
+        accelerator: 'Cmd+Q',
+        click: () => void quitCompletely(),
+      },
     ],
   };
 
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [appMenu] : []),
     {
+      id: 'file-menu',
       label: 'File',
       submenu: [
         {
@@ -675,10 +854,16 @@ function buildMenu() {
           click: send('menu:close-tab'),
           enabled: false,
         },
-        isMac ? { role: 'close' } : { role: 'quit' },
+        isMac
+          ? { role: 'close' }
+          : {
+              label: 'Quit Sertum Completely…',
+              click: () => void quitCompletely(),
+            },
       ],
     },
     {
+      id: 'session-menu',
       label: 'Session',
       submenu: [
         // No accelerator: D2 draws this as Enter, but that is Enter on a
@@ -738,6 +923,7 @@ function buildMenu() {
       ],
     },
     {
+      id: 'view-menu',
       label: 'View',
       submenu: [
         {
@@ -853,10 +1039,17 @@ function buildMenu() {
         { role: 'togglefullscreen' },
       ],
     },
-    { role: 'windowMenu' },
+    { id: 'window-menu', role: 'windowMenu' },
   ];
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  const built = Menu.buildFromTemplate(template);
+  if (menuModalOpen) {
+    for (const id of ['file-menu', 'session-menu', 'view-menu', 'window-menu']) {
+      const item = built.getMenuItemById(id);
+      if (item) item.enabled = false;
+    }
+  }
+  Menu.setApplicationMenu(built);
 }
 
 /**
@@ -872,6 +1065,8 @@ function buildMenu() {
  * session event would run hundreds of times during a single turn, and the
  * renderer only sends this when the answer actually changes.
  */
+let menuModalOpen = false;
+
 function applyMenuState(state: MenuState): void {
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
@@ -880,14 +1075,21 @@ function applyMenuState(state: MenuState): void {
     if (item) item.enabled = enabled;
   };
 
-  set('file-close-tab', state.hasActive);
-  set('session-rename', state.hasActive);
+  menuModalOpen = state.modalOpen;
+  for (const id of ['file-menu', 'session-menu', 'view-menu', 'window-menu']) {
+    set(id, !state.modalOpen);
+  }
+
+  set('file-close-tab', !state.modalOpen && state.hasActive);
+  set('session-rename', !state.modalOpen && state.hasActive);
   // Interrupting or stopping needs a live process, not merely a selected row.
-  set('session-interrupt', state.activeRunning);
-  set('session-stop', state.activeRunning);
+  set('session-interrupt', !state.modalOpen && state.activeRunning);
+  set('session-stop', !state.modalOpen && state.activeRunning);
   // With one session, next and previous both land back on it.
-  set('session-next', state.count > 1);
-  set('session-prev', state.count > 1);
-  set('session-goto', state.gotoLimit > 0);
-  for (let n = 1; n <= 9; n += 1) set(`session-goto-${n}`, n <= state.gotoLimit);
+  set('session-next', !state.modalOpen && state.count > 1);
+  set('session-prev', !state.modalOpen && state.count > 1);
+  set('session-goto', !state.modalOpen && state.gotoLimit > 0);
+  for (let n = 1; n <= 9; n += 1) {
+    set(`session-goto-${n}`, !state.modalOpen && n <= state.gotoLimit);
+  }
 }

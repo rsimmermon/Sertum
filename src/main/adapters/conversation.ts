@@ -30,8 +30,12 @@ import type {
  *           `tool_call_id`, and `synthetic_reason` marks injected context.
  */
 
-/** A generous tail: a conversation view wants more than a one-line summary. */
-const TAIL_BYTES = 512 * 1024;
+/**
+ * Read complete transcripts until they become genuinely exceptional. Image
+ * tools embed multi-megabyte data URLs in one JSONL record, so a small byte
+ * tail can never promise even one complete turn.
+ */
+const TRANSCRIPT_CAP = 32 * 1024 * 1024;
 
 /** Prose is capped high — losing the end of an answer defeats the view. */
 const TEXT_CAP = 24_000;
@@ -41,6 +45,11 @@ const TOOL_CAP = 2_000;
 
 /** Ceiling on rendered items, so a chatty turn cannot swamp the renderer. */
 const ITEM_CAP = 400;
+
+const conversationCache = new Map<
+  string,
+  { size: number; mtime: number; snapshot: ConversationSnapshot }
+>();
 
 export function noConversation(reason: string): ConversationSnapshot {
   return { items: [], path: null, updatedAt: null, truncated: false, reason };
@@ -57,6 +66,16 @@ export function readConversation(
     return noConversation(
       'No transcript yet — the conversation appears once the agent records its first turn.',
     );
+  }
+  const cacheKey = `${agent}\0${file}`;
+  try {
+    const stat = fs.statSync(file);
+    const cached = conversationCache.get(cacheKey);
+    if (cached?.size === stat.size && cached.mtime === stat.mtimeMs) {
+      return cached.snapshot;
+    }
+  } catch {
+    return noConversation('The transcript could not be read.');
   }
   const tail = readTail(file);
   if (!tail) {
@@ -78,7 +97,7 @@ export function readConversation(
   const truncated = tail.truncated || items.length > ITEM_CAP;
   if (items.length > ITEM_CAP) items = items.slice(items.length - ITEM_CAP);
 
-  return {
+  const snapshot: ConversationSnapshot = {
     items,
     path: file,
     updatedAt: tail.mtime,
@@ -87,6 +106,16 @@ export function readConversation(
       ? null
       : 'Nothing conversational in the transcript yet.',
   };
+  try {
+    conversationCache.set(cacheKey, {
+      size: fs.statSync(file).size,
+      mtime: tail.mtime,
+      snapshot,
+    });
+  } catch {
+    // It changed or vanished after the read; the next poll will retry.
+  }
+  return snapshot;
 }
 
 // ------------------------------------------------------------------ Claude
@@ -151,7 +180,10 @@ function parseClaude(records: Array<Record<string, unknown>>): ChatItem[] {
           // the tail window has nowhere honest to land, so it is dropped.
           const id = block.tool_use_id;
           const tool = typeof id === 'string' ? toolsById.get(id) : undefined;
-          if (tool) tool.output = cap(joinBlockText(block.content), TOOL_CAP);
+          if (tool) {
+            tool.output = cap(joinBlockText(block.content), TOOL_CAP);
+            pushImages(items, block.content, tool.name, at);
+          }
           break;
         }
       }
@@ -220,7 +252,10 @@ function parseCodex(records: Array<Record<string, unknown>>): ChatItem[] {
       case 'custom_tool_call_output': {
         const id = p.call_id;
         const tool = typeof id === 'string' ? toolsByCall.get(id) : undefined;
-        if (tool) tool.output = cap(joinBlockText(p.output), TOOL_CAP);
+        if (tool) {
+          tool.output = cap(joinBlockText(p.output), TOOL_CAP);
+          pushImages(items, p.output, tool.name, at);
+        }
         break;
       }
       case 'reasoning': {
@@ -286,7 +321,10 @@ function parseGrok(records: Array<Record<string, unknown>>): ChatItem[] {
       case 'tool_result': {
         const id = rec.tool_call_id;
         const tool = typeof id === 'string' ? toolsByCall.get(id) : undefined;
-        if (tool) tool.output = cap(joinBlockText(rec.content), TOOL_CAP);
+        if (tool) {
+          tool.output = cap(joinBlockText(rec.content), TOOL_CAP);
+          pushImages(items, rec.content, tool.name, null);
+        }
         break;
       }
       case 'reasoning': {
@@ -353,12 +391,46 @@ function cap(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
+/** Only structured image fields become previews; prose is never treated as a URL. */
+function pushImages(
+  items: ChatItem[],
+  value: unknown,
+  toolName: string,
+  at: number | null,
+): void {
+  for (const src of imageDataUrls(value)) {
+    items.push({ kind: 'image', src, alt: `${toolName} output`, at });
+  }
+}
+
+function imageDataUrls(value: unknown): string[] {
+  const found: string[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    const object = node as Record<string, unknown>;
+    const url = object.image_url;
+    if (
+      typeof url === 'string' &&
+      /^data:image\/(png|jpeg|webp|gif);base64,[a-zA-Z0-9+/=]+$/.test(url)
+    ) {
+      found.push(url);
+    }
+    for (const child of Object.values(object)) visit(child);
+  };
+  visit(value);
+  return [...new Set(found)];
+}
+
 function readTail(
   file: string,
 ): { records: Array<Record<string, unknown>>; mtime: number; truncated: boolean } | null {
   try {
     const stat = fs.statSync(file);
-    const start = Math.max(0, stat.size - TAIL_BYTES);
+    const start = Math.max(0, stat.size - TRANSCRIPT_CAP);
     const fd = fs.openSync(file, 'r');
     let text: string;
     try {
