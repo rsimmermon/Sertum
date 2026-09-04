@@ -1582,7 +1582,7 @@ select.field {
 .check.is-declined { color: var(--muted); }
 .settings-dialog .dialog-actions { flex: none; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 
-/* ---------- chat view (stage 1 of BROKER-HANDOFF.md) ----------
+/* ---------- chat view ----------
    A session rendered as a conversation read from the agent's own transcript.
    The composer still writes to the PTY, so this is a different lens on the
    same session, not a different kind of session. */

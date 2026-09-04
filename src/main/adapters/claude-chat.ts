@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import type { SessionStatus } from '../../shared/types';
 
 /**
- * Hosts headless Claude chat processes — stage 2 of BROKER-HANDOFF.md.
+ * Hosts headless Claude chat processes over its structured stream transport.
  *
  * One process per `stream` session, spawned as
  * `claude --print --input-format stream-json --output-format stream-json`,

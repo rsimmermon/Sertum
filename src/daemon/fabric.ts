@@ -68,7 +68,7 @@ import {
 /**
  * The session fabric — everything Sertum knows about running agents, moved
  * out of the Electron main process so sessions are not children of a window.
- * This is stage 3 of BROKER-HANDOFF.md made literal: the code here is the
+ * This is the fabric owned by the independent broker process: the code here is the
  * fabric main.ts used to host, re-homed rather than redesigned, and the GUI
  * reaches it over the socket protocol instead of module scope.
  *

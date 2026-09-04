@@ -39,8 +39,8 @@ job:
 
 | Plane | Owns | Implementation |
 |---|---|---|
-| **1 — pixels** | Characters in, characters out | `node-pty` per session, rendered by `@xterm/xterm`. Never parsed for meaning. |
-| **2 — truth** | What each agent is actually doing | Adapter events. Claude Code hooks, Codex app-server JSON-RPC, Grok per-session event log: **all three done**. |
+| **1 — pixels** | Terminal characters in and out for PTY-backed sessions | `node-pty` for each owned PTY transport, rendered by `@xterm/xterm` when the terminal surface is shown. Never parsed for meaning. |
+| **2 — truth** | Agent state and structured conversation content | Adapter events provide live state: Claude Code hooks/stream events, Codex app-server JSON-RPC, and Grok's per-session event log. Agent transcripts (or Claude's structured stream) provide conversation content. Never inferred from terminal pixels. |
 
 A tab badge turns amber because the agent *said* it needs input — not because
 its pixels stopped moving.
@@ -50,17 +50,19 @@ its pixels stopped moving.
 What's built and verified so far:
 
 - [x] Electron 44 + Vite + TypeScript, strict mode clean
-- [x] `node-pty` rebuilt against Electron's ABI; PTY spawn / write / read / resize / kill
-- [x] Real agent TUIs render correctly (Claude Code and Codex draw their
-      full-screen UI on macOS and Windows; Grok is verified end to end on
-      Windows)
-- [x] Keystrokes reach the PTY from the renderer
+- [x] `node-pty` PTY transport; spawn / write / read / resize / kill
+- [x] The PTY transport handles real agent TUIs (Claude Code and Codex were
+      verified on macOS and Windows; Grok was verified end to end on Windows),
+      although supported agents now present their transcript-backed chat view
+      rather than the terminal surface
+- [x] Terminal keystrokes and chat-composer submissions reach PTY-backed
+      sessions
 - [x] Tab strip, sidebar grouped by status, pane header, status bar
 - [x] New Session dialog (wireframe C1) with a **native folder picker**, live
       git validation, recent folders, and auto-derived tab labels
 - [x] **Plane 2 for Claude Code** — loopback hook endpoint, per-session binding,
       status and activity driven by real agent events
-- [x] **Plane 2 for Codex** — a private app-server instance per app run,
+- [x] **Plane 2 for Codex** — a private app-server instance owned by `sertumd`,
       driven over JSON-RPC (`thread/status/changed`, mapped by
       `mapCodexStatus`); the TUI still renders for real while status arrives
       out-of-band
@@ -93,7 +95,8 @@ What's built and verified so far:
       Worktrees' base branch and bootstrap command (E4), and Appearance's
       theme, accent, compact rows, tabs, badges and type sizes (E6) are wired
       end to end; E2 keeps the agent-path resolver. Controls whose subsystem
-      does not exist — session restore, storage — render disabled carrying
+      does not exist — pane-occupancy restoration, launch at login, repository
+      cataloguing and diagnostic/session storage — render disabled carrying
       the reason
 - [x] **Remappable shortcuts** (wireframe E6) — a command registry behind the
       menu, click-to-record chords, and a collision refused with the command
@@ -106,11 +109,11 @@ What's built and verified so far:
       events on a status transition, only when the window is unfocused, with
       per-session mute and snooze
 - [x] **Split views** (wireframes G1–G8) — Single, Columns, Rows and Grid,
-      each pane sized to its own PTY; gutters clamp at a readable terminal,
-      focus moves spatially, and a session dropped on a pane moves rather
-      than duplicates. See "Pane layouts" below.
-- [x] **Conversation view** — stage 1 of the chat direction recorded in
-      `BROKER-HANDOFF.md`: every agent session is shown as a conversation read
+      each pane independently sized; PTY-backed panes propagate their own
+      geometry, gutters clamp at a readable surface, focus moves spatially,
+      and a session dropped on a pane moves rather than duplicates. See
+      "Pane layouts" below.
+- [x] **Conversation view** — every agent session is shown as a conversation read
       from the agent's own transcript, with a composer that writes to the
       PTY where required. Works for monitored sessions too, read-only. Declared
       as the `conversation-view` capability; a shell declines and remains a
@@ -123,22 +126,21 @@ What's built and verified so far:
       Declared as `structured-conversation`; Codex, Grok and shell decline
       with reasons and therefore retain PTYs underneath (visible only for
       Shell). See "Conversation sessions" below.
-- [x] **Sessions that outlive the window** — the first cut of stage 3,
-      Claude-only by design: an Agents setting makes new sessions start under Claude's
-      own daemon (`--bg`), Sertum shows an attach client, and closing the
-      tab or quitting the app only detaches. Verified: the session survived
-      Sertum being force-killed and was reattached — terminal and
-      conversation history intact — after relaunch. Declared as
-      `background-host`; Codex, Grok and shell decline. See "Sessions that
-      outlive the window" below.
+- [x] **Claude-native background hosting** — an optional, agent-specific path
+      predating `sertumd`: an Agents setting starts Claude under its own daemon
+      (`--bg`) and Sertum attaches as a client. Declared as `background-host`;
+      Codex, Grok and shell decline. This is no longer the general persistence
+      mechanism; `sertumd` provides that for every agent. See
+      "Claude-native background hosting" below.
 - [x] **sertumd, the session broker** — stage 3 proper: the whole session
       fabric (PTYs, hook server, Codex app-server, Grok logs, chat host,
-      adapters, rules) lives in a daemon; the Electron app is a disposable
-      client over a named pipe / unix socket. Every agent's sessions —
-      Claude, Codex, Grok, plain shells — survive the GUI closing, and a
-      reopened window lists them and repaints their terminals from the
-      daemon's replay buffer. Verified end to end on Windows, including a
-      force-killed GUI. See "The daemon: sertumd" below.
+      adapters, rules) lives in a daemon; the Electron window is a disposable
+      client over a named pipe / unix socket while the Electron process stays
+      alive for the tray. Every owned Claude, Codex, Grok and shell session
+      survives the window closing; a recreated window lists them again and
+      restores buffered PTY output where applicable. Verified end to end on
+      Windows, including a force-killed Electron client. See "The daemon:
+      sertumd" below.
 - [x] **System tray companion** — starting Sertum creates a tray/menu-bar icon
       on Windows, Linux and macOS. Closing the window hides the UI while the
       tray continues to show truth-plane session state and deliver
@@ -384,8 +386,8 @@ turns; Grok's event log is read-only and shell has no agent policy to gate.
 
 ## The conversation view
 
-Stage 1 of `BROKER-HANDOFF.md`: plane 2 widened from status to content,
-without a new channel. Every Claude, Codex and Grok pane renders the transcript
+The truth plane extends from status to content without a new channel. Every
+Claude, Codex and Grok pane renders the transcript
 as a conversation — user and assistant messages, collapsed thinking, and tool
 calls paired with their results. When the adapter still needs a PTY, it keeps
 running underneath and collecting bytes, but there is no terminal/chat choice
@@ -660,8 +662,8 @@ the agent produced, not what that path holds now.
 
 ## Conversation sessions
 
-Stage 2 of `BROKER-HANDOFF.md`: an agent whose transport is a structured
-stream rather than a PTY. `SessionSpec.transport` is `'pty' | 'stream'`, and
+An agent can use a structured stream rather than a PTY.
+`SessionSpec.transport` is `'pty' | 'stream'`, and
 a stream session has no terminal — not hidden, nonexistent. C1 no longer asks
 the user to choose a transport: Claude declares `structured-conversation` and
 therefore starts as a stream unless Remote Control or background hosting needs
@@ -676,9 +678,9 @@ The Claude implementation, all verified against Claude Code 2.1.252:
   --output-format stream-json --include-partial-messages --verbose`, hosted
   by `main/adapters/claude-chat.ts` over plain pipes. This is a persistent
   bidirectional protocol, not one-shot: one process answered consecutive
-  turns on one session id. Input is one JSON user message per line on
-  stdin; killing the app takes the process with it, because its stdin *is*
-  the app.
+  turns on one session id. Input is one JSON user message per line on stdin.
+  The process and its stdin belong to `sertumd`, so closing or crashing the
+  Electron GUI does not end the stream session.
 - **The stream is plane 2 at full width.** `system/init` names the session
   and model, `stream_event` partials drive activity (a tool's name,
   "responding", "thinking"), `result` closes the turn. Content is
@@ -697,7 +699,7 @@ The Claude implementation, all verified against Claude Code 2.1.252:
   matched exactly from the first poll, before any hook has named it.
 - **The registry stays one registry.** `PtyManager.registerStream` records
   the snapshot with `StreamControls` (kill/terminate) supplied by the host,
-  so close, quit-drain, `ownedPids` discovery exclusion, rename, mute and
+  so tab close, daemon shutdown, `ownedPids` discovery exclusion, rename, mute and
   the sidebar treat both transports identically. The manager never learns
   the chat protocol; the host never learns bookkeeping.
 
@@ -706,30 +708,30 @@ plan mode, Claude's own diff and todo rendering. This is now the deliberate
 Claude default; adapters without a verified structured transport retain their
 PTY instead of being forced through a fictional chat protocol.
 
-## Sessions that outlive the window
+## Claude-native background hosting
 
-Stage 3's crux is that sessions must not be children of the window process,
-and its first cut is deliberately uneven: Claude already solves background
-hosting for itself, so Sertum uses Claude's daemon before any Sertum daemon
-exists. The unevenness is declared, not hidden — `background-host` is a
-capability Claude answers ok and Codex (daemon Unix-only in this release,
-unadopted), Grok (no daemon) and shell decline. Agents & permissions shows the
-persistent default only for an adapter that answered ok, so unsupported agents
-do not each consume a dead settings row.
+This was the first implementation of sessions outliving the window and remains
+as an optional Claude-specific hosting mode. General persistence now belongs
+to `sertumd`: ordinary Claude, Codex, Grok and shell sessions all survive the
+window closing without this capability. `background-host` instead means that the
+agent's own service owns the process. Claude answers ok; Codex, Grok and shell
+decline. Agents & permissions shows the option only for an adapter that
+answered ok.
 
-The flow, verified end to end on Windows: the per-agent "Keep running after
-Sertum closes" setting makes new Claude sessions run `claude --bg -n <label>`,
+The flow, verified end to end on Windows: the per-agent "Use Claude’s
+background host" setting makes new Claude sessions run `claude --bg -n <label>`,
 which returns immediately and prints
 the id that `attach`, `logs`, `stop` and `rm` take (`--bg` manages its own
 session id — a passed `--session-id` is ignored with a warning, so the
 printed id plus one `claude agents --json` lookup is the binding). Sertum
 then opens a terminal onto it with `claude attach`, registered with origin
 `attached` — a terminal that is only a client. Killing that client was
-verified leaving the session running, which is the entire property: quitting
-Sertum, even a force-kill, ends attach clients and nothing else. After
-relaunch, discovery lists the session as before and attaching brings back
-the terminal and — through the conversation view, matched exactly by the
-session id the roster reported — the history from before the app died.
+verified leaving the session running. `sertumd` now owns the attach client, so
+closing or crashing the GUI does not tear down that attachment. A full Sertum
+shutdown explicitly stops Claude background sessions that Sertum created;
+externally imported sessions remain detach-only. After relaunch, the daemon
+snapshot restores the row and the conversation view matches history by the
+exact session id reported by Claude's roster.
 
 Three things follow from origin `attached` now being real:
 
@@ -744,17 +746,15 @@ Three things follow from origin `attached` now being real:
   guessed by cwd — so the conversation view works on attached rows the
   same way it does everywhere else.
 
-What this first cut deliberately does not do: auto-reattach on launch
-(sessions reappear through Import sessions, C18), background hosting for
-conversation sessions (a stream session's process dies with its stdin by
-construction — giving one a daemon is real stage 3 work), and any
-combination with Remote Control (unverified, so C1 makes the toggles
-exclusive rather than combining them silently).
+Claude-native background hosting still does not combine with structured stream
+sessions or Remote Control; C1 keeps those choices exclusive. This limitation
+does not affect broker persistence: `sertumd` owns stream processes and PTYs
+for every ordinary Sertum session.
 
 ## The daemon: sertumd
 
-Stage 3 of `BROKER-HANDOFF.md`, made literal. The handoff observed that
-Sertum's main process was already a broker in every respect but two — its
+`sertumd` makes the session broker a process independent of the GUI. Sertum's
+main process was already a broker in every respect but two — its
 transport was Electron IPC and its payload was PTY bytes — and this change
 fixes exactly those two things while moving the code rather than redesigning
 it. The split:
@@ -1113,8 +1113,7 @@ This race lives wherever the PTYs live, and since sertumd that is the
 daemon: its `stop` gives the exits `QUIT_DRAIN_MS` to land in a live
 environment before `process.exit`. The GUI's quit stopped being dangerous at
 all -- it owns no PTYs, so `before-quit` is now a socket disconnect and
-nothing more, exactly the retirement `BROKER-HANDOFF.md` predicted for this
-logic ("moves rather than disappears").
+nothing more; session teardown now lives in the daemon rather than disappearing.
 
 ## Committing from the review
 
@@ -1192,8 +1191,9 @@ The rule that shapes the panes: **a control whose subsystem does not exist is
 rendered disabled carrying its reason, never as a switch that switches
 nothing.** This is the same answer `AgentAdapter` gives for a declined
 capability, for the same purpose -- the user learns why, at the moment it
-matters, instead of discovering later that a toggle did nothing. Shortcut
-remapping, session restore and storage management all read that way today.
+matters, instead of discovering later that a toggle did nothing. Pane-layout
+restoration and storage management read that way today; shortcut remapping is
+implemented and persists through the command registry.
 
 Two settings were deliberately removed rather than shipped as stored values
 nothing reads:
@@ -1537,25 +1537,29 @@ Choosing a layout backfills its new panes from sessions that were only tabs
 until now. Splitting the focused pane deliberately does not: it opens empty and
 names its three ways in — drop a session on it, click a tab or sidebar row while
 it has focus, or start a new session. A session occupies at most one pane, so
-loading it somewhere else moves it rather than duplicating it; two views onto
-one PTY is a separate feature with its own sizing rules and is not built.
+loading it somewhere else moves it rather than duplicating it; two simultaneous
+views onto one session transport are a separate feature and are not built.
 
-Three things follow from a terminal being a real PTY rather than a view:
+Three things follow for PTY-backed panes; chat-only stream sessions have no
+terminal geometry or xterm instance:
 
-- **Every pane resize is sent to its PTY.** Each pane gets its own geometry, so
-  four panes mean four different `cols`/`rows` and four TUIs reflowing to fit.
-- **Panes refuse to shrink below a readable terminal.** Gutter drags clamp at 40
-  columns and 12 rows, scaled to the terminal's own point size; a window too
-  small to honour that says so over the pane instead of clipping output.
+- **Every PTY-backed pane resize is sent to its PTY.** Each such pane gets its
+  own geometry, so several terminal sessions can have different `cols`/`rows`
+  and their TUIs reflow independently.
+- **Panes refuse to shrink below a readable surface.** Gutter drags use the
+  equivalent of 40 terminal columns and 12 rows, scaled to the terminal point
+  size; a window too small to honour that says so over the pane instead of
+  clipping either a terminal or conversation.
 - **Moving a session between panes costs a DOM move and a refit.** The xterm
-  instance is keyed by session and never rebuilt, so scrollback survives every
-  layout change.
+  instance for a PTY transport is keyed by session and never rebuilt, so its
+  scrollback survives every layout change; a chat pane is likewise reused.
 
-Layout and gutter positions are remembered across launches; the sessions that
-were in those panes are not, because the PTYs die with the app. While a split is
-up the sidebar regroups into IN VIEW and OTHER SESSIONS, and an unfocused pane
-carries its status colour on its border so an errored session reads from across
-the room.
+Layout and gutter positions are remembered across launches, but pane occupancy
+is not. The sessions and their transports continue in `sertumd` and return to the
+sidebar; the recreated window does not yet place them back into their previous
+panes. While a split is up the sidebar regroups into IN VIEW and OTHER SESSIONS,
+and an unfocused pane carries its status colour on its border so an errored
+session reads from across the room.
 
 ## Running
 
@@ -1775,12 +1779,10 @@ fixed along the way:
   directory lives in its PEB, which WMI does not expose. The row still lists,
   summarises and raises its window, so this is a missing detail rather than a
   broken row.
-- **Closing the window quits the whole app, unlike macOS.**
-  `window-all-closed` already guards on `process.platform !== 'darwin'`, so
-  this is handled correctly, not a bug — but it's a real behavior difference
-  worth knowing if you're used to Sertum staying alive in the Dock after the
-  last window closes. On Windows (and Linux), closing the window ends the
-  process, the hook server, and every session it owns.
+- **Closing the window hides it to the tray on every platform.** The Electron
+  process remains the notification and tray client, while `sertumd` continues
+  to own the hook server, adapters and sessions. Only the explicit “Quit
+  Sertum completely…” path stops the daemon and its owned sessions.
 - **The `.cmd` shim also displaces the codex app server's pid, which used to
   orphan it on every quit.** The same `shell: true` that makes a `codex.cmd`
   spawn legal puts `cmd.exe` between us and the server: `child.kill()`
@@ -1841,11 +1843,15 @@ src/
   shared/types.ts             Contracts shared across processes
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
   renderer/terminal-pane.ts   One xterm bound to one PTY
-  renderer/chat-pane.ts       A session as a conversation; composer writes to the PTY
+  renderer/chat-pane.ts       A session as a conversation; composer uses its declared transport
   renderer/message-text.ts    Message text to DOM: markdown or source, never an HTML string
+  renderer/pane-grid.ts       Split-pane geometry, gutters and readable-size limits
+  renderer/layout-picker.ts   Single/Columns/Rows/Grid picker and split actions
+  renderer/agent-icon.ts      Shared agent identity marks
   renderer/chips.ts           Model/effort badges, read by shape and colour
   renderer/command-palette.ts     ⌘K command palette — wireframe C13
   renderer/confirm-dialog.ts      Destructive-action confirm gate — wireframe C7
+  renderer/text-prompt-dialog.ts  Shared one-field modal prompt
   renderer/session-menu.ts        Sidebar row context menu — wireframe C5
   renderer/settings-dialog.ts     Settings — wireframe E1, plus agent paths
   renderer/worktree-dialog.ts     Worktree manager — wireframe C9

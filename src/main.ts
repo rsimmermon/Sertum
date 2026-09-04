@@ -97,7 +97,7 @@ if (process.env.SERTUM_DEBUG_PORT) {
 }
 
 /**
- * The session fabric lives in sertumd — stage 3 of BROKER-HANDOFF.md. This
+ * The session fabric lives in sertumd, independently of this GUI process. This
  * process owns windows, menus, dialogs and notifications; every session,
  * adapter and hook endpoint belongs to the daemon, reached over its socket.
  * Closing this app therefore closes nothing an agent needs, for every agent

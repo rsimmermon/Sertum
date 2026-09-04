@@ -2,8 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * The wire contract between the Sertum GUI and sertumd — stage 3 of
- * BROKER-HANDOFF.md.
+ * The wire contract between the Sertum GUI and its independent session broker.
  *
  * The daemon owns the session fabric; the GUI is a disposable client. The
  * transport is a named pipe on Windows and a unix socket elsewhere, carrying

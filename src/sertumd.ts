@@ -13,7 +13,7 @@ import {
 } from './shared/daemon-protocol';
 
 /**
- * sertumd — the session broker. Stage 3 of BROKER-HANDOFF.md.
+ * sertumd — the session broker that owns sessions independently of the GUI.
  *
  * Owns every session, adapter and hook endpoint; the Sertum GUI is a
  * disposable client that connects over a named pipe (Windows) or unix

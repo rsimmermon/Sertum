@@ -7,8 +7,7 @@ import type {
 import { classifyMessages } from './markdown-format';
 
 /**
- * Reads a session's transcript as a conversation — stage 1 of the chat
- * direction recorded in BROKER-HANDOFF.md.
+ * Reads a session's transcript as a conversation.
  *
  * This widens plane 2 from status to content without adding a channel: the
  * transcript is the agent's own account of what was said, on disk regardless

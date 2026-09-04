@@ -14,13 +14,16 @@ idle, or waiting for input.
 ## What you can do
 
 - Run Claude Code, Codex, and Grok side by side in one desktop window.
+- Close the window without stopping your work: `sertumd` owns every session,
+  and the tray keeps status and notifications available until you quit
+  completely.
 - Keep sessions organized by project, folder, and worktree.
 - See which agents are working or need attention without reading terminal
   output heuristically.
 - Split the window into two or four independently sized panes.
 - Review changed files, read per-file diffs, then commit and open a pull
   request without leaving the app.
-- Approve or refuse a Claude tool call from a bar above the terminal, and turn
+- Approve or refuse a Claude tool call from an in-app approval bar, and turn
   a decision you keep repeating into a stored permission rule.
 - Get a system notification when a session needs you, fired from agent events
   rather than from output going quiet.
@@ -35,9 +38,9 @@ Before starting Sertum, install:
 - [Node.js](https://nodejs.org/) with npm
 - [Git](https://git-scm.com/)
 - At least one supported coding agent:
-  [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+  [Claude Code](https://code.claude.com/docs),
   [Codex](https://developers.openai.com/codex/), or
-  [Grok](https://docs.x.ai/docs/grok-cli)
+  [Grok](https://docs.x.ai/build/cli/reference)
 
 Optionally, install the [GitHub CLI](https://cli.github.com/) and sign in with
 `gh auth login`. Sertum opens pull requests through it, because `gh` already
@@ -63,8 +66,8 @@ npm install
 npm start
 ```
 
-The Electron Forge startup process rebuilds native dependencies such as
-`node-pty` for the installed Electron version when needed.
+`node-pty` supplies prebuilt N-API binaries, so Sertum uses them directly
+instead of requiring a local C++ toolchain for an Electron-specific rebuild.
 
 ## Start your first session
 
@@ -78,10 +81,16 @@ The Electron Forge startup process rebuilds native dependencies such as
    sessions open as embedded terminals.
 
 Sertum resolves installed agent binaries automatically. If an agent is not
-found, open **Settings > Agents & permissions** to detect it again or select its executable
-manually. Agents that support their own background host also expose a
-per-agent **Keep running after Sertum closes** default there; it applies to new
-sessions and is off by default.
+found, open **Settings > Agents & permissions** to detect it again or select
+its executable manually.
+
+All sessions Sertum owns live in its session broker (`sertumd`), not in the
+window process. Closing the window hides it to the tray; reopening Sertum
+lists the same sessions and restores recent PTY output where applicable.
+**Quit Sertum completely…** deliberately stops the broker and its owned
+sessions. Claude can also use its own background host when you enable **Use
+Claude’s background host** for new sessions; that is a Claude-specific hosting
+option, not what makes ordinary Sertum sessions survive a window close.
 
 ## Useful commands
 
@@ -98,15 +107,19 @@ error.
 
 ## Current scope
 
-Working: chat sessions and live status for Claude Code, Codex, and Grok,
-external session discovery, binary configuration, worktree management,
-split-pane layouts, diff review with commit and pull request, permission rules
-and in-app tool approval, system notifications, and settings.
+Working: conversation views and event-driven status for Claude Code, Codex,
+and Grok; a PTY-free structured conversation transport for Claude; persistent
+broker-owned sessions with PTY replay where applicable; a
+tray companion; external-session discovery; binary configuration; worktree
+management; split-pane layouts; diff review with commit and pull request;
+permission rules and in-app tool approval; system notifications; and
+settings. Shell sessions remain embedded terminals.
 
-Still planned: restoring sessions on launch and per-repository worktree
-defaults. Settings shows each of these as a disabled
-control explaining what is missing, rather than as a switch that does
-nothing.
+Not yet restored is the window arrangement itself: after recreating the
+window, Sertum lists the still-running sessions but does not remember which
+ones occupied which panes. Per-repository worktree defaults also remain
+planned. Settings presents unavailable controls with an explanation rather
+than storing values that have no effect.
 
 ## Contributing and architecture
 

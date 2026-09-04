@@ -89,9 +89,9 @@ export function openSettingsDialog(
       pane.append(sectionHead('Startup'));
       pane.append(
         declined(
-          'Restore sessions on launch',
-          'Would resume from transcript with claude --resume / codex resume',
-          'Session restore is not built. PTYs die with the app, so there is nothing to restore from yet.',
+          'Restore pane arrangement',
+          'Remember which running sessions occupied each pane',
+          'Sessions and terminal replay already survive in sertumd. Restoring the window’s pane occupancy is not built yet.',
         ),
         declined(
           'Launch at login',
@@ -209,10 +209,10 @@ export function openSettingsDialog(
         if (background?.ok) {
           const copy = el('div', 'agent-default-copy');
           copy.append(
-            text('div', 'Keep running after Sertum closes', 'agent-default-name'),
+            text('div', 'Use Claude’s background host', 'agent-default-name'),
             text(
               'div',
-              'New sessions detach on close; import one later to reconnect.',
+              'Claude owns new sessions through --bg; Sertum attaches as a client.',
               'setting-hint',
             ),
           );

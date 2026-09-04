@@ -255,8 +255,8 @@ export class PtyManager extends EventEmitter {
   }
 
   /**
-   * Registers a session carried by a structured stream rather than a PTY —
-   * stage 2 of BROKER-HANDOFF.md. The process was already spawned by its
+   * Registers a session carried by a structured stream rather than a PTY.
+   * The process was already spawned by its
    * chat host; this owns the bookkeeping: the snapshot, the exit state, and
    * the controls that let close and quit end the process. The caller mints
    * the id first because the hooks blob in the spawn arguments needs it.

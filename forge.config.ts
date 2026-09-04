@@ -210,7 +210,7 @@ const config: ForgeConfig = {
           target: 'preload',
         },
         {
-          // sertumd, the session broker (stage 3 of BROKER-HANDOFF.md). A
+          // sertumd, the session broker. A
           // plain Node bundle: the GUI runs it under its own executable with
           // ELECTRON_RUN_AS_NODE, so there is no second runtime to ship.
           entry: 'src/sertumd.ts',

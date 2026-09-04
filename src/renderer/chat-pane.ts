@@ -9,8 +9,7 @@ import { appendMessageText } from './message-text';
 const api = window.sertum;
 
 /**
- * A session rendered as a conversation instead of a terminal — stage 1 of the
- * chat direction in BROKER-HANDOFF.md.
+ * A session rendered as a conversation instead of a terminal.
  *
  * Everything shown here is read from the agent's own transcript through
  * `conversation:read`; nothing is inferred from terminal output. Input still

@@ -61,7 +61,7 @@ export type AgentCapability =
   | 'permission-rules'
   /**
    * Render the session as a conversation read from the agent's own
-   * transcript on disk — stage 1 of the chat direction in BROKER-HANDOFF.md.
+   * transcript on disk — the conversation view's structured content source.
    *
    * Read-only by construction: the transcript is the agent's own account of
    * the conversation (the same class of source as a hook payload), so this is
@@ -71,7 +71,7 @@ export type AgentCapability =
   | 'conversation-view'
   /**
    * Run a session over the agent's structured chat protocol instead of a PTY
-   * — stage 2 of BROKER-HANDOFF.md. A `stream` session has no terminal at
+   * through the structured conversation transport. A `stream` session has no terminal at
    * all: input goes down the agent's own bidirectional channel and content
    * comes back structured. A session type alongside terminal sessions, never
    * a replacement — the TUI still carries slash commands, plan mode and the
@@ -79,12 +79,10 @@ export type AgentCapability =
    */
   | 'structured-conversation'
   /**
-   * Host the session in the agent's own daemon so it outlives this app —
-   * the first cut of BROKER-HANDOFF.md's stage 3, uneven by design. Claude
-   * solves background hosting for itself (`--bg`, `claude attach`); closing
-   * Sertum then only ends the attach client, verified leaving the session
-   * running. Agents with no daemon decline, and the unevenness is stated
-   * here rather than hidden.
+   * Host the session in the agent's own daemon rather than in `sertumd`.
+   * Claude solves this for itself (`--bg`, `claude attach`); agents with no
+   * adopted native daemon decline. General window-close persistence does not
+   * depend on this capability: `sertumd` owns every ordinary session.
    */
   | 'background-host';
 
