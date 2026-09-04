@@ -327,6 +327,27 @@ export class TerminalPane {
    * prompt as an image; a plain shell just sees the path, which is the least
    * surprising thing it could see.
    */
+  /**
+   * Copy the terminal's own selection, answering whether there was one.
+   *
+   * xterm keeps its selection in its own model rather than as a DOM
+   * selection, so the platform's copy does not see it. The Edit menu asks
+   * here first and falls back to the native copy for everything else.
+   */
+  copySelection(): boolean {
+    if (!this.term.hasSelection()) return false;
+    void api.copyText(this.term.getSelection());
+    // Cleared for the same reason the Ctrl+C handler clears: a selection left
+    // on screen would keep swallowing interrupts.
+    this.term.clearSelection();
+    return true;
+  }
+
+  /** Paste into the terminal, image-aware, as the Ctrl+V chord does. */
+  paste(): void {
+    void this.pasteClipboard();
+  }
+
   private async pasteClipboard(): Promise<void> {
     const item = await api.readClipboard();
     if (item.kind === 'text') this.term.paste(item.text);

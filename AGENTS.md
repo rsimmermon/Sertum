@@ -144,6 +144,17 @@ What's built and verified so far:
       tray continues to show truth-plane session state and deliver
       notifications; sessions can be opened or ended there. “Quit Sertum
       completely…” stops sertumd and every session it owns.
+- [x] **Markdown in the conversation** — an agent's markup is rendered as
+      markup, unless the turn asked for the markup itself, in which case the
+      characters are the answer and are shown in the mono face. A fenced
+      block is always code, ```markdown included. Every classified message
+      carries a toggle, so the guess is never the last word. GFM footnotes
+      render; a local image inside the session's folder is shown for real
+      while a remote one stays a link. Nothing is assembled as an HTML
+      string. See “Markdown, and when the markup is the answer” below.
+- [x] **A waiting bubble and a stop sign** — bouncing dots and the
+      session's activity line while plane 2 says the agent is working, and a
+      red stop square at the right edge of the composer.
 
 ## How status actually works
 
@@ -391,11 +402,10 @@ marking what is not conversation), Codex's `response_item` payloads
 `call_id`), and Grok's role-as-type records with `tool_calls` and
 `tool_result` paired by `tool_call_id`. Injected context is skipped by its
 tag opener, never by a blanket "starts with `<`", so pasted XML still shows.
-Prose renders as plain text on purpose — inventing formatting the agent did
-not send is the same class of mistake as inventing a commit message. Explicit
-TeX spans (`\[...\]` and `\(...\)`) are the narrow exception: KaTeX typesets
-only their contents with trust disabled, while all surrounding transcript
-content remains text nodes rather than injectable HTML.
+Explicit TeX spans (`\[...\]` and `\(...\)`) are typeset by KaTeX with trust
+disabled, while all surrounding transcript content remains text nodes rather
+than injectable HTML. Markdown is rendered — see below for how a message that
+should stay source is told apart.
 
 The renderer polls `conversation:read` once a second while the view is on
 screen, for the reasons Grok's event log established: the file may not exist
@@ -434,9 +444,34 @@ submit it, leaving plane 2 at the startup `turn finished` state and writing no
 transcript. The body is now one write (bracketed only when multiline) and CR
 is always a second write 150ms later.
 
-The composer also carries a Stop button beside Send. It calls the declared
-`turn-interrupt` capability and is enabled only while plane 2 says a turn is
-active; it never writes Ctrl+C or Escape into the PTY. Before the transcript
+The composer carries **one button with two jobs**, at the right edge of the
+box you type into — the control that acts on a turn sits where the turn is
+composed. Text in the composer makes it a paper plane that sends; an empty
+composer during a turn makes it a red square that stops. The two are never
+both available, so a second button would always be dead, and the composer's
+own content is the signal: it flips on the first keystroke and back on the
+last backspace.
+
+Stop calls the declared `turn-interrupt` capability and never writes Ctrl+C
+or Escape into the PTY. The square stays on screen when the agent declines
+that capability — disabled, carrying the adapter's reason — because that
+reason is user-facing copy and hiding the button would hide it. Being a sign
+rather than a word, both modes put their reason in `aria-label` as well as
+the tooltip.
+
+A waiting bubble — three bouncing dots and the session's `activity` line —
+sits at the tail of the conversation while plane 2 says the agent is working.
+This is the truth plane at conversation scale, and the same rule applies as
+everywhere else: the dots are on because an adapter reported a turn in
+progress, never because output went quiet. The caption is the same string the
+sidebar reads, so a pane cannot disagree with the dot beside it. A
+`needs-input` session is deliberately *not* shown as waiting — it is not
+working, it is waiting on the reader, which the status dot and B5's bar
+already say. The bubble is one long-lived element re-appended on each repaint
+rather than rebuilt, so the transcript poll does not restart its animation
+once a second.
+
+Before the transcript
 has conversational content, the pane renders a Sertum-owned welcome card from
 the session's real identity, cwd and model metadata. Agent startup protocols
 (Claude's `system/init` included) report readiness and identity but do not send
@@ -452,10 +487,176 @@ composer disabled and saying where input actually lives. This is the part of
 an adopted session that genuinely can live here, so selecting a monitored
 row no longer jumps to its owning window while its conversation is up.
 
-What stage 1 deliberately does not do: no general markdown rendering, no synthetic
-"pending" messages (a sent message is acknowledged under the composer until
-the agent records it), and no structured input channel — that is stage 2,
-below.
+What stage 1 deliberately does not do: no synthetic "pending" messages (a
+sent message is acknowledged under the composer until the agent records it),
+and no structured input channel — that is stage 2, below.
+
+### Markdown, and when the markup is the answer
+
+Stage 1 showed every message as literal characters, on the principle that
+inventing formatting the agent did not send is the same class of mistake as
+inventing a commit message. That principle stands; the conclusion drawn from
+it was wrong. Agents emit `##`, `-` and fenced blocks *deliberately* — that
+markup is theirs, not ours — so printing it as characters is the same
+misrepresentation pointed the other way. Rendering it is reading what the
+agent wrote. The mistake would be adding structure to text that has none, and
+that is what the classifier exists to avoid.
+
+`main/adapters/markdown-format.ts` stamps each assistant message with a
+`MessageFormat` — `text`, `markdown` or `markdown-source` — from two signals,
+both read from the transcript, never from pixels:
+
+- **The message's own syntax.** No constructs means no decision: the message
+  is `text` and takes the original plain path. The inline patterns require a
+  non-space beside each delimiter and a non-word character outside the
+  underscore forms, so `snake_case_names` and `a * b * c` stay prose.
+- **The request the turn answers**, which says whether the markup is the
+  subject rather than the presentation. "Give me the markdown for a table"
+  wants characters; "summarise this in markdown" names a house style and
+  wants a summary. A request to *render* is asked first and settles it, so
+  "render the markdown" is not read as a request for source by the phrase it
+  contains.
+
+The narrower signal costs nothing to trust: **a fenced block is always shown
+as code, ```markdown included.** That fence is the agent's own declaration
+that these characters are the subject, so the common case of an answer *about*
+markdown needs no heuristic at all — only a whole reply that is unfenced
+source falls to the request test.
+
+Neither signal is load-bearing. A guess about intent will sometimes be wrong,
+so every classified message carries a toggle: source mode is set in the mono
+face — the only way a markdown table's columns line up — and a message shown
+as source because the request asked for source says so, or being handed
+characters reads as the app failing. A user's own message is never
+classified; they typed those characters into the composer, and handing them
+back reformatted would hide what was actually sent.
+
+`renderer/message-text.ts` owns both paths, so the rule they share cannot
+drift: **nothing is ever assembled as an HTML string.** Every node is created
+and every leaf filled through `textContent` or a text node, so raw HTML in a
+message is shown as the characters the agent wrote and a transcript can no
+more inject markup than before the file existed. Verified against a message
+carrying `<img src=x onerror=...>` and a `<script>` tag: both come out as
+escaped text with no element created. Two things are deliberately not
+rendered — a bare URL does not become a link, and a remote image is not
+fetched, both being the renderer acting on an address out of a transcript.
+Only http(s) links become anchors, matching what `shell:open-external`
+accepts, so the app never draws an affordance that would silently fail;
+every other address keeps its label and carries its target in a tooltip.
+Newlines inside a paragraph stay line breaks rather than being reflowed,
+because reflowing an agent's deliberate line breaks is exactly the invented
+formatting this view exists to avoid.
+
+Three constructs used to render *wrongly* rather than merely plainly, which
+is the worse failure and the reason they are called out here:
+
+- **A setext underline.** `Sub Title` over `---------` produced a paragraph
+  *and* a horizontal rule: the heading became body text and a rule appeared
+  that the agent never wrote. The underline now closes the paragraph above it
+  as a heading, which is also where it outranks the thematic-break reading of
+  `---`. A `---` after a blank line, with no paragraph above it, is still a
+  rule.
+- **`\[` is display math in TeX and an escaped bracket in markdown**, and
+  agents write both. Nothing in the delimiters says which, so the content
+  decides: real math carries operators, digits or a backslash macro, and a
+  single token with no spaces is a variable. `\[not a link\]` has none of
+  that and goes to the escape rule. The asymmetry is deliberate — typesetting
+  a sentence as an equation is a far worse failure than leaving one that was
+  meant as math — and it applies on the plain path too, so a `text` message
+  cannot be turned into algebra either.
+- **Four-space indented code.** Read as a paragraph, the inline pass then ran
+  over it, so `*ptr` became emphasis and the code was altered on screen. A
+  line that is also a list item is still a list: an agent indenting a whole
+  list is commoner here than one relying on indented code, and misreading a
+  list as code is the worse trade.
+
+**Links and images are scanned with balanced brackets, not matched with a
+regex.** A link's label can itself contain brackets, and the commonest case
+of that is an image wrapped in a link — which is what every badge is. A
+`[^\]]*` label stops at the image's own `]`, so `[![alt](src)](href)`
+produced a link captioned `![alt` pointing at the *image*, with the real
+address left in the text as characters. The scanner counts depth and skips
+escapes, so a label may hold brackets, and the same routine serves images,
+links, and both by reference.
+
+Reference links (`[text][label]` and `[text][]`) resolve against definitions
+lifted out of the flow alongside the footnote ones, and so do reference
+*images* (`![alt][label]`). The shortcut form
+(`[label]` alone) is deliberately not supported — it would swallow ordinary
+bracketed prose. An undefined reference stays literal text, the same answer an
+orphan footnote gets.
+
+**Dollar-delimited TeX** is supported, because agents emit `$...$` far more
+often than `\(...\)`. `$$` is unambiguous and is handled both inline and as
+a block opened by `$$` alone on a line — the inline rule cannot see that
+form, since a paragraph reaches the inline pass one line at a time. A single
+`$` is ambiguous, because money looks the same, so it must hug its content,
+must not be followed by a digit, and must contain a character belonging to
+TeX rather than to a price. That last test is deliberately stricter than
+`looksLikeMath`: a digit alone is enough to call `\(2\)` math, but would
+typeset "$5 and $10" as well.
+
+**Character references are decoded from a table**, not by handing a string to
+an HTML parser, which keeps the promise at the top of `message-text.ts`
+literally true. A reference the table does not know stays as written, and a
+code span keeps every character it was given — decoding happens on prose runs
+only. Decoded angle brackets are still text: `&lt;tag&gt;` shows `<tag>` as
+characters and creates no element.
+
+Known and deliberate: a bare URL is not linked, and the shortcut reference
+form (`[label]` alone) is not resolved — it would swallow ordinary bracketed
+prose.
+
+GFM footnotes are supported. Definitions are lifted out of the block flow
+before parsing — a definition is not a paragraph wherever the agent happened
+to write it — and the *references* fix both the numbering and the order,
+because that is the order a reader meets them in. A reference whose
+definition is missing stays literal text: inventing a marker for a note that
+does not exist is the same mistake as inventing formatting. A definition
+nothing referenced is still listed rather than dropped, since it is something
+the agent wrote. Marks scroll within the pane rather than navigating, so they
+are buttons wired to their elements — an `href="#id"` would need ids unique
+across every message on screen and would move the renderer's own URL — and a
+brief highlight is what says "here" when the target was already in view and
+nothing scrolled.
+
+### A local image is shown; a remote one stays a link
+
+A markdown image carries an address written by the agent, and the two useful
+answers are different for different addresses:
+
+- **`data:`** — already trusted from structured tool results, shown directly.
+- **A readable local file** — read by `main/local-image.ts` and returned as a
+  `data:` URL, so what reaches the renderer is the same trusted shape.
+- **Anything else** — remote, missing, outside the session's folder, or not
+  actually an image — keeps the labelled link it already had.
+
+The read happens in the main process because the renderer is a web page: it
+cannot open a `file://` path, and letting it fetch an arbitrary address out of
+a transcript is exactly what the conversation view avoids. The link is
+rendered synchronously and *upgraded* to a picture only if the read succeeds,
+so every way it can fail leaves the link that was already there — the failure
+mode and the fallback are the same thing.
+
+Three bounds, each failing to `null`:
+
+- **Scope is the session's own folder.** The path resolves against the cwd
+  from `SessionSnapshot` — never a value the message supplied — and must
+  still be inside it, so a transcript cannot widen its own reach. Without
+  that check, message text could make the app read any file on disk and hand
+  it to the renderer. Worktrees beneath a repository are covered by the same
+  prefix test the permission rules use. **This is narrower than "anywhere on
+  the machine"**; a temp-dir screenshot outside the folder stays a link.
+- **It must actually be an image**, decided by magic bytes rather than the
+  extension, so a `.png` that is really something else is not sent. SVG is
+  deliberately never inlined: it can carry script, and this is a page.
+- **It must be small enough to inline** (8MB), since a data URL is base64 in
+  the renderer's memory.
+
+Resolved reads are cached, so the once-a-second repaint does not re-read a
+file per image. A file that changes on disk keeps the bytes the message was
+first shown with, which is the right answer for a transcript: it records what
+the agent produced, not what that path holds now.
 
 ## Conversation sessions
 
@@ -1279,6 +1480,34 @@ commands, a map of overrides, and one rule about conflicts.
 - **Changing a binding rebuilds the menu**, since the menu is where
   accelerators live.
 
+### The Edit menu is macOS-only, and that is the fix rather than an omission
+
+macOS delivers the standard editing chords through the application menu. With
+no Edit menu, **Cmd+C and Cmd+V reach nothing at all** — not the transcript,
+not the composer, not a dialog field — which is how the app shipped until a
+Mac user found copy simply dead. Windows and Linux never had the problem,
+because Chromium handles those keys itself.
+
+Adding the usual `copy`/`paste` roles on every platform would have been a
+regression rather than a fix: their default accelerator is `CmdOrCtrl+C`, and
+on Windows that takes Ctrl+C away from the terminal — where, with no
+selection, it is the interrupt that stops the agent. So the menu is built only
+for darwin.
+
+Copy and Paste are routed through the renderer rather than given the roles,
+because a terminal is not an ordinary text surface: xterm's selection lives in
+its own model where the platform's copy cannot see it, and its paste has to
+turn an image into a path before any byte reaches the PTY. The renderer asks
+the focused pane first — `document.activeElement.closest('.term-host')` — and
+falls back to `webContents.copy()`/`paste()`, which is what makes a plain
+textarea behave exactly as it does everywhere else.
+
+Two details that are load-bearing. The menu carries **no `edit-menu` entry in
+the modal-disabling list**, because a dialog is exactly where someone pastes a
+branch name or copies an error. And its items use `sendAlways` rather than
+`send`, since `send` swallows every command while a modal is open — which
+would have made Cmd+V dead in the one place it is most wanted.
+
 Only commands with a fixed accelerator are listed. `⌘1`…`⌘4` address the nth
 session or pane rather than naming one command, and the layout radio set keeps
 its numeric mnemonic, so neither is offered for remapping.
@@ -1591,6 +1820,7 @@ src/
   main/notifications.ts       System notifications from adapter events (C20, E5)
   main/permission-rules.ts    Stored allow/deny/ask rules for tool calls (E2)
   main/keybindings.ts         Command registry behind the menu accelerators (E6)
+  main/local-image.ts         Reads an image a message points at, inside the session folder
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
   main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search
@@ -1604,6 +1834,7 @@ src/
   main/adapters/session-meta.ts  Model/effort/context read from a live transcript
   main/adapters/transcript.ts    Per-agent transcript summaries
   main/adapters/conversation.ts  Transcript parsed into conversation items (chat view)
+  main/adapters/markdown-format.ts  Is a message markdown, and is the markup the answer?
   main/adapters/claude-chat.ts   Headless Claude over stream-json (conversation sessions)
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
@@ -1611,6 +1842,7 @@ src/
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
   renderer/terminal-pane.ts   One xterm bound to one PTY
   renderer/chat-pane.ts       A session as a conversation; composer writes to the PTY
+  renderer/message-text.ts    Message text to DOM: markdown or source, never an HTML string
   renderer/chips.ts           Model/effort badges, read by shape and colour
   renderer/command-palette.ts     ⌘K command palette — wireframe C13
   renderer/confirm-dialog.ts      Destructive-action confirm gate — wireframe C7

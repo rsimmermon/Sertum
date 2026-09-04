@@ -185,8 +185,27 @@ export interface SessionSnapshot extends SessionSpec {
  * `at` is the record's own timestamp where the agent writes one; Grok's
  * chat history carries none, so null means "not recorded" rather than "now".
  */
+/**
+ * How a message's characters should be shown.
+ *
+ * `text` means rendering would change nothing — there is no markup in it, so
+ * the choice never arises. `markdown` means the agent wrote markup and meant
+ * it. `markdown-source` means it wrote markup because the markup *is* the
+ * answer — the turn asked for the source — so the characters are shown as
+ * written. See `main/adapters/markdown-format.ts` for how the three are told
+ * apart, and why the reader can always overrule the guess.
+ */
+export type MessageFormat = 'text' | 'markdown' | 'markdown-source';
+
 export type ChatItem =
-  | { kind: 'message'; role: 'user' | 'assistant'; text: string; at: number | null }
+  | {
+      kind: 'message';
+      role: 'user' | 'assistant';
+      text: string;
+      at: number | null;
+      /** Always `text` for a user's own words; see `MessageFormat`. */
+      format: MessageFormat;
+    }
   | { kind: 'thinking'; text: string; at: number | null }
   | {
       kind: 'image';
@@ -860,6 +879,13 @@ export interface SertumApi {
    */
   copyText(text: string): Promise<void>;
   /**
+   * Copy or paste through the platform, so a text field behaves exactly as it
+   * does everywhere else. The Edit menu routes here for every surface except
+   * a terminal, whose selection and image-aware paste are its own.
+   */
+  copySelection(): Promise<void>;
+  pasteSelection(): Promise<void>;
+  /**
    * Read the system clipboard for a paste into a terminal.
    *
    * Read here rather than in the renderer because an image has to be spilled
@@ -933,6 +959,15 @@ export interface SertumApi {
   revealPath(target: string): Promise<void>;
   /** Open an http(s) URL in the browser. Any other scheme is refused. */
   openExternal(url: string): Promise<boolean>;
+  /**
+   * An image a message points at, as a `data:` URL, or null when it is not a
+   * readable local image inside the session's own folder.
+   *
+   * Null is the ordinary answer rather than an error -- a remote address, a
+   * path outside the folder, a missing file and a non-image all give it, and
+   * the chat view keeps the link it already drew.
+   */
+  readLocalImage(cwd: string, src: string): Promise<string | null>;
   /** Answer a tool call B5 is holding open. */
   answerApproval(
     request: { id: string; sessionId: string; tool: string; subject: string },

@@ -4,8 +4,7 @@ import type {
   ConversationSnapshot,
   SessionSnapshot,
 } from '../shared/types';
-import { render as renderMath } from 'katex';
-import 'katex/dist/katex.min.css';
+import { appendMessageText } from './message-text';
 
 const api = window.sertum;
 
@@ -33,13 +32,31 @@ export class ChatPane {
   private scroll: HTMLDivElement;
   private note: HTMLDivElement;
   private input: HTMLTextAreaElement;
-  private send: HTMLButtonElement;
-  private stop: HTMLButtonElement;
+  private action: HTMLButtonElement;
+  /** Which of the two things the one composer button currently does. */
+  private mode: 'send' | 'stop' = 'send';
   private composerNote: HTMLDivElement;
+  private waiting: HTMLDivElement;
+  private waitingLabel: HTMLSpanElement;
   private timer: ReturnType<typeof setInterval> | null = null;
   private renderedKey = '';
   private session: SessionSnapshot;
   private attached = false;
+  /**
+   * Messages the reader has switched between rendered and source, by a key
+   * that survives the message growing as it streams and the read window
+   * dropping older items. Classification picks the opening position; this is
+   * what stops that guess from being the last word.
+   */
+  private readonly chosenRaw = new Map<string, boolean>();
+  private readonly formatChoice: FormatChoice = {
+    raw: (item) => this.chosenRaw.get(formatKey(item)) ?? item.format === 'markdown-source',
+    toggle: (item) => {
+      const key = formatKey(item);
+      const now = this.chosenRaw.get(key) ?? item.format === 'markdown-source';
+      this.chosenRaw.set(key, !now);
+    },
+  };
 
   constructor(
     session: SessionSnapshot,
@@ -70,26 +87,48 @@ export class ChatPane {
       }
     });
 
-    this.send = document.createElement('button');
-    this.send.className = 'btn primary chat-send';
-    this.send.type = 'button';
-    this.send.textContent = 'Send';
-    this.send.onclick = () => this.submit();
-
-    this.stop = document.createElement('button');
-    this.stop.className = 'btn danger chat-stop';
-    this.stop.type = 'button';
-    this.stop.textContent = 'Stop';
-    this.stop.onclick = () => void this.interrupt();
+    // One button at the right edge of the box you type into, carrying
+    // whichever of the two things you can currently do. Typing is the signal:
+    // text in the composer means you are about to send, an empty composer
+    // during a turn means the only thing left to do is stop it. They cannot
+    // both apply, so two buttons would always leave one of them dead.
+    this.action = document.createElement('button');
+    this.action.className = 'chat-action';
+    this.action.type = 'button';
+    const sign = document.createElement('span');
+    sign.className = 'chat-stop-sign';
+    this.action.append(sign, sendArrow());
+    this.action.onclick = () => {
+      if (this.mode === 'stop') void this.interrupt();
+      else this.submit();
+    };
+    // The mode follows the composer, so it flips on the first keystroke and
+    // back on the last backspace.
+    this.input.addEventListener('input', () => this.paintAction());
 
     this.composerNote = document.createElement('div');
     this.composerNote.className = 'chat-sent';
     this.composerNote.hidden = true;
 
+    const box = document.createElement('div');
+    box.className = 'chat-input-box';
+    box.append(this.input, this.action);
+
     const row = document.createElement('div');
     row.className = 'chat-composer-row';
-    row.append(this.input, this.send, this.stop);
+    row.append(box);
     composer.append(row, this.composerNote);
+
+    this.waiting = document.createElement('div');
+    this.waiting.className = 'chat-item chat-assistant chat-waiting';
+    this.waiting.hidden = true;
+    const dots = document.createElement('span');
+    dots.className = 'chat-dots';
+    dots.setAttribute('aria-hidden', 'true');
+    for (let i = 0; i < 3; i += 1) dots.append(document.createElement('i'));
+    this.waitingLabel = document.createElement('span');
+    this.waitingLabel.className = 'chat-waiting-label';
+    this.waiting.append(dots, this.waitingLabel);
 
     this.element.append(this.note, this.scroll, composer);
     this.applySession(session);
@@ -138,15 +177,7 @@ export class ChatPane {
   private applySession(s: SessionSnapshot): void {
     const writable = this.canWrite(s);
     this.input.disabled = !writable;
-    this.send.disabled = !writable;
-    const turnActive = s.status === 'working' || s.status === 'needs-input';
-    this.stop.disabled =
-      !writable || !turnActive || !this.interruptCapability.ok;
-    this.stop.title = !this.interruptCapability.ok
-      ? this.interruptCapability.reason
-      : turnActive
-        ? `Interrupt ${s.agent}’s current turn`
-        : 'There is no active turn to stop.';
+    this.paintAction();
     if (writable) {
       this.input.placeholder = `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
       this.input.title = '';
@@ -156,12 +187,77 @@ export class ChatPane {
     } else {
       this.input.placeholder = 'The session has exited.';
     }
+    this.paintWaiting(s);
+  }
+
+  /**
+   * The waiting bubble, shown only while plane 2 says the agent is working.
+   *
+   * This is the truth plane's payoff at conversation scale: the dots appear
+   * because the agent reported a turn in progress, never because output went
+   * quiet. Its caption is the same `activity` string the sidebar reads, so a
+   * pane cannot disagree with the dot beside it.
+   *
+   * A `needs-input` session is deliberately not shown as waiting — it is not
+   * working, it is waiting on the reader, which the status dot and the
+   * approval bar already say.
+   */
+  /**
+   * Decide what the one composer button is, and say so.
+   *
+   * Text in the composer always means Send — it is the thing you just did.
+   * With the composer empty during a turn, stopping is the only thing left,
+   * so the button becomes the stop sign. It stays a *stop* sign even when
+   * the agent declines `turn-interrupt`, disabled and carrying the reason:
+   * that reason is user-facing copy the adapter wrote, and hiding the button
+   * would hide it. Being a sign rather than a word, the reason has to reach a
+   * screen reader as well as a tooltip.
+   */
+  private paintAction(): void {
+    const s = this.session;
+    const writable = this.canWrite(s);
+    const hasText = this.input.value.trim().length > 0;
+    const turnActive = s.status === 'working' || s.status === 'needs-input';
+
+    this.mode = !hasText && writable && turnActive ? 'stop' : 'send';
+    const canStop = writable && turnActive && this.interruptCapability.ok;
+
+    let reason: string;
+    if (this.mode === 'stop') {
+      this.action.disabled = !canStop;
+      reason = this.interruptCapability.ok
+        ? `Stop ${s.agent}’s current turn`
+        : this.interruptCapability.reason;
+    } else {
+      this.action.disabled = !writable || !hasText;
+      reason = !writable
+        ? 'This session cannot take input here.'
+        : hasText
+          ? `Send to ${s.agent}`
+          : 'Type a message to send.';
+    }
+    this.action.classList.toggle('is-stop', this.mode === 'stop');
+    this.action.classList.toggle('is-send', this.mode === 'send');
+    this.action.title = reason;
+    this.action.setAttribute('aria-label', reason);
+  }
+
+  private paintWaiting(s: SessionSnapshot): void {
+    const working = s.status === 'working' && s.exitCode === null;
+    const wasHidden = this.waiting.hidden;
+    this.waiting.hidden = !working;
+    this.waitingLabel.textContent = working ? (s.activity ?? 'working') : '';
+    if (working && wasHidden) this.scrollToTail();
+  }
+
+  private scrollToTail(): void {
+    this.scroll.scrollTop = this.scroll.scrollHeight;
   }
 
   /** Stop through plane 2; never synthesize Ctrl+C or Escape terminal bytes. */
   private async interrupt(): Promise<void> {
-    if (this.stop.disabled) return;
-    this.stop.disabled = true;
+    if (this.action.disabled || this.mode !== 'stop') return;
+    this.action.disabled = true;
     const accepted = await api.interruptTurn(this.session.id);
     this.composerNote.textContent = accepted
       ? 'Stop requested through the agent’s control channel.'
@@ -205,6 +301,7 @@ export class ChatPane {
         'Sent to the terminal — it appears here once the agent records it.';
     }
     this.input.value = '';
+    this.paintAction();
     this.composerNote.hidden = false;
   }
 
@@ -228,14 +325,26 @@ export class ChatPane {
     this.render(snapshot);
   }
 
+  /**
+   * Repaint the conversation, keeping the reader where they were.
+   *
+   * `replaceChildren` is atomic, so the scroller never lays out empty and
+   * Chromium keeps `scrollTop` across it -- verified by removing the restore
+   * below and watching the position survive anyway. The restore stays because
+   * that is a property of one method rather than of this code: clearing and
+   * appending in two steps would reset the position, and nothing here says
+   * not to write it that way later.
+   */
   private render(snapshot: ConversationSnapshot): void {
-    // Keep the reading position unless the user was already at the tail.
     const nearBottom =
       this.scroll.scrollHeight - this.scroll.scrollTop - this.scroll.clientHeight < 48;
+    const wasAt = this.scroll.scrollTop;
 
     if (snapshot.items.length === 0) {
       this.note.hidden = true;
-      this.scroll.replaceChildren(renderWelcome(this.session));
+      // The welcome card is centred by `margin: auto`, so the waiting bubble
+      // rides along beneath it rather than being dropped for a first turn.
+      this.scroll.replaceChildren(renderWelcome(this.session), this.waiting);
       return;
     }
     this.note.textContent = snapshot.truncated
@@ -243,10 +352,43 @@ export class ChatPane {
       : '';
     this.note.hidden = !snapshot.truncated;
 
-    const nodes = snapshot.items.map((item) => renderItem(item));
-    this.scroll.replaceChildren(...nodes);
-    if (nearBottom) this.scroll.scrollTop = this.scroll.scrollHeight;
+    const nodes = snapshot.items.map((item) =>
+      renderItem(item, this.formatChoice, this.session.cwd),
+    );
+    // The bubble is one long-lived element rather than one per repaint, so
+    // its animation does not restart every time the transcript poll lands.
+    this.scroll.replaceChildren(...nodes, this.waiting);
+    if (nearBottom) this.scrollToTail();
+    else this.scroll.scrollTop = wasAt;
   }
+}
+
+/**
+ * The send mark: a paper plane, built as SVG nodes rather than markup — the
+ * same rule the message renderer keeps, and the reason there is no
+ * `innerHTML` anywhere in this view.
+ *
+ * Two strokes rather than one filled silhouette: the body, and the fold that
+ * reads as the near wing. Without the fold a small plane collapses into an
+ * anonymous triangle.
+ */
+function sendArrow(): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'chat-send-arrow');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of ['M21.5 2.5 2.8 9.3l7.6 3.4 3.4 7.6z', 'M21.5 2.5 10.4 12.7']) {
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2.1');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+  }
+  return svg;
 }
 
 /**
@@ -290,7 +432,7 @@ function agentLabel(agent: SessionSnapshot['agent']): string {
 function itemSignature(item: ChatItem): string {
   switch (item.kind) {
     case 'message':
-      return `m:${item.role}:${item.text.length}`;
+      return `m:${item.role}:${item.format}:${item.text.length}`;
     case 'thinking':
       return `t:${item.text.length}`;
     case 'image':
@@ -300,10 +442,10 @@ function itemSignature(item: ChatItem): string {
   }
 }
 
-function renderItem(item: ChatItem): HTMLElement {
+function renderItem(item: ChatItem, choice: FormatChoice, cwd: string): HTMLElement {
   switch (item.kind) {
     case 'message':
-      return renderMessage(item);
+      return renderMessage(item, choice, cwd);
     case 'thinking':
       return renderThinking(item);
     case 'image':
@@ -325,47 +467,83 @@ function renderImage(item: ChatItem & { kind: 'image' }): HTMLElement {
   return figure;
 }
 
-/** Render the agent's text faithfully, typesetting only explicit TeX spans. */
-function renderMessage(item: ChatItem & { kind: 'message' }): HTMLElement {
-  const wrap = document.createElement('div');
-  wrap.className = `chat-item chat-${item.role}`;
-  const bubble = document.createElement('div');
-  bubble.className = 'chat-bubble';
-  appendMessageText(bubble, item.text);
-  if (item.at !== null) bubble.title = timeLabel(item.at);
-  wrap.append(bubble);
-  return wrap;
+/**
+ * Which of a message's two readings is on screen, and how to swap them.
+ *
+ * A reader's choice is held by the pane rather than by the node, because the
+ * transcript poll rebuilds these nodes about once a second.
+ */
+interface FormatChoice {
+  raw(item: ChatItem & { kind: 'message' }): boolean;
+  toggle(item: ChatItem & { kind: 'message' }): void;
 }
 
 /**
- * KaTeX receives only text inside the agent's explicit `\[...\]` or
- * `\(...\)` delimiters. Everything else remains a text node, so transcript
- * content cannot inject HTML and ordinary prose is never reformatted by us.
+ * Identity that survives what changes about a message while it is on screen:
+ * its text grows as the agent streams, and the read window drops older items
+ * off the front. The timestamp plus an opening slice of the text is stable
+ * through both.
  */
-function appendMessageText(target: HTMLElement, text: string): void {
-  const math = /\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)/g;
-  let from = 0;
-  for (const match of text.matchAll(math)) {
-    const at = match.index;
-    if (at > from) target.append(document.createTextNode(text.slice(from, at)));
-    const displayMode = match[1] !== undefined;
-    const source = (match[1] ?? match[2] ?? '').trim();
-    const span = document.createElement(displayMode ? 'div' : 'span');
-    span.className = displayMode ? 'chat-math-display' : 'chat-math-inline';
-    try {
-      renderMath(source, span, {
-        displayMode,
-        throwOnError: false,
-        trust: false,
-        strict: 'ignore',
-      });
-    } catch {
-      span.textContent = match[0];
-    }
-    target.append(span);
-    from = at + match[0].length;
+function formatKey(item: ChatItem & { kind: 'message' }): string {
+  return `${item.at ?? 'na'}|${item.text.slice(0, 80)}`;
+}
+
+/**
+ * The agent's message, shown the way `MessageFormat` says — with the reader
+ * given the other reading whenever there is one.
+ */
+function renderMessage(
+  item: ChatItem & { kind: 'message' },
+  choice: FormatChoice,
+  cwd: string,
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = `chat-item chat-${item.role}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  if (item.at !== null) bubble.title = timeLabel(item.at);
+
+  if (item.format === 'text') {
+    appendMessageText(bubble, item.text, false, cwd);
+    wrap.append(bubble);
+    return wrap;
   }
-  if (from < text.length) target.append(document.createTextNode(text.slice(from)));
+
+  // A source-requested message explains itself, because being shown the
+  // characters when the app could have rendered them looks like a failure
+  // until you know it was a reading of the request.
+  const bar = document.createElement('div');
+  bar.className = 'chat-format';
+  const note = document.createElement('span');
+  note.className = 'chat-format-note';
+  const button = document.createElement('button');
+  button.className = 'chat-format-toggle';
+  button.type = 'button';
+  bar.append(note, button);
+
+  const paint = (): void => {
+    const raw = choice.raw(item);
+    bubble.classList.toggle('is-markdown', !raw);
+    bubble.classList.toggle('is-source', raw);
+    bubble.replaceChildren();
+    appendMessageText(bubble, item.text, !raw, cwd);
+    button.textContent = raw ? 'Show rendered' : 'Show source';
+    button.title = raw
+      ? 'Render this message as markdown'
+      : 'Show the characters the agent wrote';
+    const explain = raw && item.format === 'markdown-source';
+    note.textContent = explain ? 'Markdown source — the request asked for the markup' : '';
+    bar.classList.toggle('is-explained', explain);
+  };
+  button.onclick = () => {
+    choice.toggle(item);
+    paint();
+  };
+  paint();
+
+  wrap.append(bar, bubble);
+  return wrap;
 }
 
 function renderThinking(item: ChatItem & { kind: 'thinking' }): HTMLElement {

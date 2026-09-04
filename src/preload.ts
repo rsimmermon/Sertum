@@ -26,6 +26,8 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:create', spec),
   listSessions: () => ipcRenderer.invoke('session:list'),
   copyText: (text: string) => ipcRenderer.invoke('clipboard:write', text),
+  copySelection: () => ipcRenderer.invoke('clipboard:copy-selection'),
+  pasteSelection: () => ipcRenderer.invoke('clipboard:paste-selection'),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   listWorktrees: (cwd: string) => ipcRenderer.invoke('worktree:list', cwd),
   removeWorktree: (root: string, path: string, force: boolean) =>
@@ -48,6 +50,8 @@ const api: SertumApi = {
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   openExternal: (url: string) =>
     ipcRenderer.invoke('shell:open-external', url),
+  readLocalImage: (cwd: string, src: string) =>
+    ipcRenderer.invoke('image:read-local', { cwd, src }),
   answerApproval: (
     request: { id: string; sessionId: string; tool: string; subject: string },
     answer: ApprovalAnswer,

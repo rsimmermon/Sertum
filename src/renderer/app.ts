@@ -282,6 +282,8 @@ export class App {
     });
     menu.on('interrupt', () => this.activeId && api.write(this.activeId, '\x1b'));
     menu.on('stop', () => this.activeId && void api.killSession(this.activeId));
+    menu.on('copy', () => this.copyFromFocus());
+    menu.on('paste', () => this.pasteToFocus());
     menu.on('palette', () => this.openPalette());
     menu.on('worktrees', () => void this.promptWorktrees());
     menu.on('rename', () => this.activeId && this.beginRename(this.activeId));
@@ -1467,6 +1469,40 @@ export class App {
    * whose feature has not landed are listed without a handler and render
    * disabled, matching the application menu and the C5 row menu.
    */
+  /**
+   * Copy what is selected wherever the focus is (macOS Edit menu).
+   *
+   * A terminal is asked first, because xterm keeps its selection in its own
+   * model where the platform's copy cannot see it. Everything else -- the
+   * transcript, the composer, a dialog field -- goes to the platform, which
+   * already knows how a textarea and a DOM range each behave.
+   */
+  private copyFromFocus(): void {
+    const pane = this.focusedTerminal();
+    if (pane?.copySelection()) return;
+    void api.copySelection();
+  }
+
+  /** Paste into whatever has focus, image-aware inside a terminal. */
+  private pasteToFocus(): void {
+    const pane = this.focusedTerminal();
+    if (pane) {
+      pane.paste();
+      return;
+    }
+    void api.pasteSelection();
+  }
+
+  /** The terminal the caret is actually in, or null for every other surface. */
+  private focusedTerminal(): TerminalPane | null {
+    const host = document.activeElement?.closest('.term-host');
+    if (!host) return null;
+    for (const pane of this.panes.values()) {
+      if (pane.element === host) return pane;
+    }
+    return null;
+  }
+
   private openPalette(): void {
     const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
     const activeSteer = active

@@ -1624,11 +1624,16 @@ select.field {
   overflow-wrap: anywhere;
 }
 .chat-welcome-meta { margin-top: 10px; font-size: 11px; color: var(--muted); }
-.chat-item { max-width: 72ch; }
+.chat-item { max-width: 72ch; min-width: 0; }
 .chat-bubble {
   white-space: pre-wrap; overflow-wrap: anywhere;
   font-size: var(--size-ui); line-height: 1.5; color: var(--ink);
 }
+.chat-bubble.is-markdown { white-space: normal; }
+/* Source mode exists to be read and copied as characters, so it is set in the
+   same mono face as the rest of the app's code -- which is also the only way
+   a markdown table's columns line up. Prose classified `text` never gets it. */
+.chat-bubble.is-source { font: 12px/1.6 var(--font-mono); }
 .chat-user { align-self: flex-end; }
 .chat-user .chat-bubble {
   background: var(--accent-soft); border-radius: 10px 10px 3px 10px;
@@ -1669,17 +1674,211 @@ select.field {
   font: 11px/1.45 var(--font-mono);
 }
 
+/* ---------- markdown in a message ----------
+   Rendered only for a message `markdown-format.ts` classified as markup the
+   agent meant, and always with the other reading one click away. The bar is
+   quiet until you look for it, except when it has something to explain: a
+   message shown as source because the request asked for source says so, or
+   the app reads as broken. */
+.chat-format {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  margin-bottom: 2px; min-height: 16px;
+  opacity: 0; transition: opacity 120ms ease;
+}
+.chat-item:hover > .chat-format,
+.chat-format:focus-within,
+.chat-format.is-explained { opacity: 1; }
+.chat-format-note { font-size: 11px; color: var(--muted); }
+.chat-format-toggle {
+  flex: none; padding: 1px 6px; font-size: 11px; font-family: var(--font-ui);
+  color: var(--muted); background: none; cursor: pointer;
+  border: 1px solid var(--line-soft); border-radius: 4px;
+}
+.chat-format-toggle:hover { color: var(--ink-2); border-color: var(--line); }
+.chat-format-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.chat-md-p { margin: 0 0 8px; }
+.chat-md-h {
+  margin: 14px 0 6px; line-height: 1.3; font-weight: 600; color: var(--ink);
+}
+.chat-md-h1 { font-size: 1.35em; }
+.chat-md-h2 { font-size: 1.2em; }
+.chat-md-h3 { font-size: 1.08em; }
+.chat-md-h4, .chat-md-h5, .chat-md-h6 { font-size: 1em; color: var(--ink-2); }
+.chat-md-rule { margin: 12px 0; border: 0; border-top: 1px solid var(--line); }
+.chat-bubble > .chat-md-p:first-child,
+.chat-bubble > .chat-md-h:first-child { margin-top: 0; }
+.chat-bubble > *:last-child { margin-bottom: 0; }
+
+.chat-md-list { margin: 0 0 8px; padding-left: 22px; }
+.chat-md-list .chat-md-list { margin: 4px 0 0; }
+.chat-md-item { margin: 2px 0; }
+.chat-md-item.is-task { list-style: none; margin-left: -18px; }
+.chat-md-task { margin-right: 6px; vertical-align: baseline; accent-color: var(--accent); }
+
+.chat-md-quote {
+  margin: 0 0 8px; padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--line); color: var(--ink-2);
+}
+
+/* Code keeps the terminal's voice, and a language tag when the agent gave
+   one -- the tag is how a ```markdown block reads as source at a glance. */
+.chat-md-code {
+  margin: 0 0 8px; border: 1px solid var(--line-soft); border-radius: 6px;
+  background: var(--surface); overflow: hidden;
+}
+.chat-md-code-lang {
+  padding: 3px 10px; font: 10px/1.4 var(--font-mono); letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted);
+  border-bottom: 1px solid var(--line-soft);
+}
+.chat-md-code pre {
+  margin: 0; padding: 8px 10px; max-height: 420px; overflow: auto;
+  font: 12px/1.5 var(--font-mono); color: var(--ink-2);
+  white-space: pre; tab-size: 4;
+}
+.chat-md-code-span {
+  padding: 1px 4px; border-radius: 4px;
+  background: var(--surface-2); color: var(--ink);
+  font: 0.92em/1.4 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.chat-md-table-wrap { margin: 0 0 8px; max-width: 100%; overflow-x: auto; }
+.chat-md-table { border-collapse: collapse; font-size: 0.95em; }
+.chat-md-table th, .chat-md-table td {
+  padding: 4px 10px; border: 1px solid var(--line-soft); text-align: left;
+  vertical-align: top;
+}
+.chat-md-table th { background: var(--surface); color: var(--ink); font-weight: 600; }
+
+/* GFM footnotes. The mark scrolls within the pane rather than navigating,
+   so it is a button; the notes themselves sit after the message under a rule,
+   numbered in the order the reader meets their marks. */
+/* The `sup` does the raising, once. Setting `vertical-align: super` on the
+   button inside it as well raised the mark twice, which floated it clear of
+   the cap height and read as a gap before the punctuation that followed. */
+.chat-md-fnref { font-size: 0.75em; line-height: 0; vertical-align: super; }
+.chat-md-fnref-mark {
+  padding: 0; font: inherit; vertical-align: baseline;
+  color: var(--accent); background: none; border: 0; cursor: pointer;
+}
+.chat-md-fnref-mark::before { content: '['; }
+.chat-md-fnref-mark::after { content: ']'; }
+.chat-md-fnref-mark:hover { text-decoration: underline; }
+.chat-md-fnref-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-md-notes {
+  margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+}
+.chat-md-notes-list {
+  margin: 0; padding-left: 22px; font-size: 0.92em; color: var(--ink-2);
+}
+.chat-md-note { margin: 3px 0; }
+.chat-md-note-body { display: inline; }
+/* Only the note's opening paragraph shares the line with its number. Making
+   every paragraph inline ran a multi-paragraph note together into one block
+   of text with no break at all -- "...paragraphs.Indent continuation..." */
+.chat-md-note-body > .chat-md-p:first-child { display: inline; margin: 0; }
+.chat-md-note-body > .chat-md-p { margin: 6px 0 0; }
+.chat-md-note-body > .chat-md-code,
+.chat-md-note-body > .chat-md-list { margin-top: 6px; }
+.chat-md-note-back {
+  margin-left: 6px; padding: 0 3px; font: inherit;
+  color: var(--muted); background: none; border: 0; cursor: pointer;
+}
+.chat-md-note-back:hover { color: var(--accent); }
+.chat-md-note-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* What says "here" when the target was already on screen and nothing moved. */
+.chat-md-note.is-found, .chat-md-fnref.is-found {
+  animation: chat-md-found 1.4s ease-out;
+  border-radius: 3px;
+}
+@keyframes chat-md-found {
+  0%, 55% { background: var(--accent-soft); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-md-note.is-found, .chat-md-fnref.is-found { animation-duration: 0.01s; }
+}
+.chat-md-link { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.chat-md-link:hover { text-decoration-thickness: 2px; }
+/* An address the app will not open keeps its label and shows the target on
+   hover, rather than pretending to be a link that does nothing. */
+.chat-md-link-plain { color: var(--ink-2); border-bottom: 1px dotted var(--line); }
+.chat-md-image {
+  display: block; margin: 4px 0; max-width: 100%; max-height: 420px;
+  object-fit: contain;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+}
+.chat-md-image-ref::before { content: '🖼'; margin-right: 4px; opacity: 0.7; }
+
+/* ---------- the waiting bubble ----------
+   Plane 2 at conversation scale: the dots are on because an adapter reported
+   a turn in progress, never because output went quiet. The caption is the
+   same `activity` string the sidebar reads, so the two cannot disagree. */
+.chat-waiting {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 10px;
+  width: max-content; max-width: 100%;
+  padding: 8px 12px; border-radius: 10px 10px 10px 3px;
+  background: var(--surface); border: 1px solid var(--line-soft);
+}
+.chat-waiting[hidden] { display: none; }
+.chat-waiting-label { font-size: 12px; color: var(--muted); }
+.chat-dots { display: inline-flex; align-items: center; gap: 4px; height: 12px; }
+.chat-dots i {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+  animation: chat-dot-bounce 1.25s infinite ease-in-out;
+}
+.chat-dots i:nth-child(2) { animation-delay: 0.16s; }
+.chat-dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes chat-dot-bounce {
+  0%, 65%, 100% { transform: translateY(0); opacity: 0.4; }
+  32% { transform: translateY(-5px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-dots i { animation: chat-dot-fade 1.6s infinite ease-in-out; }
+  @keyframes chat-dot-fade { 0%, 65%, 100% { opacity: 0.4; } 32% { opacity: 1; } }
+}
+
 .chat-composer {
   flex: none; padding: 10px 14px 12px;
   border-top: 1px solid var(--line); background: var(--surface);
 }
 .chat-composer-row { display: flex; gap: 8px; align-items: flex-end; }
+/* The box you type into owns the control that ends a turn, so stopping is a
+   reach to the edge of the field rather than to a row of words. */
+.chat-input-box { position: relative; flex: 1; min-width: 0; display: flex; }
 .chat-input {
   flex: 1; resize: none; font: var(--size-ui) var(--font-ui); line-height: 1.4;
-  padding: 8px 10px; border-radius: 6px;
+  padding: 8px 42px 8px 10px; border-radius: 6px;
   border: 1px solid var(--line); background: var(--bg); color: var(--ink);
 }
 .chat-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .chat-input:disabled { background: var(--surface-2); color: var(--muted); }
-.chat-send, .chat-stop { flex: none; }
+/* One button, two jobs. Text in the composer means Send and it is the accent
+   arrow; an empty composer during a turn means Stop and it is the red square.
+   They are never both available, so a second button would always be dead. */
+.chat-action {
+  position: absolute; right: 7px; bottom: 7px;
+  width: 28px; height: 28px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 7px;
+  cursor: pointer; color: #fff;
+  transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.chat-action.is-stop { background: var(--err); border-color: var(--err); }
+.chat-action.is-send { background: var(--accent); border-color: var(--accent); }
+.chat-action:hover:enabled { filter: brightness(1.12); }
+.chat-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Kept on screen while it cannot be pressed rather than removed, because its
+   tooltip is where a declined `turn-interrupt` capability states its reason. */
+.chat-action:disabled {
+  cursor: default; opacity: 0.34;
+  background: transparent; border-color: var(--line); color: var(--muted);
+}
+.chat-stop-sign { width: 9px; height: 9px; border-radius: 1.5px; background: currentColor; }
+.chat-send-arrow { width: 17px; height: 17px; display: block; margin: 0 1px 1px 0; }
+.chat-action.is-send .chat-stop-sign { display: none; }
+.chat-action.is-stop .chat-send-arrow { display: none; }
 .chat-sent { margin-top: 6px; font-size: 11px; color: var(--muted); }

@@ -4,6 +4,7 @@ import type {
   ChatItem,
   ConversationSnapshot,
 } from '../../shared/types';
+import { classifyMessages } from './markdown-format';
 
 /**
  * Reads a session's transcript as a conversation — stage 1 of the chat
@@ -93,6 +94,8 @@ export function readConversation(
     default:
       items = parseClaude(tail.records);
   }
+
+  classifyMessages(items);
 
   const truncated = tail.truncated || items.length > ITEM_CAP;
   if (items.length > ITEM_CAP) items = items.slice(items.length - ITEM_CAP);
@@ -290,13 +293,20 @@ function parseGrok(records: Array<Record<string, unknown>>): ChatItem[] {
           role: 'user',
           text: cap(unwrapUserQuery(text), TEXT_CAP),
           at: null,
+          format: 'text',
         });
         break;
       }
       case 'assistant': {
         const text = joinBlockText(rec.content).trim();
         if (text) {
-          items.push({ kind: 'message', role: 'assistant', text: cap(text, TEXT_CAP), at: null });
+          items.push({
+            kind: 'message',
+            role: 'assistant',
+            text: cap(text, TEXT_CAP),
+            at: null,
+            format: 'text',
+          });
         }
         if (Array.isArray(rec.tool_calls)) {
           for (const raw of rec.tool_calls) {
@@ -359,7 +369,10 @@ function pushMessage(
   const trimmed = text.trim();
   if (!trimmed) return;
   if (role === 'user' && machine.test(trimmed)) return;
-  items.push({ kind: 'message', role, text: cap(trimmed, TEXT_CAP), at });
+  // `format` is the parsers' placeholder: telling markdown from prose needs
+  // the request a message answers, which only exists once the whole list is
+  // built. `classifyMessages` fills it in there.
+  items.push({ kind: 'message', role, text: cap(trimmed, TEXT_CAP), at, format: 'text' });
 }
 
 /** Text out of a content field that is a string or a list of text blocks. */

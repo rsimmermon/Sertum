@@ -37,6 +37,7 @@ import {
 } from './main/keybindings';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
+import { readLocalImage } from './main/local-image';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
   DiffCommitRequest,
@@ -575,6 +576,22 @@ ipcMain.handle('shell:reveal', (_e, target: string) => {
  * a hostile string turns into launching a local program -- and the URLs that
  * reach here come from `gh`'s output, not from us.
  */
+/**
+ * Copy and paste through the platform, for the Edit menu.
+ *
+ * These exist because macOS routes the standard editing chords through the
+ * application menu: with no Edit menu, Cmd+C and Cmd+V reach nothing at all,
+ * and every text surface in the app -- the transcript, the composer, every
+ * dialog field -- silently refuses to copy. Windows and Linux never had the
+ * problem, because Chromium handles those keys itself.
+ */
+ipcMain.handle('clipboard:copy-selection', (e) => {
+  e.sender.copy();
+});
+ipcMain.handle('clipboard:paste-selection', (e) => {
+  e.sender.paste();
+});
+
 ipcMain.handle('shell:open-external', (_e, url: string) => {
   let parsed: URL;
   try {
@@ -586,6 +603,19 @@ ipcMain.handle('shell:open-external', (_e, url: string) => {
   void shell.openExternal(parsed.toString());
   return true;
 });
+/**
+ * An image a message points at, as a data URL, or null.
+ *
+ * The renderer cannot read a `file://` path and must not fetch an address out
+ * of a transcript, so the read happens here. `cwd` is the session's own
+ * folder from `SessionSnapshot` -- never a value the message supplied -- and
+ * `readLocalImage` refuses anything outside it. Null is the ordinary answer
+ * for a remote or unreadable image, and the caller keeps its link.
+ */
+ipcMain.handle('image:read-local', (_e, request: { cwd: string; src: string }) =>
+  readLocalImage(request.cwd, request.src),
+);
+
 /**
  * Deep link to the pane holding our Apple events grant.
  *
@@ -780,6 +810,13 @@ function buildMenu() {
   const send = (channel: string) => () => {
     if (!menuModalOpen) broadcast(channel, null);
   };
+  /**
+   * For the commands a modal must not disable. Editing chords are the whole
+   * set: a dialog is exactly where someone pastes a branch name or copies an
+   * error, so routing them through `send` would have made Cmd+V dead in the
+   * one place it is most wanted.
+   */
+  const sendAlways = (channel: string) => () => broadcast(channel, null);
   // The radio ticks have to start where the stored layout is, or the menu
   // disagrees with the window until the user opens the picker.
   const layout = getSettings().paneLayout;
@@ -809,8 +846,43 @@ function buildMenu() {
     ],
   };
 
+  /**
+   * The Edit menu, macOS only and deliberately so.
+   *
+   * macOS delivers the standard editing chords through the application menu,
+   * so without this menu Cmd+C, Cmd+V and Cmd+A do nothing anywhere in the
+   * app. On Windows and Linux Chromium already handles them, and adding the
+   * usual roles there would be a regression rather than a fix: their default
+   * accelerator is `CmdOrCtrl+C`, which would take Ctrl+C away from the
+   * terminal -- where, with no selection, it is the interrupt that stops the
+   * agent.
+   *
+   * Copy and Paste are routed through the renderer rather than given the
+   * `copy`/`paste` roles, because a terminal is not an ordinary text surface:
+   * xterm's selection is not a DOM selection, and its paste has to turn an
+   * image into a path before any byte reaches the PTY. The renderer asks the
+   * focused pane first and falls back to the platform's own behaviour, which
+   * is what makes a plain textarea act exactly as it does everywhere else.
+   *
+   * Note it is absent from the modal-disabling list: while a dialog is up,
+   * copying and pasting inside its fields must keep working.
+   */
+  const editMenu: Electron.MenuItemConstructorOptions = {
+    id: 'edit-menu',
+    label: 'Edit',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { label: 'Copy', accelerator: 'Cmd+C', click: sendAlways('menu:copy') },
+      { label: 'Paste', accelerator: 'Cmd+V', click: sendAlways('menu:paste') },
+      { role: 'selectAll' },
+    ],
+  };
+
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [appMenu] : []),
+    ...(isMac ? [appMenu, editMenu] : []),
     {
       id: 'file-menu',
       label: 'File',
