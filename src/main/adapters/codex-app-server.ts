@@ -15,6 +15,12 @@ export interface CodexNotification {
   params: Record<string, unknown>;
 }
 
+export interface CodexServerRequest extends CodexNotification {
+  id: string | number;
+  /** Bound to the connection that issued the request; never replays after reconnect. */
+  reply(result: Record<string, unknown>, error?: string): boolean;
+}
+
 /**
  * Plane 2 ingress for Codex.
  *
@@ -167,9 +173,14 @@ export class CodexAppServer extends EventEmitter {
     const ws = new WebSocket(this.remoteUrl);
     this.socket = ws;
 
-    ws.onmessage = (event) => this.receive(String(event.data));
+    ws.onmessage = (event) => {
+      if (this.socket === ws) this.receive(String(event.data));
+    };
     ws.onclose = () => {
+      if (this.socket !== ws) return;
       this.socket = null;
+      for (const settle of this.pending.values()) settle(undefined, 'Connection closed');
+      this.pending.clear();
       this.emit('disconnected');
       if (!this.stopping) this.scheduleReconnect();
     };
@@ -183,6 +194,9 @@ export class CodexAppServer extends EventEmitter {
 
     await this.request('initialize', {
       clientInfo: { name: 'Sertum', version: '1.0.0' },
+      // The owned host handles request_user_input's experimental contract.
+      // This negotiates methods, not Remote Control publication or pairing.
+      capabilities: { experimentalApi: true },
     });
     this.notify('initialized', {});
     this.emit('connected');
@@ -225,10 +239,22 @@ export class CodexAppServer extends EventEmitter {
     if (typeof method !== 'string') return;
     const params = (message.params ?? {}) as Record<string, unknown>;
 
-    // Server *requests* carry an id and expect a reply. The TUI owns the thread
-    // and answers them; Sertum only listens, so replying here would race
-    // it. They are still worth surfacing — an approval prompt is exactly the
-    // "needs you" signal the sidebar exists to show.
+    // Only a host that owns the exact thread may answer a server request.
+    if (typeof id === 'number' || typeof id === 'string') {
+      const socket = this.socket;
+      let answered = false;
+      this.emit('request', {
+        id, method, params,
+        reply: (result, error) => {
+          if (answered || !socket || socket !== this.socket || socket.readyState !== 1) return false;
+          socket.send(JSON.stringify({ jsonrpc: '2.0', id,
+            ...(error ? { error: { code: -32601, message: error } } : { result }),
+          }));
+          answered = true;
+          return true;
+        },
+      } satisfies CodexServerRequest);
+    }
     this.events++;
     this.emit('notification', { method, params } satisfies CodexNotification);
   }
@@ -282,6 +308,9 @@ export class CodexAppServer extends EventEmitter {
     this.reconnectTimer = null;
     try { this.socket?.close(); } catch { /* already gone */ }
     this.socket = null;
+    for (const settle of this.pending.values()) settle(undefined, 'App server stopped');
+    this.pending.clear();
+    this.emit('disconnected');
 
     const child = this.child;
     const server = this.listeningPid;

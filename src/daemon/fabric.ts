@@ -1,9 +1,14 @@
+import { CodexChatHost } from '../main/adapters/codex-chat';
+import { hasStructuredTransport, sessionCapability } from '../shared/session-capabilities';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { agentSafeEnv, PtyManager } from '../main/pty-manager';
-import { ClaudeChatHost } from '../main/adapters/claude-chat';
+import {
+  ClaudeChatHost,
+  type ChatPermissionAsk,
+} from '../main/adapters/claude-chat';
 import { HookServer } from '../main/hook-server';
 import { hydrateLoginEnv } from '../main/login-env';
 import {
@@ -43,6 +48,7 @@ import {
   findTranscriptForSession,
 } from '../main/adapters/transcript';
 import { createAgentAdapters } from '../main/adapters/agent-adapter';
+import { approvalCardFor } from '../main/adapters/interactive-tools';
 import {
   addRule,
   evaluate,
@@ -58,12 +64,25 @@ import {
   type BinaryDetection,
   type DiscoveredSession,
   type ManagedAgent,
+  type PendingApproval,
+  type PermissionMode,
+  type PermissionModeResult,
   type PermissionRule,
   type PtySize,
   type SessionSnapshot,
   type SessionSpec,
   type SessionStatus,
 } from '../shared/types';
+
+/** What the session's activity line reads once a held call is answered. */
+const ANSWERED_ACTIVITY: Record<
+  ApprovalAnswer['decision'],
+  (tool: string) => string
+> = {
+  allow: (tool) => `${tool}…`,
+  deny: (tool) => `${tool} denied`,
+  answer: (tool) => `${tool} answered`,
+};
 
 /**
  * The session fabric — everything Sertum knows about running agents, moved
@@ -116,7 +135,18 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
    */
   const sessionAllows = new Map<string, Set<string>>();
 
-  hooks.evaluatePermission = (sessionId, payload) => {
+  /**
+   * The stored answer for one tool call, or null when nothing has an opinion.
+   *
+   * Shared by both places a permission question can arrive: Claude's
+   * `PermissionRequest` hook for a PTY-backed session, and a conversation
+   * session's own `can_use_tool` control request. One function, so a rule
+   * cannot mean two different things depending on which transport asked.
+   */
+  const decidePermission: NonNullable<HookServer['evaluatePermission']> = (
+    sessionId,
+    payload,
+  ) => {
     const session = ptys.get(sessionId);
     if (!session) return null;
     const input =
@@ -140,24 +170,44 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     };
   };
 
+  hooks.evaluatePermission = decidePermission;
   hooks.onApprovalGone = (id) => emit('approval:gone', id);
+
+  /**
+   * Puts one call on B5's bar, whichever channel it arrived on.
+   *
+   * The status move is plane 2 speaking rather than a guess about pixels:
+   * Claude said a decision is wanted, either by firing `PermissionRequest`
+   * or by holding a `can_use_tool` control request open.
+   */
+  function raiseApproval(request: PendingApproval): void {
+    if (request.blocksTurn !== false) {
+      ptys.applyUpdate(request.sessionId, {
+        status: 'needs-input',
+        activity: activityFor(request),
+      });
+    }
+    emit('approval:needed', request);
+  }
+
+  /** What the sidebar says while this call waits. A card is not an approval. */
+  function activityFor(request: PendingApproval): string {
+    switch (request.card?.kind) {
+      case 'questions':
+        return 'waiting on your answer';
+      case 'plan':
+        return 'review the plan';
+      default:
+        return `approve ${request.tool}?`;
+    }
+  }
 
   /**
    * B5 is opt-outable, and the switch is the presence of the handler: with
    * no handler the hook server never holds a call at all.
    */
   function syncApprovalHandler(): void {
-    hooks.onApprovalNeeded = settings.approvalsInApp
-      ? (request) => {
-          // Claude said it needs a decision by firing PermissionRequest, so
-          // this is plane 2 speaking, not a guess about pixels.
-          ptys.applyUpdate(request.sessionId, {
-            status: 'needs-input',
-            activity: `approve ${request.tool}?`,
-          });
-          emit('approval:needed', request);
-        }
-      : undefined;
+    hooks.onApprovalNeeded = settings.approvalsInApp ? raiseApproval : undefined;
   }
 
   const codex = new CodexAppServer(
@@ -218,13 +268,174 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   // ------------------------------------------------------- stream sessions
 
   const claudeChat = new ClaudeChatHost();
+  const codexChat = new CodexChatHost(codex);
+  const structuredHostFor = (id: string) => codexChat.has(id) ? codexChat : claudeChat;
+  codexChat.on('update', ({ id, status, activity }) => ptys.applyUpdate(id, { status, activity }));
+  codexChat.on('exit', ({ id, exitCode }) => ptys.markExited(id, exitCode));
+  codexChat.on('approval-gone', (id: string) => emit('approval:gone', id));
+  codexChat.on('approval', (request: PendingApproval) => {
+    if (!settings.approvalsInApp) {
+      codexChat.answer(request.id, request.sessionId, { decision: 'deny', scope: 'once' });
+      return;
+    }
+    raiseApproval(request);
+  });
   claudeChat.on('update', ({ id, status, activity }) =>
     ptys.applyUpdate(id, { status, activity }),
   );
-  claudeChat.on('init', ({ id, sessionId, model }) =>
-    ptys.applyMeta(id, { externalId: sessionId, model }),
+  claudeChat.on('init', ({ id, sessionId, model, permissionMode }) =>
+    ptys.applyMeta(id, { externalId: sessionId, model, permissionMode }),
   );
   claudeChat.on('exit', ({ id, exitCode }) => ptys.markExited(id, exitCode));
+
+  /**
+   * Calls a conversation session is holding open, keyed by the approval id
+   * the UI answers with. The turn behind each one is genuinely stopped, so
+   * this map is what turns a button press back into a resumed turn.
+   */
+  const controlAsks = new Map<
+    string,
+    { requestId: string; request: PendingApproval }
+  >();
+
+  /**
+   * Answers one held control ask and forgets it.
+   *
+   * Returns whether the id belonged to this channel at all -- not whether the
+   * write landed. A process that died while the bar was up owns the id and
+   * cannot be written to, and handing that id on to the hook server, which
+   * has never heard of it, would only look like a second attempt.
+   */
+  function settleControlAsk(
+    id: string,
+    answer: { behavior: 'allow' } | { behavior: 'deny'; message: string },
+  ): boolean {
+    const ask = controlAsks.get(id);
+    if (!ask) return false;
+    controlAsks.delete(id);
+    claudeChat.answerPermission(ask.request.sessionId, ask.requestId, answer);
+    return true;
+  }
+
+  /**
+   * A conversation session is asking. This is the same question B5 already
+   * answers for a PTY-backed session, arriving on the transport that session
+   * actually has -- so it goes through the same rules, the same
+   * session-scoped allows and the same bar rather than a parallel path.
+   *
+   * Unlike the hook, nothing here expires. A held hook has curl's deadline
+   * behind it and must be released before it; a control request has only the
+   * turn, and an interactive Claude leaves its own dialog up indefinitely
+   * too. Answering late is correct; timing out would resume a turn with a
+   * decision nobody made.
+   */
+  claudeChat.on('permission', (ask: ChatPermissionAsk) => {
+    const reply = (
+      answer: { behavior: 'allow' } | { behavior: 'deny'; message: string },
+    ) => claudeChat.answerPermission(ask.id, ask.requestId, answer);
+
+    // A tool whose card *is* the interaction surface. The two Sertum knows
+    // how to draw come through with their card; anything else has a shape
+    // Sertum would be guessing at, so it is refused with a reason rather than
+    // shown as an approve/deny it never asked for.
+    const card = approvalCardFor(ask.toolName, ask.input);
+    if (ask.requiresUserInteraction && !card) {
+      reply({
+        behavior: 'deny',
+        message: `${ask.displayName} asks for a decision on its own card, which Sertum's conversation view cannot show. Run this session's agent in a terminal to answer it.`,
+      });
+      return;
+    }
+
+    // A card deliberately skips the rules and the session-scoped allows. A
+    // rule is a policy about whether a call is safe to run; it has no opinion
+    // on which option a person would pick or whether a plan is right, and a
+    // stale `allow` silently approving every plan is exactly the kind of
+    // answer-nobody-gave this whole surface exists to prevent.
+    const decision = card
+      ? null
+      : decidePermission(ask.id, {
+          tool_name: ask.toolName,
+          tool_input: ask.input,
+        });
+    if (decision && decision.decision !== 'ask') {
+      if (decision.decision === 'allow') {
+        reply({ behavior: 'allow' });
+        ptys.applyUpdate(ask.id, {
+          status: 'working',
+          activity: `${ask.toolName}…`,
+        });
+      } else {
+        reply({ behavior: 'deny', message: decision.reason });
+        ptys.applyUpdate(ask.id, {
+          status: 'working',
+          activity: `${ask.toolName} denied`,
+        });
+      }
+      return;
+    }
+
+    // With in-app approval switched off there is nowhere else for a
+    // conversation session to ask -- it has no terminal and no dialog of its
+    // own -- so it is refused with a reason rather than left holding.
+    if (!settings.approvalsInApp) {
+      reply({
+        behavior: 'deny',
+        message:
+          'Approvals in Sertum are switched off, and a conversation session has no other place to ask. Turn them on in Settings › Agents & permissions.',
+      });
+      return;
+    }
+
+    const id = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const request: PendingApproval = {
+      id,
+      sessionId: ask.id,
+      tool: ask.toolName,
+      subject: decision?.subject ?? subjectOf(ask.toolName, ask.input),
+      description: ask.description,
+      reason: ask.reason,
+      // A rule written from this bar would reach wider than the call it was
+      // written about, so the button that writes one is not offered -- and a
+      // card has nothing a rule could usefully say in the first place.
+      alwaysAllowable: !ask.suppressAlwaysAllow && !card,
+      ...(card ? { card } : {}),
+    };
+    controlAsks.set(id, { requestId: ask.requestId, request });
+    raiseApproval(request);
+  });
+
+  /**
+   * The CLI withdrew an ask: the turn was interrupted, or something else
+   * answered it. Nothing is owed in reply -- only the bar has to come down,
+   * or it would be asking about a turn that has gone.
+   */
+  claudeChat.on('permission-cancelled', ({ id, requestId }) => {
+    for (const [askId, ask] of controlAsks) {
+      if (ask.request.sessionId !== id || ask.requestId !== requestId) continue;
+      controlAsks.delete(askId);
+      emit('approval:gone', askId);
+    }
+  });
+
+  async function createCodexConversationSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot> {
+    const id = randomUUID();
+    const cwd = spec.cwd ?? process.cwd();
+    const started = await codexChat.start(id, cwd);
+    threadToSession.set(started.threadId, id);
+    ptys.registerStream({
+      id, label: spec.label ?? 'Codex', agent: 'codex', cwd,
+      command: resolvedCommand('codex') ?? 'codex', args: [],
+      pid: codex.serverPid!, externalId: started.threadId,
+      controls: {
+        kill: () => { void codexChat.terminate(id); },
+        terminate: () => codexChat.terminate(id),
+      },
+    });
+    ptys.applyMeta(id, { model: started.model || undefined, transcriptPath: started.path || undefined, permissionMode: started.mode });
+    ptys.applyUpdate(id, { status: 'idle', activity: 'ready' });
+    return ptys.get(id)!;
+  }
 
   function createConversationSession(
     spec: Partial<SessionSpec>,
@@ -244,6 +455,15 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       '--verbose',
       '--session-id',
       externalId,
+      // Declares an approval surface. Without it a headless session cannot
+      // ask at all: anything that would prompt is refused with "no approval
+      // surface in this session; permission request denied automatically",
+      // which reaches the reader only as the agent explaining afterwards
+      // that it lacked permission. With it, the CLI holds the turn and sends
+      // a `can_use_tool` control request down its own stream. `stdio` names
+      // that channel rather than a real MCP tool.
+      '--permission-prompt-tool',
+      'stdio',
       ...(hooks.port
         ? [
             '--settings',
@@ -276,6 +496,9 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         terminate: (graceMs) => claudeChat.terminate(id, graceMs),
       },
     });
+    // Its own control channel answers permission questions, so the
+    // `PermissionRequest` hook must not raise a second bar for the same call.
+    hooks.setHostAnsweredPermissions(id, true);
     const model = readConfiguredModel('claude');
     if (model) ptys.applyMeta(id, { model });
     return snapshot;
@@ -366,6 +589,9 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     if (method === 'thread/started') {
       const thread = (params.thread ?? {}) as CodexThread;
       if (!thread.id || !isUserThread(thread)) return;
+      // Structured hosts bind the thread/start response by id. Only CLI
+      // threads can satisfy the legacy TUI queue, even in the same folder.
+      if (thread.source !== undefined && thread.source !== 'cli') return;
       const match = awaitingThread.findIndex((w) => w.cwd === thread.cwd);
       const waiting =
         match >= 0 ? awaitingThread.splice(match, 1)[0] : awaitingThread.shift();
@@ -390,6 +616,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       return;
     }
     if (method === 'thread/status/changed') {
+      if (codexChat.has(sessionId)) return;
       const update = mapCodexStatus(params.status as CodexThreadStatus | undefined);
       if (update.status || update.activity) ptys.applyUpdate(sessionId, update);
       return;
@@ -425,6 +652,13 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       if (sessionId === e.id) threadToSession.delete(threadId);
     }
     sessionAllows.delete(e.id);
+    // A dead process is holding nothing, so every bar asking about it comes
+    // down rather than waiting for an answer that can no longer land.
+    for (const [askId, ask] of controlAsks) {
+      if (ask.request.sessionId !== e.id) continue;
+      controlAsks.delete(askId);
+      emit('approval:gone', askId);
+    }
     emit('pty:exit', e);
   });
   ptys.on('session-updated', (s) => emit('session:updated', s));
@@ -479,7 +713,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     if (s.agent === 'shell') return null;
 
     if (
-      (s.transport === 'stream' || s.origin === 'attached') &&
+      (hasStructuredTransport(s) || s.origin === 'attached') &&
       discoveredSessionId(s.externalId)
     ) {
       return findTranscriptForSession(
@@ -539,7 +773,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
             : `${agent} has no structured conversation protocol`,
         );
       }
-      return createConversationSession(spec);
+      return agent === 'codex' ? createCodexConversationSession(spec) : createConversationSession(spec);
     }
     if (spec.background) {
       const agent = spec.agent ?? 'claude';
@@ -654,8 +888,8 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     'chat/send': (p: { id: string; text: string }) => {
       const session = ptys.get(p.id);
       const message = p.text.trim();
-      if (!session || session.transport !== 'stream' || !message) return false;
-      return claudeChat.send(p.id, message);
+      if (!session || session.exitCode !== null || session.origin !== 'owned' || !hasStructuredTransport(session) || !message) return false;
+      return structuredHostFor(p.id).send(p.id, message);
     },
     'conversation/read': (id: string) => {
       const session = ptys.get(id);
@@ -736,6 +970,44 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     'rules/add': (rule: Omit<PermissionRule, 'id'>) => addRule(rule),
     'rules/remove': (id: string) => removeRule(id),
 
+    /**
+     * Every call still holding a turn open.
+     *
+     * A window that reloads, or is closed to the tray and reopened, has no
+     * copy of what is waiting -- and a conversation session's ask has no
+     * timeout behind it, so a bar lost with the window would strand the turn
+     * for good. The daemon is the one that knows, so it is asked on connect.
+     * A session is only ever on one of the two channels, so each session's
+     * own calls keep the order they arrived in.
+     */
+    'approval/pending': () => [
+      ...codexChat.pending(),
+      ...hooks.pending(),
+      ...[...controlAsks.values()].map((a) => a.request),
+    ],
+
+    /**
+     * Change how the agent decides permissions for the rest of the session.
+     *
+     * Only a conversation session has a channel to say it on; a PTY-backed
+     * one carries whatever mode it was started with, and is told so rather
+     * than left to wonder why nothing happened. The mode recorded is the one
+     * the agent echoed back, never the one that was asked for.
+     */
+    'session/permission-mode': async (p: {
+      id: string;
+      mode: PermissionMode;
+    }): Promise<PermissionModeResult> => {
+      const session = ptys.get(p.id);
+      if (!session) return { ok: false, reason: 'That session is gone.' };
+      const answer = sessionCapability(session, agentAdapters.get(session.agent)?.capabilities, 'permission-mode');
+      if (!answer.ok) return answer;
+      if (!answer.modes?.includes(p.mode)) return { ok: false, reason: 'This agent does not support that mode.' };
+      const result = await structuredHostFor(p.id).setPermissionMode(p.id, p.mode);
+      if (result.ok) ptys.applyMeta(p.id, { permissionMode: result.mode });
+      return result;
+    },
+
     'approval/answer': (p: {
       id: string;
       sessionId: string;
@@ -743,6 +1015,15 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       subject: string;
       answer: ApprovalAnswer;
     }) => {
+      // Resolve identity from daemon-owned state, never from renderer-supplied tool/path.
+      const codexAsk = codexChat.pending().find(a => a.id === p.id);
+      if (codexAsk) {
+        if (!codexChat.answer(p.id, p.sessionId, p.answer)) throw new Error('That Codex request cannot be answered anymore.');
+        return null;
+      }
+      const pending = controlAsks.get(p.id)?.request ?? hooks.pending().find(a => a.id === p.id);
+      if (!pending || pending.sessionId !== p.sessionId) return null;
+      p = { ...p, tool: pending.tool, subject: pending.subject };
       if (p.answer.decision === 'allow' && p.answer.scope === 'session') {
         const set = sessionAllows.get(p.sessionId) ?? new Set<string>();
         set.add(`${p.tool}0000${p.subject}`);
@@ -757,11 +1038,28 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
           decision: 'allow',
         });
       }
-      hooks.resolveApproval(p.id, p.answer);
+      // The same button answers either channel. A conversation session's
+      // call is held on its own control stream; a PTY-backed session's is
+      // held as an open hook response, and the id says which.
+      //
+      // `answer` rides the deny channel because that is the only one that
+      // carries a message, but it is a card's outcome rather than a refusal:
+      // the words are the user's answer, and the activity line says so.
+      const settled =
+        p.answer.decision === 'allow'
+          ? settleControlAsk(p.id, { behavior: 'allow' })
+          : settleControlAsk(p.id, {
+              behavior: 'deny',
+              message:
+                p.answer.reason?.trim() ||
+                (p.answer.decision === 'answer'
+                  ? 'The user dismissed the question without answering.'
+                  : 'Denied in Sertum.'),
+            });
+      if (!settled) hooks.resolveApproval(p.id, p.answer);
       ptys.applyUpdate(p.sessionId, {
         status: 'working',
-        activity:
-          p.answer.decision === 'deny' ? `${p.tool} denied` : `${p.tool}…`,
+        activity: ANSWERED_ACTIVITY[p.answer.decision](p.tool),
       });
       return null;
     },

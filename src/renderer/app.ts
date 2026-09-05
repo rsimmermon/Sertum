@@ -1,3 +1,4 @@
+import { hasStructuredTransport } from '../shared/session-capabilities';
 import { TerminalPane } from './terminal-pane';
 import { ChatPane } from './chat-pane';
 import { ApprovalBar } from './approval-bar';
@@ -28,6 +29,11 @@ import {
   openLayoutPicker,
 } from './layout-picker';
 import { agentIcon } from './agent-icon';
+import {
+  openPermissionModePicker,
+  permissionModeAvailability,
+  permissionModeLabel,
+} from './permission-mode';
 import { noteAgentAvailability, openAgentPicker } from './agent-picker';
 import {
   DEFAULT_SETTINGS,
@@ -36,6 +42,7 @@ import {
   type AgentKind,
   type MenuState,
   type PaneLayout,
+  type PendingApproval,
   type SessionSnapshot,
   type SessionStatus,
   type Settings,
@@ -96,7 +103,24 @@ const FONT_VARS: Array<[keyof Settings, string]> = [
 
 export class App {
   private sessions = new Map<string, SessionSnapshot>();
-  private approvals = new ApprovalBar(() => this.render());
+  /**
+   * Tool calls held open waiting for a decision, oldest first.
+   *
+   * The app owns this rather than the bar, because a call outlives the pane
+   * it is drawn in: a session can be moved between panes, and a pane can be
+   * rebuilt, while the turn behind the call stays stopped. Each session's
+   * calls are handed to its conversation pane on every repaint.
+   */
+  private pendingApprovals: PendingApproval[] = [];
+  /**
+   * Where a call is shown when its session has no conversation pane -- above
+   * the pane, which is where B5 lived before it moved into the conversation.
+   * Only Claude ever asks and every Claude session is a conversation, so this
+   * is a safety net rather than a path: without it a call arriving before the
+   * capability answers had loaded would hold a turn with nothing on screen to
+   * answer it.
+   */
+  private orphanApprovals = new ApprovalBar((id) => this.answeredApproval(id));
   private panes = new Map<string, TerminalPane>();
   /**
    * Chat views, keyed by session like the terminals above. Both live at once:
@@ -263,16 +287,22 @@ export class App {
     });
 
     // B5: a tool call is holding a turn open until someone answers.
-    this.el.approvalHost.append(this.approvals.element);
+    this.el.approvalHost.append(this.orphanApprovals.element);
     api.onApprovalNeeded((request) => {
-      this.approvals.show(request);
+      if (this.pendingApprovals.some((r) => r.id === request.id)) return;
+      this.pendingApprovals.push(request);
       // Answering means seeing what led to the request, so the session comes
-      // forward with the bar -- whichever call the bar ended up showing, which
-      // is not this one when an older call is still queued ahead of it.
-      const showing = this.approvals.sessionId;
+      // forward with the bar -- the oldest call still waiting, which is not
+      // this one when another is queued ahead of it.
+      const showing = this.pendingApprovals[0]?.sessionId;
       if (showing && this.sessions.has(showing)) this.focusSession(showing);
+      else this.render();
     });
-    api.onApprovalGone((id) => this.approvals.dismiss(id));
+    api.onApprovalGone((id) => {
+      const before = this.pendingApprovals.length;
+      this.pendingApprovals = this.pendingApprovals.filter((r) => r.id !== id);
+      if (this.pendingApprovals.length !== before) this.render();
+    });
 
     menu.on('new-session', () => void this.promptNewSession());
     menu.on('settings', () => void this.promptSettings());
@@ -344,9 +374,18 @@ export class App {
       this.sessions.set(s.id, s);
       // Anything alive in this first listing ran before this window did, so
       // its terminal has history only the daemon's buffer holds.
-      if (s.origin !== 'monitored' && s.transport !== 'stream') {
+      if (s.origin !== 'monitored' && !hasStructuredTransport(s)) {
         this.needsReplay.add(s.id);
       }
+    }
+    // So do the calls holding their turns open. A conversation session's ask
+    // waits indefinitely -- correctly, since an interactive Claude's dialog
+    // does too -- so a bar lost to a reload has to come back or the turn is
+    // stranded with nothing on screen that can answer it.
+    try {
+      this.pendingApprovals = await api.pendingApprovals();
+    } catch {
+      this.pendingApprovals = [];
     }
     // Sessions outlive the renderer (reload, devtools). Re-select one, or the
     // empty state renders on top of tabs that already exist.
@@ -1296,6 +1335,7 @@ export class App {
     const steer = this.capabilities?.[s.agent]['turn-steer'];
     const interrupt = this.capabilities?.[s.agent]['turn-interrupt'];
     const toolGate = this.capabilities?.[s.agent]['tool-gate'];
+    const modeAvailable = permissionModeAvailability(s, this.capabilities);
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1317,8 +1357,20 @@ export class App {
       { label: 'Open in new window' },
       SEPARATOR,
       {
+        // The setting that decides how much of this session you are asked
+        // about. It lives beside the composer too; here it is reachable from
+        // the sidebar without bringing the pane forward first.
+        label: s.permissionMode
+          ? `Permission mode: ${permissionModeLabel(s.permissionMode)}…`
+          : 'Permission mode…',
+        note: modeAvailable.ok ? undefined : modeAvailable.reason,
+        onSelect: modeAvailable.ok
+          ? () => this.openPermissionModePicker(s, x, y)
+          : undefined,
+      },
+      {
         label: s.toolsPaused ? 'Resume tool use' : 'Pause tool use',
-        accel: toolGate && !toolGate.ok ? toolGate.reason : undefined,
+        note: toolGate && !toolGate.ok ? toolGate.reason : undefined,
         onSelect:
           running && toolGate?.ok
             ? () => void this.setToolGate(s, !s.toolsPaused)
@@ -1459,6 +1511,41 @@ export class App {
   private focusSession(id: string): void {
     this.select(id);
     this.panes.get(id)?.focus();
+  }
+
+  /**
+   * A call has been answered, so it stops being pending here immediately
+   * rather than waiting for the daemon to say the bar can come down. The
+   * decision is already on its way; a bar that lingered would invite a second
+   * answer to a turn that has already resumed.
+   */
+  private answeredApproval(id: string): void {
+    this.pendingApprovals = this.pendingApprovals.filter((r) => r.id !== id);
+    this.render();
+  }
+
+  /** The calls waiting on one session, oldest first. */
+  private approvalsFor(id: string): PendingApproval[] {
+    return this.pendingApprovals.filter((r) => r.sessionId === id);
+  }
+
+  /**
+   * The mode picker, from the sidebar. The chat pane has its own button; this
+   * is the same catalogue reached without bringing the pane forward.
+   */
+  private openPermissionModePicker(
+    s: SessionSnapshot,
+    x: number,
+    y: number,
+  ): void {
+    openPermissionModePicker(x, y, s, this.capabilities, (mode) => {
+      void api.setPermissionMode(s.id, mode).then((result) => {
+        // Success repaints from the snapshot the daemon pushes back, so
+        // nothing is drawn from the request. A refusal has nowhere else to
+        // land from here, so it goes to the session's own pane.
+        if (!result.ok) this.chatPanes.get(s.id)?.reportModeRefusal(result.reason);
+      });
+    });
   }
 
   /**
@@ -1768,6 +1855,14 @@ export class App {
       if (!onScreen.has(id) || !this.showsChat(id)) pane.unmount();
     }
 
+    // Whatever is left after every visible conversation pane has taken its
+    // own calls. Normally empty -- see `orphanApprovals`.
+    this.orphanApprovals.setRequests(
+      this.pendingApprovals.filter(
+        (r) => !(onScreen.has(r.sessionId) && this.showsChat(r.sessionId)),
+      ),
+    );
+
     if (onScreen.size === 0 && !this.isSplit()) {
       this.el.paneHead.style.display = 'none';
       host.replaceChildren(this.emptyState());
@@ -1926,7 +2021,7 @@ export class App {
       // no bytes to collect and never gets one.
       if (
         session.origin !== 'monitored' &&
-        session.transport !== 'stream' &&
+        !hasStructuredTransport(session) &&
         !this.panes.has(session.id)
       ) {
         this.panes.set(session.id, new TerminalPane(session, this.settings));
@@ -1940,10 +2035,13 @@ export class App {
             ok: false,
             reason: 'Agent capabilities are still loading.',
           },
+          (askId) => this.answeredApproval(askId),
+          this.capabilities,
         );
         this.chatPanes.set(session.id, chat);
       }
       chat.update(session);
+      chat.setApprovals(this.approvalsFor(session.id));
       return {
         header: chrome ? this.paneChrome(session, slot, focused) : null,
         body: chat.element,

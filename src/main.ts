@@ -47,6 +47,7 @@ import type {
   DiscoveredSession,
   SessionSnapshot,
   Settings,
+  PermissionMode,
 } from './shared/types';
 import type { PtySize, SessionSpec } from './shared/types';
 
@@ -137,6 +138,10 @@ function pushFabricSettings(): void {
 ipcMain.handle('approval:answer', (_e, payload: unknown) =>
   daemon.request('approval/answer', payload),
 );
+// What is still holding a turn open. A recreated window has no copy, and a
+// conversation session's ask has no timeout behind it, so this is how a bar
+// lost with the window comes back rather than stranding the turn.
+ipcMain.handle('approval:pending', () => daemon.request('approval/pending'));
 
 ipcMain.handle('keys:get', () => listKeybindings());
 ipcMain.handle(
@@ -639,6 +644,11 @@ ipcMain.handle('session:interrupt-turn', (_e, id: string) =>
 );
 ipcMain.handle('session:tool-gate', (_e, p: { id: string; paused: boolean }) =>
   daemon.request('session/tool-gate', p),
+);
+ipcMain.handle(
+  'session:permission-mode',
+  (_e, p: { id: string; mode: PermissionMode }) =>
+    daemon.request('session/permission-mode', p),
 );
 ipcMain.handle('session:rename', (_e, p: { id: string; label: string }) =>
   daemon.request('session/rename', p),

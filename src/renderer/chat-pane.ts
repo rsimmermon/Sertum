@@ -1,9 +1,20 @@
+import { hasStructuredTransport } from '../shared/session-capabilities';
 import type {
+  AgentCapabilities,
+  AgentKind,
   CapabilityAnswer,
   ChatItem,
   ConversationSnapshot,
+  PendingApproval,
+  PermissionMode,
   SessionSnapshot,
 } from '../shared/types';
+import { ApprovalBar } from './approval-bar';
+import {
+  openPermissionModePicker,
+  permissionModeAvailability,
+  permissionModeLabel,
+} from './permission-mode';
 import { appendMessageText } from './message-text';
 
 const api = window.sertum;
@@ -35,6 +46,15 @@ export class ChatPane {
   /** Which of the two things the one composer button currently does. */
   private mode: 'send' | 'stop' = 'send';
   private composerNote: HTMLDivElement;
+  /**
+   * The permission-mode button, beside the box you type into.
+   *
+   * This is the setting that decides how much of the session you are asked
+   * about, so it sits where the asking happens rather than several menus
+   * away -- which is also where Claude Code itself keeps it. It shows the
+   * mode the agent reported, never a guess.
+   */
+  private modeButton: HTMLButtonElement;
   private waiting: HTMLDivElement;
   private waitingLabel: HTMLSpanElement;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -57,11 +77,24 @@ export class ChatPane {
     },
   };
 
+  /**
+   * B5, mounted between the transcript and the composer.
+   *
+   * A held tool call is part of the turn being read, and the answer to it
+   * belongs where every other reply to this agent is typed. The app owns the
+   * queue and hands down the calls for this session; the bar only draws and
+   * answers them.
+   */
+  private readonly approvals: ApprovalBar;
+
   constructor(
     session: SessionSnapshot,
     private interruptCapability: CapabilityAnswer,
+    onApprovalAnswered: (id: string) => void,
+    private capabilities: Record<AgentKind, AgentCapabilities> | null = null,
   ) {
     this.session = session;
+    this.approvals = new ApprovalBar(onApprovalAnswered, () => this.session.cwd);
     this.element = document.createElement('div');
     this.element.className = 'chat-pane';
 
@@ -109,6 +142,21 @@ export class ChatPane {
     this.composerNote.className = 'chat-sent';
     this.composerNote.hidden = true;
 
+    this.modeButton = document.createElement('button');
+    this.modeButton.type = 'button';
+    this.modeButton.className = 'chat-mode';
+    this.modeButton.onclick = (e) => {
+      const box = this.modeButton.getBoundingClientRect();
+      openPermissionModePicker(
+        box.left,
+        box.bottom + 4,
+        this.session,
+        this.capabilities,
+        (mode) => void this.setMode(mode),
+      );
+      e.stopPropagation();
+    };
+
     const box = document.createElement('div');
     box.className = 'chat-input-box';
     box.append(this.input, this.action);
@@ -116,7 +164,11 @@ export class ChatPane {
     const row = document.createElement('div');
     row.className = 'chat-composer-row';
     row.append(box);
-    composer.append(row, this.composerNote);
+
+    const meta = document.createElement('div');
+    meta.className = 'chat-composer-meta';
+    meta.append(this.modeButton, this.composerNote);
+    composer.append(row, meta);
 
     this.waiting = document.createElement('div');
     this.waiting.className = 'chat-item chat-assistant chat-waiting';
@@ -129,7 +181,7 @@ export class ChatPane {
     this.waitingLabel.className = 'chat-waiting-label';
     this.waiting.append(dots, this.waitingLabel);
 
-    this.element.append(this.note, this.scroll, composer);
+    this.element.append(this.note, this.scroll, this.approvals.element, composer);
     this.applySession(session);
   }
 
@@ -137,6 +189,11 @@ export class ChatPane {
   update(session: SessionSnapshot): void {
     this.session = session;
     this.applySession(session);
+  }
+
+  /** The calls this session is holding open, oldest first. */
+  setApprovals(requests: PendingApproval[]): void {
+    this.approvals.setRequests(requests);
   }
 
   /** Start polling. Safe to call repeatedly, like TerminalPane.attach. */
@@ -177,6 +234,7 @@ export class ChatPane {
     const writable = this.canWrite(s);
     this.input.disabled = !writable;
     this.paintAction();
+    this.paintMode(s);
     if (writable) {
       this.input.placeholder = `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
       this.input.title = '';
@@ -241,6 +299,46 @@ export class ChatPane {
     this.action.setAttribute('aria-label', reason);
   }
 
+  /**
+   * The mode button says what the agent reported, and the button is present
+   * even where it cannot act -- disabled, carrying the reason, exactly as a
+   * declined capability does everywhere else. Hiding it would hide the
+   * reason, and "where is the mode set for this session" is precisely the
+   * question a terminal-backed Claude session raises.
+   */
+  private paintMode(s: SessionSnapshot): void {
+    const available = permissionModeAvailability(s, this.capabilities);
+    const label = permissionModeLabel(s.permissionMode);
+    this.modeButton.textContent = label;
+    this.modeButton.disabled = !available.ok;
+    const title = !available.ok
+      ? available.reason
+      : s.permissionMode
+        ? `Permission mode: ${label} — click to change`
+        : 'The agent has not named its permission mode yet — click to set one';
+    this.modeButton.title = title;
+    this.modeButton.setAttribute('aria-label', title);
+    this.modeButton.classList.toggle('is-unset', !s.permissionMode);
+  }
+
+  /** Ask the agent to change mode, and say plainly when it will not. */
+  private async setMode(mode: PermissionMode): Promise<void> {
+    const result = await api.setPermissionMode(this.session.id, mode);
+    if (result.ok) {
+      // The snapshot arrives on its own through `session:updated`; nothing is
+      // painted from the request, only from what the agent said.
+      this.composerNote.hidden = true;
+      return;
+    }
+    this.reportModeRefusal(result.reason);
+  }
+
+  /** A refused mode change, said under the composer where the button is. */
+  reportModeRefusal(reason: string): void {
+    this.composerNote.textContent = `Could not change the permission mode — ${reason}`;
+    this.composerNote.hidden = false;
+  }
+
   private paintWaiting(s: SessionSnapshot): void {
     const working = s.status === 'working' && s.exitCode === null;
     const wasHidden = this.waiting.hidden;
@@ -281,13 +379,26 @@ export class ChatPane {
    * it. Single lines therefore avoid paste markers but still receive Enter
    * in a second write.
    */
-  private submit(): void {
+  private submitting = false;
+
+  private async submit(): Promise<void> {
     const text = this.input.value.replace(/\s+$/, '');
-    if (!text || this.input.disabled) return;
+    if (!text || this.input.disabled || this.submitting) return;
     const id = this.session.id;
-    if (this.session.transport === 'stream') {
+    if (hasStructuredTransport(this.session)) {
       // A stream session takes the message whole, structured, no PTY bytes.
-      void api.sendChatMessage(id, text);
+      this.submitting = true;
+      try {
+        if (!await api.sendChatMessage(id, text)) {
+          this.composerNote.textContent = 'Message was not sent. Finish or stop the current turn, then try again.';
+          this.composerNote.hidden = false;
+          return;
+        }
+      } catch (error) {
+        this.composerNote.textContent = `Message was not sent: ${String(error)}`;
+        this.composerNote.hidden = false;
+        return;
+      } finally { this.submitting = false; }
       this.composerNote.textContent =
         'Sent — it appears here once the agent records it.';
     } else {
@@ -299,7 +410,7 @@ export class ChatPane {
       this.composerNote.textContent =
         'Sent to the terminal — it appears here once the agent records it.';
     }
-    this.input.value = '';
+    if (this.input.value.replace(/\s+$/, '') === text) this.input.value = '';
     this.paintAction();
     this.composerNote.hidden = false;
   }
@@ -319,6 +430,12 @@ export class ChatPane {
       snapshot.reason ?? '',
     ].join(':');
     if (key === this.renderedKey) return;
+    // Keep the DOM holding the reader's selection intact while new transcript
+    // records arrive. The next poll catches up after the selection is cleared.
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed &&
+      ((selection.anchorNode && this.scroll.contains(selection.anchorNode)) ||
+       (selection.focusNode && this.scroll.contains(selection.focusNode)))) return;
     this.renderedKey = key;
     this.composerNote.hidden = true;
     this.render(snapshot);

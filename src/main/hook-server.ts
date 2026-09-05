@@ -68,6 +68,19 @@ export class HookServer extends EventEmitter {
   private pendingSteers = new Map<string, string>();
   /** Sessions whose PreToolUse requests are denied until explicitly resumed. */
   private toolGates = new Set<string>();
+  /**
+   * Sessions that answer permission questions on their own channel.
+   *
+   * A conversation session declares an approval surface with
+   * `--permission-prompt-tool stdio`, and the CLI then does *both* things for
+   * one call: it holds a `can_use_tool` control request open on the session's
+   * own stream, and it fires `PermissionRequest` here, because a dialog was
+   * raised. Answering both would ask the reader twice for one call and let
+   * the two answers disagree -- a rule denying here while the control channel
+   * had already allowed. The control request is the one with the turn behind
+   * it, so this hook becomes a no-op for those sessions.
+   */
+  private hostAnswered = new Set<string>();
 
   /**
    * Asks the permission rules about one tool call. Injected rather than
@@ -95,11 +108,25 @@ export class HookServer extends EventEmitter {
   /** Tells the UI to take a bar down that no longer has a turn behind it. */
   onApprovalGone?: (id: string) => void;
 
-  /** Calls held open waiting for a person, keyed by request id. */
+  /**
+   * Calls held open waiting for a person, keyed by request id.
+   *
+   * The request itself is kept, not just how to settle it, because a window
+   * that reloads or is closed to the tray loses its copy and has to be able
+   * to ask what is still waiting -- see `pending`.
+   */
   private pendingApprovals = new Map<
     string,
-    { sessionId: string; settle: (answer: ApprovalAnswer | null) => void }
+    {
+      request: PendingApproval;
+      settle: (answer: ApprovalAnswer | null) => void;
+    }
   >();
+
+  /** Every call still waiting for a person, oldest first. */
+  pending(): PendingApproval[] {
+    return [...this.pendingApprovals.values()].map((e) => e.request);
+  }
 
   /**
    * How long a turn may sit blocked on Sertum's UI.
@@ -215,11 +242,18 @@ export class HookServer extends EventEmitter {
     else this.toolGates.delete(sessionId);
   }
 
+  /** Declares that this session's permissions are answered elsewhere. */
+  setHostAnsweredPermissions(sessionId: string, on: boolean): void {
+    if (on) this.hostAnswered.add(sessionId);
+    else this.hostAnswered.delete(sessionId);
+  }
+
   /** Forget control words for a session that no longer exists. */
   clearControl(sessionId: string): void {
     this.pendingInterrupts.delete(sessionId);
     this.pendingSteers.delete(sessionId);
     this.toolGates.delete(sessionId);
+    this.hostAnswered.delete(sessionId);
     this.cancelApprovals(sessionId);
   }
 
@@ -234,7 +268,7 @@ export class HookServer extends EventEmitter {
   /** Releases every call a session is holding, so a dead PTY leaves none. */
   cancelApprovals(sessionId: string): void {
     for (const entry of [...this.pendingApprovals.values()]) {
-      if (entry.sessionId === sessionId) entry.settle(null);
+      if (entry.request.sessionId === sessionId) entry.settle(null);
     }
   }
 
@@ -257,16 +291,17 @@ export class HookServer extends EventEmitter {
       };
       const timer = setTimeout(() => settle(null), this.approvalTimeoutMs);
       timer.unref?.();
-      this.pendingApprovals.set(id, { sessionId, settle });
-      // Registered before the bar is announced, so a connection that dies in
-      // the same tick still has something to release.
-      onHold?.(() => settle(null));
-      this.onApprovalNeeded?.({
+      const request: PendingApproval = {
         id,
         sessionId,
         tool: String(payload.tool_name ?? 'a tool'),
         subject,
-      });
+      };
+      this.pendingApprovals.set(id, { request, settle });
+      // Registered before the bar is announced, so a connection that dies in
+      // the same tick still has something to release.
+      onHold?.(() => settle(null));
+      this.onApprovalNeeded?.(request);
     });
   }
 
@@ -385,6 +420,10 @@ export class HookServer extends EventEmitter {
     // cannot leave a turn waiting on a bar that will not appear.
     if (!this.onApprovalNeeded) return null;
 
+    // The same call is already held open on this session's own control
+    // channel, where it is being answered once.
+    if (this.hostAnswered.has(sessionId)) return null;
+
     // A backstop, not the mechanism. A mode that means "do not ask" should
     // not produce a Sertum bar even if a dialog somehow reaches us, because a
     // bar is a question and the user has already answered it for the session.
@@ -416,10 +455,16 @@ export class HookServer extends EventEmitter {
     // Released with no decision -- expired, or the session went away. Answer
     // nothing, and Claude's own dialog is still on screen to answer.
     if (!answer) return null;
+    // `answer` cannot arrive here: a card only ever comes from a conversation
+    // session's control channel, and those sessions never reach this hook at
+    // all. It is still mapped rather than left to fall through, because the
+    // one thing this function must never do is return a shape Claude rejects
+    // -- that failure is silent and the dialog just stays up.
+    const behavior = answer.decision === 'allow' ? 'allow' : 'deny';
     return permissionRequestDecision(
-      answer.decision,
+      behavior,
       answer.reason ??
-        (answer.decision === 'deny' ? 'Denied in Sertum.' : 'Approved in Sertum.'),
+        (behavior === 'deny' ? 'Denied in Sertum.' : 'Approved in Sertum.'),
     );
   }
 
@@ -442,5 +487,6 @@ export class HookServer extends EventEmitter {
     this.pendingInterrupts.clear();
     this.pendingSteers.clear();
     this.toolGates.clear();
+    this.hostAnswered.clear();
   }
 }

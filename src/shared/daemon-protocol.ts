@@ -17,7 +17,7 @@ import path from 'node:path';
  */
 
 /** Bumped on any incompatible change to methods, params or events. */
-export const DAEMON_PROTOCOL = 1;
+export const DAEMON_PROTOCOL = 2;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }

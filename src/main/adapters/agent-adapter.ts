@@ -168,17 +168,12 @@ class CodexAdapter implements AgentAdapter {
     },
     'permission-rules': {
       ok: false,
-      reason: 'Rules need a structured per-call decision point, which Codex does not expose here.',
+      reason: 'Codex approvals use its own session cache and command rules; Sertum’s stored rules are not applied to Codex.',
     },
+    'permission-mode': { ok: true, requires: 'structured-conversation', modes: ['codex-untrusted', 'codex-on-request', 'codex-never'] },
     'conversation-view': { ok: true },
-    // The app server speaks a full thread/turn protocol, but Sertum has not
-    // yet adopted owning Codex threads outright — its sessions still live in
-    // the TUI, with the app server supplying status out-of-band.
-    'structured-conversation': {
-      ok: false,
-      reason:
-        'Codex conversations still run in its terminal UI; Sertum does not own app-server threads yet.',
-    },
+    // CodexChatHost owns thread/start and turn/start over the private server.
+    'structured-conversation': { ok: true },
     'background-host': {
       ok: false,
       reason:
@@ -293,6 +288,11 @@ class ClaudeAdapter extends InertAgentAdapter {
       'turn-interrupt': { ok: true },
       'tool-gate': { ok: true },
       'permission-rules': { ok: true },
+      // set_permission_mode is a stable control request, verified against
+      // Claude Code 2.1.260: every mode is accepted and the reply echoes the
+      // one now in effect. Only a conversation session has that channel; a
+      // PTY-backed one is told so at the point of asking.
+      'permission-mode': { ok: true, requires: 'structured-conversation', modes: ['plan', 'default', 'auto', 'acceptEdits', 'dontAsk', 'bypassPermissions'] },
       'conversation-view': { ok: true },
       // --input-format/--output-format stream-json: a first-party,
       // persistent, bidirectional chat protocol, verified across turns.
@@ -397,6 +397,10 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok’s event log is read-only, so a rule has nothing to answer.',
       },
+      'permission-mode': {
+        ok: false,
+        reason: 'Grok’s event log is read-only; it has no channel to change a setting on.',
+      },
       // Read-only is exactly what this capability asks for.
       'conversation-view': { ok: true },
       'structured-conversation': {
@@ -467,6 +471,10 @@ export function createAgentAdapters(deps: {
         'permission-rules': {
           ok: false,
           reason: 'A shell has no tool calls to rule on.',
+        },
+        'permission-mode': {
+          ok: false,
+          reason: 'A shell has no agent permission policy to set.',
         },
         'conversation-view': {
           ok: false,

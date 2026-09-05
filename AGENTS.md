@@ -103,8 +103,17 @@ What's built and verified so far:
       that already holds it
 - [x] **Permission rules and in-app approval** (wireframes E2, B5) — stored
       allow/deny/ask rules answered at Claude's `PreToolUse`, and an approval
-      bar that holds `PermissionRequest` open for the calls Claude actually
-      asks about
+      bar that holds the call open for the ones Claude actually asks about:
+      `PermissionRequest` for a PTY-backed session, a `can_use_tool` control
+      request for a conversation session, which without it could not ask at
+      all. The bar sits directly above the composer, and a held call survives
+      the window being reloaded or closed to the tray. A call whose card *is*
+      the question — `AskUserQuestion`, `ExitPlanMode` — is drawn as that card
+      and answered on it
+- [x] **Permission mode per session** — plan, auto, accept edits and the rest
+      set from a chip beside the composer or the sidebar row menu, over
+      Claude's `set_permission_mode` control request; the mode shown is the
+      one the agent reported, and a mode it will not take says why
 - [x] **System notifications** (wireframes C20, E5) — fired from adapter
       events on a status transition, only when the window is unfocused, with
       per-session mute and snooze
@@ -123,9 +132,9 @@ What's built and verified so far:
       at all, carried over Claude's stream-json protocol by a headless
       process. Same sidebar, same status vocabulary, same permission rules
       and hooks as a terminal session; the chat view is the whole surface.
-      Declared as `structured-conversation`; Codex, Grok and shell decline
-      with reasons and therefore retain PTYs underneath (visible only for
-      Shell). See "Conversation sessions" below.
+      Declared as `structured-conversation`; Claude and Codex provide owned
+      structured hosts. Grok and shell decline and retain PTYs (visible only
+      for Shell). See "Conversation sessions" below.
 - [x] **Claude-native background hosting** — an optional, agent-specific path
       predating `sertumd`: an Agents setting starts Claude under its own daemon
       (`--bg`) and Sertum attaches as a client. Declared as `background-host`;
@@ -332,8 +341,10 @@ probe establish three answers that were previously unknown:
 - Codex Remote Control works on Windows and exposes enable, disable, status,
   pairing and client-management requests. These methods appear only when the
   client initializes with `capabilities.experimentalApi: true`; without that
-  negotiation the server rejects them. Sertum therefore continues to decline
-  this capability until it deliberately adopts the experimental contract.
+  negotiation the server rejects them. Sertum continues to decline Remote Control because publication and pairing
+  are not implemented. The owned conversation host now negotiates
+  `experimentalApi` for structured question support; negotiation alone never
+  publishes a session or calls a Remote Control method.
 
 The generated protocol is implementation evidence, not a documented public
 OpenAI contract. Keep the generated method names behind `AgentAdapter` rather
@@ -427,9 +438,16 @@ its truncation notice remain the honest bounded fallback.
 
 Conversation content opts back into native text selection (`user-select:
 text`) beneath the app-wide chrome rule that prevents accidental interface
-selection. The selection tint uses the active accent, so copied text is
+selection. The selection tint uses the solid accent with the theme background
+as its text color (the soft accent matches the user bubble and hides selection), so copied text is
 visibly selected in both themes; composer controls remain outside that
 transcript selection surface.
+
+Chromium descendants explicitly opt into text selection too. Transcript polls
+defer replacing conversation nodes while the reader has selected text, then
+catch up once the selection is cleared. Codex's `<recommended_plugins>` user
+record is injected context and is excluded from conversation, like its
+environment preamble; ordinary pasted XML remains visible.
 
 Input still goes to the PTY, and the byte sequence matters. The composer
 sends the body as a bracketed paste and the final CR **separately, a beat
@@ -667,9 +685,9 @@ An agent can use a structured stream rather than a PTY.
 a stream session has no terminal — not hidden, nonexistent. C1 no longer asks
 the user to choose a transport: Claude declares `structured-conversation` and
 therefore starts as a stream unless Remote Control or background hosting needs
-its interactive process; the surface remains chat either way. Codex declines (its sessions still live in the
-TUI, the app server supplying status out-of-band); Grok declines (no input
-channel). Those agents retain PTYs beneath the same chat UI. A shell declines
+its interactive process; the surface remains chat either way. Codex also declares this capability and
+starts an owned app-server thread, without a TUI. Grok declines (no input
+channel) and retains a PTY beneath the same chat UI. A shell declines
 and is the one session kind whose PTY is shown.
 
 The Claude implementation, all verified against Claude Code 2.1.252:
@@ -692,8 +710,12 @@ The Claude implementation, all verified against Claude Code 2.1.252:
   — so the same `--settings` blob is attached and permission rules, the
   tool gate, steer and interrupt all work unchanged. Verified end to end: a
   deny rule answered a stream session's `PreToolUse` and the tool result
-  carried the rule's own reason. `PermissionRequest` (B5's held event) has
-  not been observed in print mode and the bar is simply never summoned.
+  carried the rule's own reason.
+- **Permission questions ride the stream, not the hook.** See "A
+  conversation session asks on its own channel" below: `PermissionRequest`
+  does fire in print mode, but only once an approval surface exists, and by
+  then the same call is already held on the control channel — so the hook is
+  deliberately a no-op for these sessions.
 - **Identity is chosen at spawn.** `--session-id` mints the agent-side id
   up front — the same move Grok's spawn makes — so the transcript is
   matched exactly from the first poll, before any hook has named it.
@@ -707,6 +729,57 @@ What a stream session gives up is what the TUI was carrying: slash commands,
 plan mode, Claude's own diff and todo rendering. This is now the deliberate
 Claude default; adapters without a verified structured transport retain their
 PTY instead of being forced through a fictional chat protocol.
+
+### Owned Codex conversations
+
+`main/adapters/codex-chat.ts` owns `thread/start` and `turn/start` on the
+private app-server. The response supplies the exact thread id, model and
+transcript path; no cwd matching or terminal parsing is involved. The registry
+records a structured session with per-thread termination controls. Closing one
+thread interrupts/unsubscribes it, never kills the shared server. A dropped
+connection ends the local owned handles and clears their held requests; they
+are not silently revived after reconnect. Existing transcripts remain readable.
+The old PTY route remains available to explicit PTY callers; its startup queue
+accepts only CLI-source threads, so a structured thread cannot consume it.
+
+App-server requests carry reply closures bound to their original connection.
+Only the host owning that exact thread answers them. Command execution and
+file changes use B5; file changes join the preceding item by `itemId` to show
+the proposed paths and diff. `availableDecisions` limits approval scopes. A
+persistent command rule sends the server-proposed amendment verbatim, after
+showing it; it does not create a Sertum rule. Additional permission requests
+show their exact grant and denial returns an empty grant. Stored Sertum rules
+remain declined for Codex; its native session cache and command rules are the
+supported policy surfaces.
+
+`item/tool/requestUserInput` uses the question card and returns answers keyed
+by question id, not the display header. Secret input uses a password control.
+Withdrawal, item completion, turn completion and exit clear pending cards.
+A question marked `isBlocking: false` does not change the session to needs-input.
+Unsupported server requests receive an explicit protocol error instead of
+hanging indefinitely. Codex's plan output remains conversation content: it has
+no Claude `ExitPlanMode` approval contract here. Selecting Codex collaboration
+plan mode is not implemented; the permission picker offers only the three
+verified native approval policies, with the workspace sandbox retained.
+
+`permission-mode` declarations must name their structured-conversation
+dependency and supported modes in the type. `shared/session-capabilities.ts`
+combines that declaration with ownership, transport and exit state, shared by
+the daemon and picker. Codex's policies are distinct from Claude's permission
+modes. Changing policy is restricted to an idle turn: `thread/resume` on a
+loaded thread ignores overrides, so the host unsubscribes first, resumes, and
+uses the returned effective policy. Failed sends keep the composer's text.
+
+Verified on Windows with Codex CLI 0.153.1: a real file approval stayed held,
+denial prevented the write, duplicate replies were refused, a policy change
+was echoed, multiple turns completed, and a native question was answered by id and
+acknowledged by the agent. Unsubscribe ended only the owned thread. `scripts/smoke-codex-chat.ts` retains that live probe;
+`scripts/test-codex-chat.ts` covers question ids, approval scopes, cancellation,
+permission denial, session isolation and late events. Questions are also verified against a live model-driven request. Additional
+permission grants remain schema/fixture tested; a live grant has not been
+verified yet. `scripts/smoke-codex-fabric.ts` verifies the public daemon handlers
+for creation, send, pending approvals, denial, status and exact transcript
+resolution under Electron’s Node runtime.
 
 ## Claude-native background hosting
 
@@ -784,7 +857,10 @@ the spawn without harm.
 a GUI update will find a daemon still running the previous build — so the
 first frame each side sends is `hello` with a protocol number
 (`shared/daemon-protocol.ts`), and a mismatch is answered with a refusal the
-GUI can show, never a best-effort conversation.
+GUI can show, never a best-effort conversation. Protocol 2 adds native question
+answers and server-limited approval scopes; an old daemon must be stopped and
+restarted before the new GUI can connect, so an old client cannot submit an
+empty answer to a question whose ids it does not understand.
 
 **Terminals come back.** The daemon keeps a per-session ring of recent raw
 output (512KB). A reopened GUI asks `pty/replay` when it first builds a
@@ -1407,22 +1483,212 @@ pass that earlier boundary before "Always allow" writes a rule, and their
 dialogs arrive after it. Re-asking lets the new rule answer them instead of
 stacking more bars for a call the user has already decided.
 
-The bar sits above the terminal rather than over it, because deciding means
-reading the output that led to the request. It is never dismissed by clicking
-away: every route off it answers the call.
+The bar is never over the pane, because deciding means reading what led to the
+request, and it is never dismissed by clicking away: every route off it
+answers the call. **In a conversation it sits directly on top of the
+composer** -- the question is part of the turn being read, and the answer to
+it belongs where every other reply to that agent is typed. A pane that is not
+a conversation keeps it at the top of the pane, above the terminal. Since
+every Claude session renders as a conversation, the second placement is a
+fallback: the app owns the queue and hands each conversation pane the calls
+for its own session, and anything a visible conversation pane will not show
+falls back to the old host above the pane, so a held turn is never invisible.
+
+What the bar says about a call is the **subject** -- the command or the path,
+in the mono face -- and never the agent's own summary of it. The subject is
+the string the decision is actually about and the one "Always allow" would
+write into a rule, so a gloss standing in its place ("Echo the probe marker
+string" where `echo probe-marker-hello` belonged) would be asking someone to
+approve something they were not shown. Underneath it goes the reason the call
+escalated, which is the sentence that otherwise reaches the reader only as the
+agent explaining, a turn later, that it lacked permission. Both are
+producer-authored and may carry ANSI escapes, so both are stripped and set as
+text.
 
 The four choices differ only in reach. **Allow once** answers this call.
 **Allow this session** is remembered in memory and dropped when the session
 ends, so an approval given to one run cannot silently govern the next.
 **Always allow** writes a permission rule scoped to that session's repository
 and matched literally -- a rule written by pressing a button should cover what
-was on screen and nothing broader. **Deny** offers an optional reason, which
-goes back to the agent so it can try something else rather than guess why it
-was stopped.
+was on screen and nothing broader; a call whose ask says a persistent rule
+would reach wider than itself does not offer the button at all. **Deny**
+offers an optional reason, which goes back to the agent so it can try
+something else rather than guess why it was stopped.
+
+**A held call survives the window.** The queue lives in the renderer, so a
+reload, a devtools restart, or closing to the tray and reopening all lose it
+-- and a conversation session's ask has no deadline behind it, so a bar lost
+that way would strand the turn for good rather than merely delaying it. The
+daemon answers `approval/pending` with everything it is still holding, on
+both channels, and a starting window asks once. Verified by reloading the
+renderer mid-hold: the bar came back with the same call and answering it
+resumed the turn.
 
 The whole feature is switchable in E2, and the switch is the presence of the
 handler: with none, the hook server never holds a call at all, so turning it
-off cannot leave a turn waiting on a bar that will not appear.
+off cannot leave a turn waiting on a bar that will not appear. A conversation
+session is the exception, because it has nowhere else to ask: with approvals
+off its calls are refused outright, carrying that as the reason.
+
+### A conversation session asks on its own channel
+
+A stream session has no terminal and no dialog, and that is why the reader
+used to see nothing at all. Headless Claude refuses anything that would prompt
+-- `no approval surface in this session; permission request denied
+automatically` -- and the only trace reaching the conversation was the agent
+explaining afterwards that it had lacked permission. Nothing was broken in
+Sertum; there was simply no question to catch.
+
+`--permission-prompt-tool stdio` is the declaration that a surface exists.
+`stdio` names the stream itself rather than a real MCP tool: from then on the
+CLI sends a `control_request` of subtype `can_use_tool` down its own stdout
+and **holds the turn** until a `control_response` comes back on stdin. All
+verified against Claude Code 2.1.260:
+
+| Verified | Result |
+|---|---|
+| Without the flag | a Write outside the working directory is denied outright, `decision_reason_type: workingDir` |
+| With it | the same call arrives as a control request carrying the input, `description`, `decision_reason` and the CLI's own `permission_suggestions` |
+| Holding 25s | still accepted; there is no deadline on this wire |
+| `deny` with a message | the message is the tool result the model reads, and it acts on it |
+| Answering twice | the second answer is refused, since the ask is no longer held |
+
+The reply is `{behavior:'allow', updatedInput?}` or `{behavior:'deny',
+message}` -- `message` is required on a deny -- plus a
+`decisionClassification`, which Sertum sets from what actually happened
+(`user_temporary` / `user_reject`) rather than leaving the CLI to infer it.
+
+Three things follow, and each is a decision rather than a detail:
+
+- **The hook must not ask a second time.** Once a surface exists, a prompt is
+  genuinely raised, so `PermissionRequest` *does* fire in print mode -- 112ms
+  after the control request, in the same call. Answering both would ask the
+  reader twice for one call and let the two answers disagree, a rule denying
+  at the hook while the control channel had already allowed. The control
+  request is the one with the turn behind it, so `HookServer` treats
+  `PermissionRequest` as a no-op for any session that declared its own
+  surface.
+- **Nothing here expires.** The hook hold has curl's deadline behind it and
+  must be released before it; a control request has only the turn, and an
+  interactive Claude leaves its own dialog up indefinitely too. Answering late
+  is correct. Timing out would resume a turn with a decision nobody made --
+  which is also why the pending list above has to survive the window.
+- **The same rules answer it.** Session-scoped allows and stored permission
+  rules are consulted through one function shared with the hook boundary, so a
+  rule cannot mean two different things depending on which transport asked.
+
+### When the card is the question
+
+The flag also makes Claude offer the tools whose approval card *is* their
+user-interaction surface. Those arrive with `requires_user_interaction: true`,
+and the name means it literally: the answer wanted is not "may this run" but
+**which option** or **is this plan right**, neither of which an approve/deny
+bar can express.
+
+The protocol has a channel for handing such a card to a host --
+`request_user_dialog`, whose kinds include `permission_ask_user_question` and
+`permission_exit_plan_mode_v2` -- and **it is not wired to a stream-json host
+in Claude Code 2.1.260.** The dialog transport is constructed only for the
+REPL bridge, the path a session published to claude.ai uses. Verified by
+declaring every relevant kind in an `initialize` control request (which is
+accepted, and answers with the session's commands) and watching `can_use_tool`
+arrive instead, every time. Allowing the call is not the answer either: the
+tool then runs with no answer channel and returns "The user did not answer the
+questions", throwing the user's choice away.
+
+What makes the cards buildable anyway is that **`can_use_tool` already carries
+the whole card** -- the questions with their options and descriptions, or the
+plan as its own markdown. So `main/adapters/interactive-tools.ts` reads the
+card out of the tool input, and `renderer/approval-card.ts` draws it where the
+bar goes, between the transcript and the composer. Each answer goes back on
+the wire that exists:
+
+| Card | Answer | On the wire |
+|---|---|---|
+| `ExitPlanMode` | Approve plan | `allow` -- the tool result reads "User has approved your plan. You can now start coding" and the session leaves plan mode |
+| `ExitPlanMode` | Keep planning | `deny` carrying the typed feedback; the session stays in plan mode and revises |
+| `AskUserQuestion` | Send answer | `deny` carrying the choices, stated as answers |
+| `AskUserQuestion` | Skip | `deny` saying the question was dismissed |
+
+**A plan is a native fit**; a question is not, and the deny channel is used
+because it is the only one that carries a message back. That is not a lie
+about what happened -- the tool call genuinely did not run -- and the message
+says what the user chose rather than reporting a refusal, so the agent reads
+it as an answer. Verified end to end in the app: a two-question card, one
+single-select and one multi-select, came back as "Indentation: Spaces /
+Frameworks: React, Svelte" and the reply was "Got your answers". A plan
+declined with "Also mention a Licence section" was re-presented revised, then
+approved, and the session wrote the file.
+
+Three decisions worth keeping:
+
+- **`multiSelect` is the agent's own field**, so it picks the control rather
+  than a heuristic: radios where one answer replaces another, checkboxes where
+  several apply. Every question also takes free text, because a set of options
+  the user disagrees with must not be a dead end -- the CLI's own card offers
+  the same way out, and the tool's result format carries free text beside the
+  choices.
+- **A card skips the permission rules and the session-scoped allows.** A rule
+  is a policy about whether a call is safe to run; it has no opinion on which
+  option a person would pick or whether a plan is right, and a stale `allow`
+  silently approving every plan is precisely the answer-nobody-gave this
+  surface exists to prevent. For the same reason a card never offers "Always
+  allow", and the session's activity line reads "waiting on your answer" or
+  "review the plan" rather than "approve X?".
+- **`ApprovalAnswer.decision` has a third word, `answer`**, so the vocabulary
+  keeps a card's outcome apart from a refusal even though they share a wire.
+  It never writes a rule, and the activity line afterwards says "answered".
+
+Anything else marked `requires_user_interaction` has a card whose shape Sertum
+does not know, so it keeps the honest refusal naming that limitation. The
+plan is rendered by `appendMessageText`, the transcript's own renderer, under
+the same promise: nothing is assembled as an HTML string.
+
+### The permission mode is a setting, and it is set beside the composer
+
+How much of a session you are asked about at all is decided before any of the
+above: the permission mode. `set_permission_mode` is a stable control request
+the *host* sends, and the CLI answers with the mode now in effect — so what is
+recorded is what happened, never what was asked for. Verified against Claude
+Code 2.1.260:
+
+| Sent | Result |
+|---|---|
+| `plan`, `acceptEdits`, `dontAsk`, `auto`, `default` | accepted, echoed back |
+| `manual` | accepted, normalises to `default` — the CLI flag's name for one mode, the protocol's for the other |
+| `bypassPermissions` | refused: "the session was not launched with --dangerously-skip-permissions" |
+| anything else | refused, naming the valid modes |
+
+Behaviour was checked rather than assumed, by setting a mode and then asking
+for a file: `acceptEdits` wrote it with no ask, `default` raised one, and
+`plan` produced a plan and an `ExitPlanMode` card instead of a write.
+
+- **The current mode is read, never assumed.** `system/init` carries
+  `permissionMode`, which is the user's own `defaultMode` setting unless
+  something changed it, and every accepted change echoes the resulting mode.
+  `SessionSnapshot.permissionMode` is null until the agent has said, and null
+  is deliberately not drawn as "Manual" — that would put a word on screen the
+  agent never used. The mode arrives with the session's first turn.
+- **The control lives beside the composer**, because the mode decides how much
+  of the session you are asked about and the asking happens there — which is
+  also where Claude Code keeps its own. It is a chip showing the current mode;
+  clicking it opens the catalogue in `renderer/permission-mode.ts`, which is
+  the single list every surface reads. The sidebar row menu offers the same
+  picker for reaching it without bringing the pane forward.
+- **`permission-mode` is a declared capability**, answered `ok` by Claude and
+  declined with a reason by Codex, Grok and shell. The agent-level answer is
+  not the whole story, though: only a conversation session has a channel to
+  say it on, so a PTY-backed Claude session gets the chip disabled saying the
+  mode is set there with Shift+Tab — which is a truer answer than hiding it,
+  since "where is this set?" is exactly the question that session raises.
+  `bypassPermissions` is listed the same way, disabled carrying the reason,
+  rather than as a row that reports an error when pressed.
+
+Setting the mode at spawn is deliberately not offered in C1: the control works
+the moment a session exists, so a second place to choose it would be a second
+thing to keep in step. `MenuItem` gained `note` and `checked` for this, and
+the row menu's disabled items moved their reasons from the right-aligned
+accel slot — sized for a chord — onto that second line.
 
 ## Modals answer, they do not vanish
 
@@ -1588,7 +1854,15 @@ npx electron scripts/smoke-pty.js claude   # a real agent TUI
 
 # Drive the running app (needs SERTUM_DEBUG_PORT)
 node scripts/drive.js "document.querySelectorAll('.tab').length"
+
+# A conversation session's permission channel, against a real claude process:
+# the ask arrives, the turn stays held, the answer resumes it.
+npx esbuild scripts/smoke-chat-permission.ts --bundle --platform=node   --format=cjs --outfile=/tmp/smoke-chat.cjs &&   node /tmp/smoke-chat.cjs <folder> deny 8000
 ```
+
+`scripts/drive.js` opens a CDP WebSocket, so it needs a Node with the
+`WebSocket` global: under Node 20 run it as `node --experimental-websocket
+scripts/drive.js …`.
 
 `window.__sertum` is exposed in dev builds only. It is the app object itself:
 `panes.get(activeId).snapshot()` returns the focused terminal's scrollback,
@@ -1801,6 +2075,17 @@ fixed along the way:
   `'default'` off Darwin, and `curl`-based hooks and the PTY smoke test
   already worked as documented above with no changes needed.
 
+### Windows development launch privileges
+
+Run the development app and broker at the desktop user's normal privilege
+level. During Windows testing, Print Screen reached ShareX on the desktop but
+failed with Sertum focused while Sertum and sertumd were elevated and ShareX
+was not. Relaunching both with a limited interactive token removes that
+privilege mismatch; the user verified Print Screen works with Sertum focused
+after that relaunch. An elevated
+launcher can pass elevation through a `Shell.Application` launch too, so verify
+the resulting process tokens rather than assuming that route de-elevates them.
+
 ## Layout
 
 ```
@@ -1837,6 +2122,7 @@ src/
   main/adapters/transcript.ts    Per-agent transcript summaries
   main/adapters/conversation.ts  Transcript parsed into conversation items (chat view)
   main/adapters/markdown-format.ts  Is a message markdown, and is the markup the answer?
+  main/adapters/interactive-tools.ts  Cards read from a tool's own input, and how each answer gets back
   main/adapters/claude-chat.ts   Headless Claude over stream-json (conversation sessions)
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
@@ -1860,8 +2146,11 @@ src/
   renderer/diff-review-dialog.ts  Changes review — wireframe C11
   renderer/commit-dialog.ts       Commit & push sheet — wireframe C15
   renderer/pull-request-dialog.ts Open pull request — wireframe C16
-  renderer/approval-bar.ts        Tool-call approval bar — wireframe B5
+  renderer/approval-bar.ts        Tool-call approval bar, above the composer — wireframe B5
+  renderer/approval-card.ts       Question and plan cards, when allow/deny is not the question
+  renderer/permission-mode.ts     The mode catalogue and its picker (plan, auto, accept edits…)
 scripts/
   smoke-pty.js                Headless PTY test
+  smoke-chat-permission.ts    A conversation session's permission ask, held and answered
   drive.js                    CDP driver for headless verification
 ```

@@ -1110,6 +1110,27 @@ textarea.field:focus { outline: none; border-color: var(--accent); }
   font-family: var(--font-mono); font-size: 10px; color: var(--muted);
   flex: none;
 }
+/* An item that explains itself — what a mode does, or why one cannot be
+   chosen — needs a line of its own; a sentence in the accel slot, which is
+   sized for a chord, was unreadable. */
+.ctx-item.has-note { flex-direction: column; align-items: stretch; gap: 1px; }
+.ctx-main {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+}
+.ctx-note {
+  font-size: 11px; line-height: 1.35; color: var(--muted);
+  white-space: normal; max-width: 34ch;
+}
+.ctx-item:hover:not(:disabled) .ctx-note { color: #ffffffcc; }
+/* The mode in effect. A dot rather than a tick: the row is a radio, and one
+   of these is always true, so it reads as position rather than as approval. */
+.ctx-item.checked .ctx-label::before {
+  content: '●'; margin-right: 7px; font-size: 9px; vertical-align: 1px;
+}
+.ctx-item:not(.checked) .ctx-label::before {
+  content: '●'; margin-right: 7px; font-size: 9px; vertical-align: 1px;
+  color: transparent;
+}
 .ctx-sep { height: 1px; margin: 4px 5px; background: var(--line-soft); }
 
 /* ---------- agent picker ----------
@@ -1479,8 +1500,11 @@ select.field {
 
 /* ------------------------------------------------- B5 approval bar */
 /*
- * Above the terminal, never over it: answering the question means reading the
- * output that led to it.
+ * Never over the pane: answering the question means reading what led to it.
+ * In a conversation the bar sits directly on top of the composer -- the
+ * question is part of the turn being read, and the answer belongs where every
+ * other reply to that agent is typed. Above a terminal it keeps its old place
+ * at the top of the pane.
  */
 .approval-bar {
   display: flex; align-items: center; gap: 10px; flex: none;
@@ -1489,6 +1513,10 @@ select.field {
   border-bottom: 1px solid var(--warn);
 }
 .approval-bar[hidden] { display: none; }
+/* Sitting on the composer, the bar shares its border rather than drawing a
+   second line a pixel above it, and loses the gap that separated it from a
+   terminal below. */
+.chat-pane > .approval-bar { margin: 0; border-bottom: 0; }
 .approval-icon { flex: none; color: var(--warn); font-size: 14px; }
 .approval-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .approval-title { font-size: 12px; font-weight: 600; color: var(--warn); }
@@ -1496,7 +1524,63 @@ select.field {
   font-family: var(--font-mono); font-size: 11px; color: var(--ink-2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.approval-actions { flex: none; display: flex; gap: 6px; }
+/* Why the agent had to ask -- the sentence that otherwise only reached the
+   reader as the agent explaining, a turn later, that it lacked permission. */
+.approval-reason {
+  font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.approval-actions { flex: none; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---------- a call whose card is the question ----------
+   AskUserQuestion and ExitPlanMode do not ask whether they may run, so the
+   bar becomes a column: a title, the agent's own card, and the buttons its
+   answer needs. The card scrolls inside itself rather than pushing the
+   conversation off screen -- a plan can be long. */
+.approval-bar.is-card {
+  flex-direction: column; align-items: stretch; gap: 8px;
+  padding: 10px 12px 11px;
+  /* Never more than half the pane: the transcript above is the context the
+     answer is decided from, so it must not be squeezed out. */
+  max-height: 50vh; overflow: hidden;
+}
+.approval-card-head { display: flex; align-items: center; gap: 10px; }
+.approval-card {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+}
+.approval-question + .approval-question {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft);
+}
+.approval-q-header {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--muted); text-transform: uppercase;
+}
+.approval-q-text {
+  font-size: var(--size-ui); line-height: 1.45; color: var(--ink); margin: 2px 0 6px;
+}
+.approval-q-hint { font-size: 11px; color: var(--muted); margin: -4px 0 6px; }
+.approval-option {
+  display: flex; gap: 9px; align-items: flex-start;
+  padding: 7px 9px; margin-bottom: 4px; cursor: pointer;
+  border: 1px solid var(--line-soft); border-radius: 6px;
+}
+.approval-option:hover { border-color: var(--accent); }
+.approval-option:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
+.approval-option-input { margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+.approval-option-body { min-width: 0; }
+.approval-option-label { font-size: var(--size-ui); color: var(--ink); }
+.approval-option-desc {
+  font-size: 11px; line-height: 1.45; color: var(--muted); margin-top: 2px;
+}
+.approval-q-other, .approval-plan-feedback {
+  margin-top: 6px; font-family: var(--font-ui); font-size: var(--size-ui);
+}
+.approval-plan-path {
+  margin-top: 8px; font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* ------------------------------------------------- E6 shortcuts */
 .key-list { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 8px; }
@@ -1604,7 +1688,14 @@ select.field {
   user-select: text;
   -webkit-user-select: text;
 }
-.chat-scroll ::selection { color: var(--ink); background: var(--accent-soft); }
+/* Chromium must opt descendants back in too beneath #root's chrome rule. */
+.chat-scroll * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* The soft accent is already the user bubble's background: reusing it for
+   selection makes selected characters invisible and leaves only text drag. */
+.chat-scroll ::selection { color: var(--bg); background: var(--accent); }
 .chat-scroll::-webkit-scrollbar { width: 12px; background: var(--bg); }
 .chat-scroll::-webkit-scrollbar-track { background: var(--bg); }
 .chat-scroll::-webkit-scrollbar-thumb {
@@ -1881,4 +1972,31 @@ select.field {
 .chat-send-arrow { width: 17px; height: 17px; display: block; margin: 0 1px 1px 0; }
 .chat-action.is-send .chat-stop-sign { display: none; }
 .chat-action.is-stop .chat-send-arrow { display: none; }
-.chat-sent { margin-top: 6px; font-size: 11px; color: var(--muted); }
+/* Under the box you type into: the permission mode on the left, whatever the
+   composer has to say on the right. The mode is the setting that decides how
+   much of the session you are asked about, so it belongs where the asking
+   happens rather than several menus away. */
+.chat-composer-meta {
+  display: flex; align-items: baseline; gap: 10px; margin-top: 6px;
+}
+.chat-sent { flex: 1; min-width: 0; font-size: 11px; color: var(--muted); text-align: right; }
+.chat-mode {
+  flex: none; padding: 2px 8px; border-radius: 999px; cursor: pointer;
+  font-family: var(--font-ui); font-size: 11px; line-height: 1.5;
+  color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.chat-mode::before {
+  content: '⛨'; margin-right: 5px; color: var(--muted); font-size: 10px;
+}
+.chat-mode:hover:enabled { border-color: var(--accent); color: var(--ink); }
+.chat-mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Kept on screen while it cannot act rather than removed, because its tooltip
+   is where a terminal-backed session says where its mode is actually set. */
+.chat-mode:disabled { cursor: default; opacity: 0.5; }
+/* The agent has not named a mode yet. Saying "Manual" would be a claim it
+   never made, so the button says less until it does. */
+.chat-mode.is-unset { font-style: italic; }
+
+/* B5: inspect server-provided changes before answering. */
+.approval-detail { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font-size: 12px; }

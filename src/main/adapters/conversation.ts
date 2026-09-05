@@ -216,7 +216,7 @@ function claudeToolDetail(input: unknown): string | null {
 
 /** Codex wraps every injection it makes in a named tag on a user record. */
 const CODEX_MACHINE_TEXT =
-  /^\s*<(environment_context|user_instructions|skills_instructions|turn_aborted|permissions|collaboration_mode|AGENTS)/;
+  /^\s*<(environment_context|user_instructions|skills_instructions|recommended_plugins|turn_aborted|permissions|collaboration_mode|AGENTS)/;
 
 function parseCodex(records: Array<Record<string, unknown>>): ChatItem[] {
   const items: ChatItem[] = [];

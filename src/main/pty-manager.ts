@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
 import * as pty from 'node-pty';
 import type {
+  PermissionMode,
   PtySize,
   SessionSnapshot,
   SessionSpec,
@@ -143,6 +144,7 @@ export class PtyManager extends EventEmitter {
       contextTokens: null,
       contextLimit: null,
       transcriptPath: null,
+      permissionMode: null,
     };
 
     proc.onData((data) => {
@@ -205,6 +207,8 @@ export class PtyManager extends EventEmitter {
       transcriptPath?: string | null;
       /** The agent-side id this pane is bound to (a Codex thread, say). */
       externalId?: string | null;
+      /** How the agent says it is deciding permissions right now. */
+      permissionMode?: PermissionMode | null;
     },
   ): void {
     const session = this.sessions.get(id);
@@ -218,6 +222,7 @@ export class PtyManager extends EventEmitter {
       'contextLimit',
       'transcriptPath',
       'externalId',
+      'permissionMode',
     ] as const) {
       const next = meta[key];
       if (next !== undefined && next !== null && next !== snap[key]) {
@@ -300,6 +305,7 @@ export class PtyManager extends EventEmitter {
       contextTokens: null,
       contextLimit: null,
       transcriptPath: null,
+      permissionMode: null,
     };
     this.sessions.set(input.id, {
       snapshot,
@@ -372,6 +378,7 @@ export class PtyManager extends EventEmitter {
       contextTokens: null,
       contextLimit: null,
       transcriptPath: null,
+      permissionMode: null,
     };
     this.sessions.set(snapshot.id, {
       snapshot,

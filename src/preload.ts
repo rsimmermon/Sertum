@@ -12,6 +12,7 @@ import type {
   PtySize,
   SessionSnapshot,
   SessionSpec,
+  PermissionMode,
 } from './shared/types';
 
 /** Subscribe helper that returns an unsubscribe function. */
@@ -56,6 +57,8 @@ const api: SertumApi = {
     request: { id: string; sessionId: string; tool: string; subject: string },
     answer: ApprovalAnswer,
   ) => ipcRenderer.invoke('approval:answer', { ...request, answer }),
+  pendingApprovals: (): Promise<PendingApproval[]> =>
+    ipcRenderer.invoke('approval:pending'),
   onApprovalNeeded: (fn: (request: PendingApproval) => void) => {
     const handler = (_e: unknown, request: PendingApproval) => fn(request);
     ipcRenderer.on('approval:needed', handler);
@@ -89,6 +92,8 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:interrupt-turn', id),
   setToolGate: (id: string, paused: boolean) =>
     ipcRenderer.invoke('session:tool-gate', { id, paused }),
+  setPermissionMode: (id: string, mode: PermissionMode) =>
+    ipcRenderer.invoke('session:permission-mode', { id, mode }),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
   agentCapabilities: () => ipcRenderer.invoke('agent:capabilities'),

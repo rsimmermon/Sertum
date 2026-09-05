@@ -12,6 +12,7 @@ export interface CodexThread {
   cwd?: string;
   ephemeral?: boolean;
   threadSource?: string;
+  source?: unknown;
   name?: string | null;
   preview?: string;
   status?: CodexThreadStatus;

@@ -60,6 +60,16 @@ export type AgentCapability =
   /** Decide individual tool calls from stored rules (wireframe E2). */
   | 'permission-rules'
   /**
+   * Change how the agent decides permissions for the rest of the session —
+   * plan, auto, accept edits — without restarting it.
+   *
+   * Answered `ok` by the agent, but only a session on that agent's structured
+   * transport actually has the channel to say it on; a PTY-backed session
+   * carries the mode it was started with. The handler says so rather than
+   * failing quietly.
+   */
+  | 'permission-mode'
+  /**
    * Render the session as a conversation read from the agent's own
    * transcript on disk — the conversation view's structured content source.
    *
@@ -86,12 +96,35 @@ export type AgentCapability =
    */
   | 'background-host';
 
-/** Yes, or no with the reason in user-facing words. */
-export type CapabilityAnswer = { ok: true } | { ok: false; reason: string };
+/**
+ * How the agent decides whether a tool call may run.
+ *
+ * These are Claude Code's own names on the wire. Note `default` is what the
+ * CLI's `--permission-mode manual` becomes -- the flag takes `manual`, the
+ * protocol answers `default`, and they are one mode. `bypassPermissions` is
+ * only settable on a session launched with `--dangerously-skip-permissions`,
+ * which Sertum does not do, so it is offered disabled carrying that reason
+ * rather than as a switch that reports an error when pressed.
+ */
+export type PermissionMode =
+  | 'default'
+  | 'auto'
+  | 'acceptEdits'
+  | 'plan'
+  | 'dontAsk'
+  | 'codex-untrusted'
+  | 'codex-on-request'
+  | 'codex-never'
+  | 'bypassPermissions';
 
-export type AgentCapabilities = Readonly<
-  Record<AgentCapability, CapabilityAnswer>
->;
+/** Yes, or no with the reason in user-facing words. */
+export type CapabilityAnswer = { ok: true; requires?: 'structured-conversation'; modes?: readonly PermissionMode[] } | { ok: false; reason: string };
+
+export type AgentCapabilities = Readonly<{
+  [K in AgentCapability]: K extends 'permission-mode'
+    ? { ok: true; requires: 'structured-conversation'; modes: readonly PermissionMode[] } | { ok: false; reason: string }
+    : CapabilityAnswer;
+}>;
 
 /**
  * How a session's agent is carried.
@@ -174,7 +207,22 @@ export interface SessionSnapshot extends SessionSpec {
   contextLimit: number | null;
   /** Where this session's transcript lives, once known. */
   transcriptPath: string | null;
+  /**
+   * How the agent is currently deciding permissions, when it has said.
+   *
+   * Read from the agent rather than assumed: a conversation session's
+   * `system/init` reports the mode actually in effect -- which is the user's
+   * own `defaultMode` setting unless something changed it -- and every
+   * accepted change echoes the mode that resulted. Null means the agent has
+   * not said, which is not the same as `default`.
+   */
+  permissionMode: PermissionMode | null;
 }
+
+/** What came of asking an agent to change its permission mode. */
+export type PermissionModeResult =
+  | { ok: true; mode: PermissionMode }
+  | { ok: false; reason: string };
 
 /**
  * One rendered item in a session's conversation, read from the agent's own
@@ -595,19 +643,81 @@ export interface PullRequestResult {
  * which is why every one of them is answered: by a person, by the timeout, or
  * by the session ending.
  */
+/** One question on an AskUserQuestion card, exactly as the agent wrote it. */
+export interface ApprovalQuestion {
+  id?: string;
+  isSecret?: boolean;
+  question: string;
+  /** The agent's own short label for the answer. May be empty. */
+  header: string;
+  multiSelect: boolean;
+  options: Array<{ label: string; description?: string }>;
+}
+
+/**
+ * A tool whose approval card *is* its interaction surface: the answer wanted
+ * is not "may this run" but "which option" or "is this plan right". The card
+ * is drawn from the tool's own input -- see
+ * `main/adapters/interactive-tools.ts` for why that input is the only place
+ * it can come from, and how each kind's answer gets back to the agent.
+ */
+export type ApprovalCard =
+  | { kind: 'questions'; questions: ApprovalQuestion[] }
+  | { kind: 'plan'; plan: string; planFilePath?: string };
+
 export interface PendingApproval {
+  agentLabel?: string;
+  allowedScopes?: ApprovalScope[];
+  onceLabel?: string;
+  /** False for an asynchronous question that does not block the agent. */
+  blocksTurn?: boolean;
+  /** The server's proposed changes, shown verbatim before consent (B5). */
+  detail?: string;
   id: string;
   sessionId: string;
   tool: string;
   /** The command or path the call is about, as the rules would match it. */
   subject: string;
+  /**
+   * The agent's own one-line summary of the call, when it sent one. Only a
+   * conversation session's control channel carries this; a hook does not.
+   */
+  description?: string;
+  /**
+   * Why the call escalated -- "Path is outside allowed working directories".
+   * This is the sentence that was previously only ever reaching the reader as
+   * the agent explaining afterwards that it had lacked permission, so it is
+   * the part of the ask worth showing above everything but the subject.
+   */
+  reason?: string;
+  /**
+   * False when a stored rule written from this bar would reach wider than the
+   * call it was written about, so "Always allow" is not offered. Absent means
+   * the channel said nothing, which is the same as allowing it.
+   */
+  alwaysAllowable?: boolean;
+  /**
+   * Present when the call carries a card of its own -- a set of questions, or
+   * a plan to approve. The bar then draws the card instead of its one-line
+   * self, because allow/deny is not the question being asked.
+   */
+  card?: ApprovalCard;
 }
 
 /** How far an approval reaches, from B5's four buttons. */
 export type ApprovalScope = 'once' | 'session' | 'always';
 
 export interface ApprovalAnswer {
-  decision: 'allow' | 'deny';
+  answers?: Record<string, string[]>;
+  /**
+   * `answer` is a card's own outcome rather than a verdict on the call: the
+   * user responded to what the tool asked, and `reason` carries their words.
+   * It reaches the agent on the deny channel, because that is the only one
+   * that carries a message back -- see `main/adapters/interactive-tools.ts`
+   * -- but it is not a refusal and never writes a rule, so the vocabulary
+   * keeps the two apart.
+   */
+  decision: 'allow' | 'deny' | 'answer';
   scope: ApprovalScope;
   reason?: string;
 }
@@ -852,6 +962,12 @@ export interface SertumApi {
   /** Enable or release the adapter's structured tool-execution gate. */
   setToolGate(id: string, paused: boolean): Promise<boolean>;
   /**
+   * Change how the agent decides permissions for the rest of the session.
+   * Resolves the mode the agent says is now in effect, or the reason it
+   * would not change -- never a silent no-op.
+   */
+  setPermissionMode(id: string, mode: PermissionMode): Promise<PermissionModeResult>;
+  /**
    * Rename a session. The label is Sertum's own, so this works for every
    * agent -- including a plain shell, which has no notion of a session name.
    * Resolves the stored label, which may differ from the request when an
@@ -971,6 +1087,12 @@ export interface SertumApi {
     request: { id: string; sessionId: string; tool: string; subject: string },
     answer: ApprovalAnswer,
   ): Promise<void>;
+  /**
+   * Every call still holding a turn open. Asked once at startup, because a
+   * recreated window has no copy of what was waiting and a conversation
+   * session's ask has no timeout behind it to release the turn.
+   */
+  pendingApprovals(): Promise<PendingApproval[]>;
   /** A call is waiting on a person (wireframe B5). */
   onApprovalNeeded(fn: (request: PendingApproval) => void): () => void;
   /** That call no longer has a turn behind it; take the bar down. */

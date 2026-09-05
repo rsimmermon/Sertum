@@ -12,6 +12,14 @@ export interface MenuItem {
   label: string;
   /** Shown right-aligned and muted, exactly as in the wireframe. */
   accel?: string;
+  /**
+   * A second line under the label: what the item does, or why it cannot.
+   * A sentence read badly squeezed into the right-aligned accel slot, which
+   * is sized for a chord.
+   */
+  note?: string;
+  /** Marks the item as the one currently in effect. */
+  checked?: boolean;
   /** Red, for the items the wireframe marks destructive. */
   destructive?: boolean;
   /** Omitted for the actions a later phase will bring. */
@@ -66,19 +74,38 @@ export function openSessionMenu(
 
     const item = document.createElement('button');
     item.type = 'button';
-    item.className = 'ctx-item' + (entry.destructive ? ' destructive' : '');
-    item.setAttribute('role', 'menuitem');
+    item.className =
+      'ctx-item' +
+      (entry.destructive ? ' destructive' : '') +
+      (entry.note ? ' has-note' : '') +
+      (entry.checked ? ' checked' : '');
+    item.setAttribute('role', entry.checked === undefined ? 'menuitem' : 'menuitemradio');
+    if (entry.checked !== undefined) {
+      item.setAttribute('aria-checked', String(entry.checked));
+    }
     item.disabled = !entry.onSelect;
 
+    const main = document.createElement('span');
+    main.className = 'ctx-main';
+
     const label = document.createElement('span');
+    label.className = 'ctx-label';
     label.textContent = entry.label;
-    item.append(label);
+    main.append(label);
 
     if (entry.accel) {
       const accel = document.createElement('span');
       accel.className = 'ctx-accel';
       accel.textContent = entry.accel;
-      item.append(accel);
+      main.append(accel);
+    }
+    item.append(main);
+
+    if (entry.note) {
+      const note = document.createElement('span');
+      note.className = 'ctx-note';
+      note.textContent = entry.note;
+      item.append(note);
     }
 
     item.onclick = () => {
