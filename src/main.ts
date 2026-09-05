@@ -86,7 +86,24 @@ if (started) app.quit();
 // hidden in the tray raises that instance instead of creating a second icon
 // and a second notification client for the same daemon.
 const hasSingleInstanceLock = started || app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) app.quit();
+if (!hasSingleInstanceLock) {
+  // The losing instance never reaches 'ready' -- app.quit() called this
+  // early aborts startup outright, so it spawns no window and no daemon of
+  // its own. Silently exiting there would still leave the person who just
+  // double-clicked Sertum with no idea anything happened at all, which for
+  // a tool whose whole point is consolidating every session into one place
+  // reads as broken rather than as "already running". showErrorBox blocks
+  // until dismissed and works before the app is ready, which is exactly
+  // this moment.
+  dialog.showErrorBox(
+    'Sertum is already running',
+    'Only one copy of Sertum can run at a time -- its whole purpose is to ' +
+      'bring every agent session into one window and one background ' +
+      'process, not to split them across several. Look for the existing ' +
+      'window, or find Sertum in the system tray.',
+  );
+  app.quit();
+}
 
 // Opt-in remote debugging, so the app can be driven and verified headlessly
 // (CI, cross-platform smoke checks) without shipping a debug build.

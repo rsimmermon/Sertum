@@ -935,7 +935,18 @@ Sertum can end an externally owned agent.
 when its last window is closed and owns a cross-platform tray/menu-bar icon.
 It holds Electron's single-instance lock, so launching Sertum again reveals
 the existing window instead of creating a duplicate tray and notification
-client.
+client. The losing launch never reaches `ready` -- `app.quit()` called this
+early aborts startup outright, before a window or a daemon of its own exists
+-- so silently exiting there would leave someone who just double-clicked
+Sertum again with no visible sign anything happened at all, which for a tool
+whose whole point is consolidating every session into one place reads as
+broken rather than as "already running". It now shows `dialog.showErrorBox`
+(which blocks until dismissed and works before the app is ready, exactly the
+moment this is) naming that only one copy runs at a time, before quitting.
+`sertumd` needs no equivalent: it has no window to show one in, and its
+listen-race loss is already the fully correct, silent outcome for a headless
+process -- logged to `sertumd.log`, never surfaced live, the same pattern
+other background failures in this file follow.
 Its menu is rebuilt from the GUI's daemon-fed `SessionSnapshot` mirror, so its
 status labels come only from adapter events and process lifecycle — never PTY
 pixels. It can reveal a session, end an owned session, or detach an externally
