@@ -1848,7 +1848,22 @@ terminal geometry or xterm instance:
   clipping either a terminal or conversation.
 - **Moving a session between panes costs a DOM move and a refit.** The xterm
   instance for a PTY transport is keyed by session and never rebuilt, so its
-  scrollback survives every layout change; a chat pane is likewise reused.
+  scrollback survives every layout change; a chat pane is likewise reused --
+  but reuse alone was not enough for it. xterm keeps scroll position in its
+  own buffer model, unaffected by DOM moves; a chat pane's scroller is an
+  ordinary element, and per the CSSOM View spec a scroller with no box (the
+  state of anything detached from the document, which is exactly what moving
+  it out of an off-screen tab does) reports `scrollTop` as zero for as long
+  as it stays out. Switching tabs and back therefore silently reset every
+  chat pane to the top regardless of where the reader had left it. Fixed by
+  having `ChatPane` remember its own position -- a `pinnedToBottom` flag plus
+  the last `scrollTop`, updated on every scroll event rather than read off
+  the DOM at the moment it matters -- and restoring it the instant `attach()`
+  puts the element back, before that poll's first render can land. The
+  restore reads as "scroll to the end" when the reader had been there and an
+  exact pixel offset otherwise, so a turn that kept streaming while the tab
+  was away still auto-follows the reader down, and a message re-read from
+  history stays exactly on screen.
 
 Layout and gutter positions are remembered across launches, but pane occupancy
 is not. The sessions and their transports continue in `sertumd` and return to the

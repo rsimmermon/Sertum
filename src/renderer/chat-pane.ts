@@ -62,6 +62,21 @@ export class ChatPane {
   private session: SessionSnapshot;
   private attached = false;
   /**
+   * Where the reader was, tracked continuously rather than read off the DOM
+   * at the moment it matters -- because the moment it matters is exactly
+   * when the DOM cannot be trusted. Switching tabs detaches this pane's
+   * element (`pane-grid.ts` moves `body` between cells by removing and
+   * reinserting it), and a scroller with no box reports `scrollTop` as zero
+   * as long as it is out of the document, per the CSSOM View spec. Reading
+   * "where is the scrollbar" right after reattaching therefore always
+   * answers "at the top", regardless of where it actually was -- which is
+   * this bug. These two fields are this pane's own memory of that fact,
+   * updated on every scroll and restored the instant `attach()` puts the
+   * element back, before the poll's first render can even land.
+   */
+  private pinnedToBottom = true;
+  private savedScrollTop = 0;
+  /**
    * Messages the reader has switched between rendered and source, by a key
    * that survives the message growing as it streams and the read window
    * dropping older items. Classification picks the opening position; this is
@@ -104,6 +119,15 @@ export class ChatPane {
 
     this.scroll = document.createElement('div');
     this.scroll.className = 'chat-scroll';
+    // Live tracking, not a snapshot taken when the tab switches away -- by
+    // then the element may already be mid-detach and its own scrollTop
+    // unreliable. This fires for both the reader's own scrolling and this
+    // pane's programmatic scrollToTail()/restore, which is fine: either way
+    // it is where the scrollbar now sits.
+    this.scroll.addEventListener('scroll', () => {
+      this.savedScrollTop = this.scroll.scrollTop;
+      this.pinnedToBottom = this.isNearBottom();
+    });
 
     const composer = document.createElement('div');
     composer.className = 'chat-composer';
@@ -200,12 +224,26 @@ export class ChatPane {
   attach(): void {
     if (this.attached) return;
     this.attached = true;
+    // The pane grid already reattached `element` to the document by now --
+    // see the class comment on `pinnedToBottom` -- which handed it a fresh
+    // scroll box sitting at zero. Restore the reader's actual position
+    // before the poll gets a chance to run, so coming back to a tab never
+    // shows a flash of the top of the transcript. The content itself is
+    // untouched by unmount(), so the old scrollHeight this restores against
+    // is exactly the one the position was recorded from.
+    if (this.pinnedToBottom) this.scrollToTail();
+    else this.scroll.scrollTop = this.savedScrollTop;
     void this.refresh();
     this.timer = setInterval(() => void this.refresh(), POLL_MS);
   }
 
   /** Leave the DOM and stop polling; the conversation is on disk, not here. */
   unmount(): void {
+    // Capture once more right before detaching, on top of the live scroll
+    // listener, since this is the last moment the values are certainly
+    // fresh.
+    this.savedScrollTop = this.scroll.scrollTop;
+    this.pinnedToBottom = this.isNearBottom();
     this.element.remove();
     this.attached = false;
     if (this.timer !== null) {
@@ -351,6 +389,11 @@ export class ChatPane {
     this.scroll.scrollTop = this.scroll.scrollHeight;
   }
 
+  /** Close enough to the end that new content should keep pulling it down. */
+  private isNearBottom(): boolean {
+    return this.scroll.scrollHeight - this.scroll.scrollTop - this.scroll.clientHeight < 48;
+  }
+
   /** Stop through plane 2; never synthesize Ctrl+C or Escape terminal bytes. */
   private async interrupt(): Promise<void> {
     if (this.action.disabled || this.mode !== 'stop') return;
@@ -452,8 +495,7 @@ export class ChatPane {
    * not to write it that way later.
    */
   private render(snapshot: ConversationSnapshot): void {
-    const nearBottom =
-      this.scroll.scrollHeight - this.scroll.scrollTop - this.scroll.clientHeight < 48;
+    const nearBottom = this.isNearBottom();
     const wasAt = this.scroll.scrollTop;
 
     if (snapshot.items.length === 0) {
