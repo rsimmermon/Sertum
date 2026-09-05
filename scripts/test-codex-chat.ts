@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { CodexChatHost } from '../src/main/adapters/codex-chat';
+import type { ClaudeChatHost } from '../src/main/adapters/claude-chat';
 import { CodexAppServer, type CodexServerRequest } from '../src/main/adapters/codex-app-server';
 import { sessionCapability } from '../src/shared/session-capabilities';
 import { createAgentAdapters } from '../src/main/adapters/agent-adapter';
@@ -60,6 +61,7 @@ async function main() {
 
   const adapters = createAgentAdapters({ codex: server as unknown as CodexAppServer,
     claudeControl: { queueSteer() {}, queueInterrupt() {}, setToolGate() {} },
+    claudeChat: { has: () => false, interrupt: async () => false } as unknown as ClaudeChatHost,
   });
   const caps = adapters.get('codex')!.capabilities;
   const session = { agent: 'codex', origin: 'owned', transport: 'stream', exitCode: null } as SessionSnapshot;

@@ -219,7 +219,12 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   let mintedGrokSession: { sessionId: string; grokSessionId: string } | null =
     null;
 
-  const agentAdapters = createAgentAdapters({ codex, claudeControl: hooks });
+  // Constructed here, ahead of `ptys` and its listeners below, so
+  // `ClaudeAdapter` can be given the same instance rather than a second one —
+  // its interrupt needs to ask this host whether a session has a live
+  // control channel before falling back to the hook queue.
+  const claudeChat = new ClaudeChatHost();
+  const agentAdapters = createAgentAdapters({ codex, claudeControl: hooks, claudeChat });
 
   /** Codex sessions awaiting their thread, oldest first. */
   const awaitingThread: Array<{ id: string; cwd: string }> = [];
@@ -267,7 +272,6 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
 
   // ------------------------------------------------------- stream sessions
 
-  const claudeChat = new ClaudeChatHost();
   const codexChat = new CodexChatHost(codex);
   const structuredHostFor = (id: string) => codexChat.has(id) ? codexChat : claudeChat;
   codexChat.on('update', ({ id, status, activity }) => ptys.applyUpdate(id, { status, activity }));
@@ -855,12 +859,17 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       const session = ptys.get(id);
       const adapter = session && agentAdapters.get(session.agent);
       if (!session || !adapter?.capabilities['turn-interrupt'].ok) return false;
+      // Set before asking, not after: a structured Claude session's own
+      // control channel can answer and end the turn within the same tick as
+      // this await resolves, and its `result` update is the authoritative
+      // one. Setting the optimistic label first means that real event -- if
+      // it lands during the await -- naturally supersedes it instead of
+      // being clobbered by it.
+      ptys.applyUpdate(id, { activity: 'interrupting…' });
       const accepted = await adapter.interruptTurn(sessionRef(id, session));
-      ptys.applyUpdate(id, {
-        activity: accepted
-          ? 'interrupting…'
-          : 'could not interrupt — no active turn',
-      });
+      if (!accepted) {
+        ptys.applyUpdate(id, { activity: 'could not interrupt — no active turn' });
+      }
       return accepted;
     },
     'session/tool-gate': async (p: { id: string; paused: boolean }) => {

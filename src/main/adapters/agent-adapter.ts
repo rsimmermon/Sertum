@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { AgentCapabilities, AgentKind } from '../../shared/types';
 import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
 import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
+import type { ClaudeChatHost } from './claude-chat';
 
 /** The part of a session an adapter needs in order to act on it. */
 export interface AgentSessionRef {
@@ -277,7 +278,10 @@ class CodexAdapter implements AgentAdapter {
  * a silent no-op.
  */
 class ClaudeAdapter extends InertAgentAdapter {
-  constructor(private control: ClaudeTurnControl) {
+  constructor(
+    private control: ClaudeTurnControl,
+    private chat: ClaudeChatHost,
+  ) {
     super('claude', {
       'rename-remote': {
         ok: false,
@@ -329,6 +333,16 @@ class ClaudeAdapter extends InertAgentAdapter {
   }
 
   override async interruptTurn(session: AgentSessionRef): Promise<boolean> {
+    // A structured (stream-json) session has a live control channel and can
+    // be stopped in place -- verified against Claude Code 2.1.261: sent mid-
+    // generation, `interrupt` is acknowledged in single-digit milliseconds
+    // and the turn ends within the same tick. A PTY-backed session has no
+    // such channel -- Claude's own TUI owns the pipe -- so its interrupt is
+    // queued for the next attributable hook boundary instead, which is only
+    // as prompt as the next PreToolUse/PermissionRequest/UserPromptSubmit;
+    // a turn that never calls a tool does not reach one until it ends on its
+    // own.
+    if (this.chat.has(session.id)) return this.chat.interrupt(session.id);
     this.control.queueInterrupt(session.id);
     return true;
   }
@@ -440,9 +454,10 @@ class GrokAdapter extends InertAgentAdapter {
 export function createAgentAdapters(deps: {
   codex: CodexAppServer;
   claudeControl: ClaudeTurnControl;
+  claudeChat: ClaudeChatHost;
 }): Map<AgentKind, AgentAdapter> {
   return new Map<AgentKind, AgentAdapter>([
-    ['claude', new ClaudeAdapter(deps.claudeControl)],
+    ['claude', new ClaudeAdapter(deps.claudeControl, deps.claudeChat)],
     ['codex', new CodexAdapter(deps.codex)],
     ['grok', new GrokAdapter()],
     [

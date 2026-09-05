@@ -122,6 +122,10 @@ type ControlReply =
 export class ClaudeChatHost extends EventEmitter {
   private hosted = new Map<string, Hosted>();
 
+  has(id: string): boolean {
+    return this.hosted.get(id)?.alive === true;
+  }
+
   /**
    * Spawns the headless process. Returns its pid, or null when the spawn
    * failed synchronously — the caller decides what a failed session becomes.
@@ -283,6 +287,24 @@ export class ClaudeChatHost extends EventEmitter {
   }
 
   /**
+   * Stops the current turn immediately over the control channel, rather
+   * than waiting for a hook boundary that pure text generation may never
+   * reach before the turn ends on its own.
+   *
+   * Verified against Claude Code 2.1.261: `interrupt` is a control request
+   * like `set_permission_mode`, not something the model reads. Sent while a
+   * `content_block_delta` was streaming, the `control_response` landed in
+   * single-digit milliseconds and the turn's `result` record followed within
+   * the same tick, carrying `terminal_reason: 'aborted_streaming'` — the
+   * signal `handleLine` below reports as an interruption rather than a
+   * failure. The process stayed live and answered a following turn normally.
+   */
+  async interrupt(id: string): Promise<boolean> {
+    const reply = await this.request(id, { subtype: 'interrupt' });
+    return reply.ok;
+  }
+
+  /**
    * One request of ours, matched to its answer by id.
    *
    * The deadline exists because this is the one direction with nothing else
@@ -434,10 +456,18 @@ export class ClaudeChatHost extends EventEmitter {
         return;
       }
       case 'result': {
-        const failed = rec.is_error === true;
+        // An interrupted turn also carries `is_error: true` -- Claude has no
+        // other record of how the turn ended -- so `terminal_reason` is
+        // checked first to tell a user's own Stop apart from a real failure.
+        const interrupted = rec.terminal_reason === 'aborted_streaming';
+        const failed = !interrupted && rec.is_error === true;
         this.update(id, {
           status: failed ? 'attention' : 'idle',
-          activity: failed ? 'turn failed' : 'turn finished',
+          activity: interrupted
+            ? 'turn interrupted'
+            : failed
+              ? 'turn failed'
+              : 'turn finished',
         });
         return;
       }

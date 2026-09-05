@@ -357,12 +357,42 @@ Steering and interruption never write synthetic keystrokes into a terminal.
 They are declared `turn-steer` and `turn-interrupt` capabilities and dispatched
 through `AgentAdapter`:
 
-- Claude queues a per-session response in `HookServer`. An interrupt returns
-  `{ continue: false }` at the next hook boundary; guidance is returned as
-  `UserPromptSubmit` `additionalContext` when that session next submits a
-  prompt. The command hook's curl prints the HTTP response body to stdout,
-  which is Claude's structured hook-response channel rather than terminal
-  output.
+- Claude has two interrupt paths, and `ClaudeAdapter.interruptTurn` picks
+  between them by asking `ClaudeChatHost.has(session.id)`. A structured
+  (stream-json) session is stopped **immediately** over its own control
+  channel: `interrupt` is sent as a `control_request` exactly like
+  `set_permission_mode`, verified against Claude Code 2.1.261 to be
+  acknowledged in single-digit milliseconds even mid-`content_block_delta`,
+  ending the turn's `result` record with `terminal_reason:
+  'aborted_streaming'` — which `ClaudeChatHost` reports as `turn interrupted`
+  rather than `turn failed`, since that same record also carries `is_error:
+  true` with nothing else to tell the two apart. The process stays live and
+  answers a following turn normally. A **PTY**-backed session has no control
+  channel of its own — Claude's TUI owns that pipe — so its interrupt is still
+  queued in `HookServer` and returns `{ continue: false }` at the next
+  attributable hook boundary; guidance is returned as `UserPromptSubmit`
+  `additionalContext` when that session next submits a prompt. The command
+  hook's curl prints the HTTP response body to stdout, which is Claude's
+  structured hook-response channel rather than terminal output.
+
+  The PTY path only stops a turn that reaches a hook boundary
+  (`PreToolUse`/`PermissionRequest`/`UserPromptSubmit`) — pure text
+  generation with no tool call reaches none of those until the turn ends on
+  its own, so queuing an interrupt there does nothing until the turn was
+  already finishing. This was a real bug, not a documented limitation: with
+  Claude declaring `structured-conversation` and starting as a stream by
+  default, most Claude sessions have the fast control-channel path available
+  and were going through the queue-and-hope path uselessly. Fixed by giving
+  `ClaudeAdapter` the same `ClaudeChatHost` instance the daemon spawns
+  sessions on, so it can tell which path a given session actually has.
+  `session/interrupt-turn` in `daemon/fabric.ts` sets the optimistic
+  `interrupting…` activity *before* awaiting the adapter, not after — the
+  structured path's real `result` update can land within the same tick the
+  await resolves, and setting the optimistic label first means that real,
+  authoritative update naturally supersedes it instead of being clobbered by
+  it. Verified end to end with `scripts/smoke-chat-interrupt.ts`: interrupt
+  sent while `responding`, acknowledged in single-digit milliseconds, session
+  answered a following turn normally.
 - Codex tracks the active turn id from `turn/started` and clears it on
   `turn/completed` when those notifications are present. TUI-owned turns
   connected through `--remote` currently emit thread status but not those turn
@@ -2152,5 +2182,6 @@ src/
 scripts/
   smoke-pty.js                Headless PTY test
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
+  smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
   drive.js                    CDP driver for headless verification
 ```
