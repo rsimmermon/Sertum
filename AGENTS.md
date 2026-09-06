@@ -796,9 +796,24 @@ verified native approval policies, with the workspace sandbox retained.
 dependency and supported modes in the type. `shared/session-capabilities.ts`
 combines that declaration with ownership, transport and exit state, shared by
 the daemon and picker. Codex's policies are distinct from Claude's permission
-modes. Changing policy is restricted to an idle turn: `thread/resume` on a
+modes. Applying a policy change requires an idle turn: `thread/resume` on a
 loaded thread ignores overrides, so the host unsubscribes first, resumes, and
 uses the returned effective policy. Failed sends keep the composer's text.
+
+That idle requirement used to mean an outright refusal -- "Finish or stop
+the current turn before changing its policy" -- however long the turn ran,
+which read as the picker simply not working. `CodexChatHost` now queues the
+request instead: a mode asked for while `busy` is stashed as `pendingMode`
+and applied the instant `turn/completed` lands. A later ask while one is
+already queued simply overwrites it -- only the mode you actually land on
+when the turn ends is meaningful, the same as retyping over an unsent draft.
+`PermissionModeResult` carries a `queued` flag for exactly this reply,
+distinct from both an applied change and a refusal; the composer note under
+the mode chip is the only place a queued change is visible until
+`mode-applied` lands and the chip repaints from the snapshot like any other
+mode change. A failure applying the queued mode reaches the session as an
+activity string rather than silently vanishing, the same pattern turn-steer
+and turn-interrupt failures already follow.
 
 Verified on Windows with Codex CLI 0.153.1: a real file approval stayed held,
 denial prevented the write, duplicate replies were refused, a policy change

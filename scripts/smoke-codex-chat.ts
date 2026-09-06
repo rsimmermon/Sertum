@@ -17,6 +17,7 @@ async function main() {
   let approvals = 0;
   let questions = 0;
   let exited = false;
+  let modeApplied: { id: string; mode: string } | null = null;
   const waitFor = async (test: () => boolean, ms = 100_000) => {
     const deadline = Date.now() + ms;
     while (!test()) {
@@ -30,6 +31,7 @@ async function main() {
   });
   host.on('update', e => console.log('update', e));
   host.on('exit', () => { exited = true; });
+  host.on('mode-applied', (e: { id: string; mode: string }) => { modeApplied = e; console.log('mode-applied', e); });
   host.on('approval', (request: PendingApproval) => {
     if (request.card?.kind === 'questions') {
       questions++;
@@ -62,6 +64,19 @@ async function main() {
     assert.deepEqual(mode, { ok: true, mode: 'codex-on-request' });
     assert(await host.send('probe', 'Reply with exactly second-turn-ok. Do not call tools.'));
     await waitFor(() => completed >= 2);
+    // Queued permission-mode change: asked mid-turn, it must not be refused,
+    // a second ask before the first lands must overwrite it rather than
+    // queueing both, and it takes the instant this turn ends.
+    assert(await host.send('probe', 'Count slowly from one to five, one number per line, then stop. Do not call tools.'));
+    const queuedFirst = await host.setPermissionMode('probe', 'codex-never');
+    assert.deepEqual(queuedFirst, { ok: true, mode: 'codex-never', queued: true });
+    const queuedSecond = await host.setPermissionMode('probe', 'codex-untrusted');
+    assert.deepEqual(queuedSecond, { ok: true, mode: 'codex-untrusted', queued: true },
+      'A second ask while one is queued must overwrite it, not queue both');
+    await waitFor(() => completed >= 3);
+    await waitFor(() => modeApplied !== null);
+    assert.deepEqual(modeApplied, { id: 'probe', mode: 'codex-untrusted' },
+      'The mode actually applied must be the last one asked for, not the first');
     // Exercise the native question wire directly; the product does not yet
     // expose collaboration-mode selection as a permission policy.
     await server.request('turn/start', {
@@ -69,7 +84,7 @@ async function main() {
       collaborationMode: { mode: 'plan', settings: { model: started.model, reasoning_effort: null, developer_instructions: null } },
       input: [{ type: 'text', text: 'Use request_user_input to ask me to choose Blue or Green for a hypothetical button. This is a protocol test: call the tool, then repeat my chosen answer and stop. Do not edit files.' }],
     });
-    await waitFor(() => completed >= 3);
+    await waitFor(() => completed >= 4);
     assert(questions > 0, 'Expected a live structured question');
     await host.start('keeper', cwd);
     assert(await host.send('probe', 'Think carefully about the distribution of prime numbers, then give a short explanation. Do not use tools.'));
@@ -78,7 +93,7 @@ async function main() {
     assert(host.has('keeper') && server.connected, 'Ending an active thread must preserve the other session and server');
     assert(await host.terminate('keeper'));
     assert(!await host.send('probe', 'Must not run'));
-    console.log('PASS: approval held/denied, duplicate rejected, multiple turns, policy echoed, native question answered, isolated thread closed.');
+    console.log('PASS: approval held/denied, duplicate rejected, multiple turns, policy echoed, queued policy change overwritten and applied on idle, native question answered, isolated thread closed.');
   } finally { server.stop(); }
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

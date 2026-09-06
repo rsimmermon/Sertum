@@ -219,9 +219,18 @@ export interface SessionSnapshot extends SessionSpec {
   permissionMode: PermissionMode | null;
 }
 
-/** What came of asking an agent to change its permission mode. */
+/**
+ * What came of asking an agent to change its permission mode.
+ *
+ * `queued` marks the one case that is neither: the agent has a turn in
+ * flight and cannot take the change until it is idle, so the request is
+ * held rather than refused. `mode` there is what was *asked for*, not yet
+ * what is in effect -- the snapshot's own `permissionMode` still reads the
+ * old one until the queued change actually applies.
+ */
 export type PermissionModeResult =
-  | { ok: true; mode: PermissionMode }
+  | { ok: true; mode: PermissionMode; queued?: false }
+  | { ok: true; mode: PermissionMode; queued: true }
   | { ok: false; reason: string };
 
 /**

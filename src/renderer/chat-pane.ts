@@ -362,18 +362,33 @@ export class ChatPane {
   /** Ask the agent to change mode, and say plainly when it will not. */
   private async setMode(mode: PermissionMode): Promise<void> {
     const result = await api.setPermissionMode(this.session.id, mode);
-    if (result.ok) {
-      // The snapshot arrives on its own through `session:updated`; nothing is
-      // painted from the request, only from what the agent said.
-      this.composerNote.hidden = true;
+    if (!result.ok) {
+      this.reportModeRefusal(result.reason);
       return;
     }
-    this.reportModeRefusal(result.reason);
+    if (result.queued) {
+      this.reportModeQueued(result.mode);
+      return;
+    }
+    // The snapshot arrives on its own through `session:updated`; nothing is
+    // painted from the request, only from what the agent said.
+    this.composerNote.hidden = true;
   }
 
   /** A refused mode change, said under the composer where the button is. */
   reportModeRefusal(reason: string): void {
     this.composerNote.textContent = `Could not change the permission mode — ${reason}`;
+    this.composerNote.hidden = false;
+  }
+
+  /**
+   * A mode asked for mid-turn, held rather than refused. It takes the moment
+   * the turn ends -- the mode chip keeps reading the current mode until then,
+   * since that is still what is actually in effect, so this note is the only
+   * place the pending change is visible in the meantime.
+   */
+  reportModeQueued(mode: PermissionMode): void {
+    this.composerNote.textContent = `Will switch to ${permissionModeLabel(mode)} once the current turn finishes.`;
     this.composerNote.hidden = false;
   }
 

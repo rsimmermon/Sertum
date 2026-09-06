@@ -291,12 +291,12 @@ export class App {
     api.onApprovalNeeded((request) => {
       if (this.pendingApprovals.some((r) => r.id === request.id)) return;
       this.pendingApprovals.push(request);
-      // Answering means seeing what led to the request, so the session comes
-      // forward with the bar -- the oldest call still waiting, which is not
-      // this one when another is queued ahead of it.
-      const showing = this.pendingApprovals[0]?.sessionId;
-      if (showing && this.sessions.has(showing)) this.focusSession(showing);
-      else this.render();
+      // A call arriving for a session you are not looking at must not steal
+      // focus out from under whatever you are doing -- the sidebar's
+      // Needs Input group and the system notification already say a session
+      // wants you. The bar itself shows the moment you bring that session
+      // forward yourself (see the orphan-approval filter below), never before.
+      this.render();
     });
     api.onApprovalGone((id) => {
       const before = this.pendingApprovals.length;
@@ -1541,9 +1541,10 @@ export class App {
     openPermissionModePicker(x, y, s, this.capabilities, (mode) => {
       void api.setPermissionMode(s.id, mode).then((result) => {
         // Success repaints from the snapshot the daemon pushes back, so
-        // nothing is drawn from the request. A refusal has nowhere else to
-        // land from here, so it goes to the session's own pane.
+        // nothing is drawn from the request. A refusal or a queued change has
+        // nowhere else to land from here, so it goes to the session's own pane.
         if (!result.ok) this.chatPanes.get(s.id)?.reportModeRefusal(result.reason);
+        else if (result.queued) this.chatPanes.get(s.id)?.reportModeQueued(result.mode);
       });
     });
   }
@@ -1855,11 +1856,19 @@ export class App {
       if (!onScreen.has(id) || !this.showsChat(id)) pane.unmount();
     }
 
-    // Whatever is left after every visible conversation pane has taken its
-    // own calls. Normally empty -- see `orphanApprovals`.
+    // Only a call for a session that is genuinely on screen falls back here --
+    // one whose pane is a terminal rather than a conversation, so there is no
+    // composer to sit the bar above (B5: "a pane that is not a conversation
+    // keeps it at the top of the pane, above the terminal"). A call for a
+    // session on some *other* tab is never drawn here: this host sits above
+    // whichever pane happens to be focused, so showing it for an off-screen
+    // session made an unrelated tab's own bar look like it belonged to the
+    // session you were actually looking at. That session stays correctly
+    // Needs Input in the sidebar and waits for you to bring it forward
+    // yourself, at which point its own pane shows the bar.
     this.orphanApprovals.setRequests(
       this.pendingApprovals.filter(
-        (r) => !(onScreen.has(r.sessionId) && this.showsChat(r.sessionId)),
+        (r) => onScreen.has(r.sessionId) && !this.showsChat(r.sessionId),
       ),
     );
 

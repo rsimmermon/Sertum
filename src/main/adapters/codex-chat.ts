@@ -16,6 +16,13 @@ interface Hosted {
   closing: boolean;
   reconfiguring?: boolean;
   items: Map<string, ObjectValue>;
+  /**
+   * A mode asked for while a turn was in flight, applied the instant it
+   * completes. Only the latest ask survives -- a second request overwrites
+   * the first exactly as retyping over an unsent draft would, since only the
+   * mode you actually land on when the turn ends is meaningful.
+   */
+  pendingMode?: PermissionMode | null;
 }
 interface Held {
   session: Hosted;
@@ -74,23 +81,37 @@ export class CodexChatHost extends EventEmitter {
     }
   }
 
+  /**
+   * `thread/resume` on an already-loaded thread ignores configuration
+   * overrides, so a policy change only ever takes on an idle thread. A busy
+   * one queues the request instead of refusing it outright: `pendingMode` is
+   * applied the moment `turn/completed` lands, and a later call here simply
+   * overwrites it, so only the last mode asked for while busy ever matters.
+   */
   async setPermissionMode(id: string, mode: PermissionMode): Promise<PermissionModeResult> {
     const s = this.sessions.get(id);
     if (!s || s.closing) return { ok: false, reason: 'That session is gone.' };
+    if (!modePolicy(mode)) return { ok: false, reason: 'Codex does not support that permission policy.' };
+    if (s.busy) {
+      s.pendingMode = mode;
+      return { ok: true, mode, queued: true };
+    }
+    return this.applyPermissionMode(s, mode);
+  }
+
+  private async applyPermissionMode(s: Hosted, mode: PermissionMode): Promise<PermissionModeResult> {
     const policy = modePolicy(mode);
     if (!policy) return { ok: false, reason: 'Codex does not support that permission policy.' };
-    if (s.busy) return { ok: false, reason: 'Finish or stop the current turn before changing its policy.' };
     s.busy = true;
     s.reconfiguring = true;
     try {
-      // resume on an already loaded thread ignores configuration overrides.
       // Unload the idle thread first, then read back its effective policy.
       await this.server.request('thread/unsubscribe', { threadId: s.threadId });
       const result = object(await this.server.request('thread/resume', {
         threadId: s.threadId, approvalPolicy: policy,
       }));
       const actual = policyMode(result.approvalPolicy);
-      if (this.sessions.get(id) !== s || !actual) return { ok: false, reason: 'Codex did not report the updated policy.' };
+      if (this.sessions.get(s.id) !== s || !actual) return { ok: false, reason: 'Codex did not report the updated policy.' };
       return { ok: true, mode: actual };
     } catch (error) {
       this.finish(s, -1);
@@ -189,6 +210,18 @@ export class CodexChatHost extends EventEmitter {
       const turn = object(params.turn);
       this.emit('update', { id: s.id, status: turn.status === 'failed' ? 'attention' : 'idle',
         activity: string(object(turn.error).message) || (turn.status === 'interrupted' ? 'turn interrupted' : 'turn finished') });
+      // The thread just went idle -- exactly the moment a mode queued while
+      // it was busy becomes applicable. Runs after the idle/attention update
+      // above, so a failure here overwrites "turn finished" with why the
+      // mode did not take, rather than the other way around.
+      if (s.pendingMode) {
+        const mode = s.pendingMode;
+        s.pendingMode = null;
+        void this.applyPermissionMode(s, mode).then((result) => {
+          if (result.ok) this.emit('mode-applied', { id: s.id, mode: result.mode });
+          else this.emit('update', { id: s.id, activity: `Could not switch permission mode — ${result.reason}` });
+        });
+      }
     } else if (method === 'item/started') {
       const item = object(params.item);
       s.items.set(string(item.id), item);

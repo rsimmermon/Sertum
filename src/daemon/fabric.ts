@@ -276,6 +276,11 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   const structuredHostFor = (id: string) => codexChat.has(id) ? codexChat : claudeChat;
   codexChat.on('update', ({ id, status, activity }) => ptys.applyUpdate(id, { status, activity }));
   codexChat.on('exit', ({ id, exitCode }) => ptys.markExited(id, exitCode));
+  // A mode asked for while a turn was busy applies here, once it goes idle --
+  // the snapshot only ever reports the mode actually in effect.
+  codexChat.on('mode-applied', ({ id, mode }: { id: string; mode: PermissionMode }) =>
+    ptys.applyMeta(id, { permissionMode: mode }),
+  );
   codexChat.on('approval-gone', (id: string) => emit('approval:gone', id));
   codexChat.on('approval', (request: PendingApproval) => {
     if (!settings.approvalsInApp) {
