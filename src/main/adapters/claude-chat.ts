@@ -1,8 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type {
+  AgentEffortList,
   AgentModel,
   AgentModelList,
+  EffortChangeResult,
   ModelChangeResult,
   PermissionMode,
   PermissionModeResult,
@@ -178,10 +180,27 @@ export class ClaudeChatHost extends EventEmitter {
         shell: false,
         windowsHide: true,
       });
-    } catch {
+    } catch (error) {
+      // The caller only learns that the session could not start, and the
+      // reason is exactly what is needed to tell a missing binary from a
+      // refused one -- so it goes to the daemon's log rather than nowhere.
+      console.error(`[claude-chat] spawn of ${opts.command} failed:`, error);
       return null;
     }
-    if (child.pid === undefined) return null;
+    if (child.pid === undefined) {
+      // A spawn that fails asynchronously -- the usual Windows shape, since
+      // `CreateProcess` errors arrive as an `error` event rather than as a
+      // throw -- leaves a ChildProcess with no pid that is *still going to
+      // emit* `error`. Returning here without listening for it made that an
+      // unhandled `error` event, which takes the whole daemon down: one
+      // unstartable session ended every other session on the machine. So the
+      // listener goes on before the early return, and its only job is to say
+      // why in the log the caller cannot reach.
+      child.once('error', (err) => {
+        console.error(`[claude-chat] spawn of ${opts.command} failed:`, err.message);
+      });
+      return null;
+    }
 
     const entry: Hosted = {
       child,
@@ -360,9 +379,14 @@ export class ClaudeChatHost extends EventEmitter {
     if (!reply.ok) return reply;
     const rows = Array.isArray(reply.response.models) ? reply.response.models : [];
     const models = rows.map(claudeModel).filter((m): m is AgentModel => m !== null);
-    return models.length
-      ? { ok: true, models }
-      : { ok: false, reason: 'Claude Code listed no models for this session.' };
+    if (!models.length) {
+      return { ok: false, reason: 'Claude Code listed no models for this session.' };
+    }
+    // The catalogue does not mark its own current row, so the session is
+    // asked separately. Worth the extra control request: before the first
+    // turn nothing else knows, and the answer is what puts a tick in the
+    // picker and a name on the chip instead of "Model".
+    return { ok: true, models, current: (await this.appliedSettings(id))?.model ?? null };
   }
 
   /**
@@ -391,6 +415,114 @@ export class ClaudeChatHost extends EventEmitter {
       ? listed.models.find((m) => m.id === model)?.resolved
       : null;
     return { ok: true, model: resolved || model, appliesToNextTurn: false };
+  }
+
+  /**
+   * The thinking levels this session could run, off the catalogue's own rows.
+   *
+   * `list_models` rows carry `supportedEffortLevels` -- verified against
+   * Claude Code 2.1.266, which listed `low,medium,high,xhigh,max` on each of
+   * `default`, `opus[1m]`, `claude-fable-5-1[1m]` and `sonnet`, and nothing
+   * at all on `haiku`. The ladder therefore belongs to a model rather than to
+   * the account, and the row read is the one for the model this session is
+   * actually on: `applied.model` from `get_settings`, which is the session's
+   * own answer, with the caller's snapshot as the fallback while the session
+   * has not been asked yet.
+   *
+   * `supportsAdaptiveThinking` is deliberately not offered. It is real, and
+   * there is no verified way to *select* it over this channel --
+   * `apply_flag_settings` takes a level string -- so offering it would be a
+   * row that does nothing.
+   */
+  async listEfforts(id: string, model: string | null): Promise<AgentEffortList> {
+    const reply = await this.request(id, { subtype: 'list_models' });
+    if (!reply.ok) return reply;
+    const rows = Array.isArray(reply.response.models) ? reply.response.models : [];
+    const applied = await this.appliedSettings(id);
+    const current = applied?.model ?? model;
+    const levels = claudeEffortLevels(rows, current);
+    if (levels.length === 0) {
+      return {
+        ok: false,
+        reason: current
+          ? `Claude Code lists no thinking levels for ${current}.`
+          : 'Claude Code listed no thinking levels for this session.',
+      };
+    }
+    return {
+      ok: true,
+      // The level is its own name here: Claude publishes the word it also
+      // reports back, and there is no description on the row to carry.
+      efforts: levels.map((level) => ({ id: level, label: level, note: null })),
+      current: applied?.effort ?? null,
+    };
+  }
+
+  /**
+   * Switches the thinking level for the rest of the session, then reads back
+   * what the session actually ended up on.
+   *
+   * The channel is `apply_flag_settings { effortLevel }` -- the session-scoped
+   * flag layer -- because there is no `set_effort` control request: the only
+   * other mid-session thinking knob is `set_max_thinking_tokens`, which takes
+   * a numeric budget and, per Claude's own description, means *no* effort
+   * parameter is sent at all. Verified against Claude Code 2.1.266: the key
+   * is `effortLevel` and not `effort`, and `get_settings().applied.effort`
+   * moved to `low` and then `high` as asked.
+   *
+   * The read-back is not a nicety. That same probe sent `effortLevel:
+   * "bogus"` and got `{"subtype":"success"}` back with the level unchanged --
+   * accepted and ignored, exactly the silent-no-op failure the `http` hook
+   * type taught this project to check for. So the answer is what the session
+   * reports afterwards: unchanged means refused and is reported as such, and
+   * a level the model quietly downgrades is reported as the level it landed
+   * on rather than the one that was asked for.
+   */
+  async setEffort(id: string, effort: string): Promise<EffortChangeResult> {
+    const before = (await this.appliedSettings(id))?.effort ?? null;
+    const applied = await this.request(id, {
+      subtype: 'apply_flag_settings',
+      settings: { effortLevel: effort },
+    });
+    if (!applied.ok) return applied;
+    const now = (await this.appliedSettings(id))?.effort ?? null;
+    if (now === null) {
+      return {
+        ok: false,
+        reason: 'Claude Code did not report a thinking level after the change.',
+      };
+    }
+    if (now === before && now !== effort) {
+      return {
+        ok: false,
+        reason: `Claude Code kept ${now} — it did not accept ${effort} for this session’s model.`,
+      };
+    }
+    return { ok: true, effort: now, appliesToNextTurn: false };
+  }
+
+  /**
+   * What this session will actually send on its next request.
+   *
+   * `get_settings` answers with the merged settings, the raw per-source
+   * settings, and `applied` -- the resolved pair the session will use, "after
+   * env overrides, session state, org caps and model-support downgrades" in
+   * Claude's own words. That last part is why `applied` is read rather than
+   * `effective`: the two disagree whenever a level is downgraded, and the one
+   * worth showing is the one that will be sent.
+   */
+  private async appliedSettings(
+    id: string,
+  ): Promise<{ model: string | null; effort: string | null } | null> {
+    const reply = await this.request(id, { subtype: 'get_settings' });
+    if (!reply.ok) return null;
+    const applied = reply.response.applied;
+    if (!applied || typeof applied !== 'object') return null;
+    const row = applied as Record<string, unknown>;
+    return {
+      model: typeof row.model === 'string' ? row.model : null,
+      effort: typeof row.effort === 'string' ? row.effort : null,
+    };
   }
 
   /**
@@ -718,6 +850,44 @@ function claudeModel(row: unknown): AgentModel | null {
     note: wireText(r.description) ?? null,
     resolved: wireText(r.resolvedModel) ?? null,
   };
+}
+
+/**
+ * The effort ladder for one model, out of the `list_models` rows.
+ *
+ * The row for `current` when one matches -- on either the id sent or the
+ * model it resolves to, the same two names `isCurrent` matches on in the
+ * picker -- and otherwise the first row that publishes a ladder at all, so a
+ * session whose model has not been named yet still gets the levels it will
+ * almost certainly have rather than an empty menu.
+ */
+function claudeEffortLevels(rows: unknown[], current: string | null): string[] {
+  const ladders = rows.map((row) => {
+    const r = (row ?? {}) as Record<string, unknown>;
+    const levels = Array.isArray(r.supportedEffortLevels)
+      ? r.supportedEffortLevels.filter((v): v is string => typeof v === 'string')
+      : [];
+    const names = [wireText(r.value), wireText(r.resolvedModel)].filter(
+      (v): v is string => v !== undefined,
+    );
+    return { levels, names };
+  });
+  const match = current
+    ? ladders.find((row) =>
+        row.names.some(
+          (name) =>
+            name === current ||
+            name.startsWith(`${current}[`) ||
+            current.startsWith(`${name}[`),
+        ),
+      )
+    : undefined;
+  // A matched row is the answer even when its ladder is empty: haiku
+  // publishes no `supportedEffortLevels` at all, and falling through to
+  // another model's rungs would offer levels this session cannot run. The
+  // fallback is only for not knowing which model is answering yet.
+  if (match) return match.levels;
+  return ladders.find((row) => row.levels.length > 0)?.levels ?? [];
 }
 
 /**

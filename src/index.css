@@ -2006,5 +2006,10 @@ select.field {
 .chat-model { max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-model::before { content: '◆'; }
 
+/* And its other neighbour: how hard the session thinks on that model. A
+   level is one short word in every agent's ladder ("low", "xhigh"), so this
+   one needs no cap -- it is the model beside it that elides. */
+.chat-effort::before { content: '◐'; }
+
 /* B5: inspect server-provided changes before answering. */
 .approval-detail { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font-size: 12px; }

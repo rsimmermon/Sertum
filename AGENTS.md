@@ -19,7 +19,7 @@ about to change, before you change it.
 | [docs/conversation.md](docs/conversation.md) | The conversation view, markdown classification, images in messages |
 | [docs/sessions.md](docs/sessions.md) | Stream sessions, owned Codex threads, resume, Claude `--bg` hosting |
 | [docs/approvals.md](docs/approvals.md) | Permission rules, the B5 bar, question and plan cards, permission modes |
-| [docs/models.md](docs/models.md) | Per-agent model catalogues and switching mid-session |
+| [docs/models.md](docs/models.md) | Model and thinking-level catalogues, switching mid-session |
 | [docs/terminal.md](docs/terminal.md) | Key handling, clipboard, WebGL context loss, helper-process death |
 | [docs/windows.md](docs/windows.md) | Packaging, binary resolution, icons, installer, platform no-ops |
 | [docs/git.md](docs/git.md) | Commit from the review, pull requests through `gh` |
@@ -146,6 +146,9 @@ below, or a file of its own in `docs/`, is described there rather than here:
       classified message, GFM footnotes, and local images shown for real
 - [x] **Switching models mid-session** — a chip beside the permission-mode
       chip listing the models the *agent* offers this account
+- [x] **Switching thinking level mid-session** — a third chip beside the
+      model, listing the reasoning levels the *model* offers, and a switch
+      each agent reads back rather than assumes
 - [x] **A waiting bubble and a stop sign** — bouncing dots and the session's
       activity line while plane 2 says the agent is working, and a red stop
       square at the right edge of the composer
@@ -879,7 +882,8 @@ belongs to: both decide how a turn goes, both are asked about where the turn
 is composed, and both are reached from the sidebar row menu as well. So
 `model-select` is built as `permission-mode`'s twin — same chip, same picker
 shape, same "declined is an answer" rule — and the two chips sit together
-under the composer.
+under the composer. `thinking-level` is the third of that row and the same
+twin again: how hard a turn reasons is the other half of what it runs on.
 
 - **The list is never Sertum's.** A hardcoded catalogue goes stale the week a
   model ships and offers models an account cannot run, so every
@@ -897,9 +901,36 @@ Claude and Codex declare `requires: 'structured-conversation'` because a
 PTY-backed session's stream belongs to its TUI; Grok declares no requirement,
 because a prompt is the transport it has. Shell declines.
 
-Each agent's catalogue and switch, what each was verified against, and why
-Grok's `/model` on its own prompt is not the synthesized-keystroke move
-`turn-interrupt` refuses: [docs/models.md](docs/models.md).
+**A thinking ladder belongs to a model, not to an account.** Which levels
+exist depends on which model is answering — Claude publishes
+`supportedEffortLevels` per catalogue row and none at all for haiku — so the
+ladder is read for the model this session is on, and re-read after a model
+switch. Same rule as the catalogue above it: a level is only ever sent if that
+session's agent just listed it.
+
+**A switch is reported, never assumed.** Two of the three agents will accept a
+level and quietly not take it — Claude answers an unusable one with a plain
+success — so every implementation reads the level back and reports what the
+session is *on*, which is what lands in the snapshot. An unchanged level is a
+refusal with a reason, not a success nobody can see through.
+
+**A setting that changed says so.** A successful switch on an idle session
+used to write nothing at all: `appliesToNextTurn` is false there, and the chip
+alone could not carry the news — it showed a slug the reader had never seen,
+elided to a width where two models can look identical. The composer now names
+what the session landed on, the chip uses the agent's own display name
+(`SessionSnapshot.modelLabel`, which travels with the slug and is dropped when
+it moves without one), and a catalogue read teaches the snapshot what a
+session with no turns behind it could not otherwise say
+(`AgentModelList.current`, `AgentEffortList.current`). Choosing from a chip
+also puts the caret back in the composer, because what follows deciding how a
+turn runs is typing the turn.
+
+Each agent's catalogue and switch for both settings, what each was verified
+against, why Claude's thinking key is `effortLevel` and its read-back is
+load-bearing, and why Grok's `/model` on its own prompt is not the
+synthesized-keystroke move `turn-interrupt` refuses:
+[docs/models.md](docs/models.md).
 
 ## Modals answer, they do not vanish
 
@@ -1230,6 +1261,7 @@ src/
   renderer/approval-card.ts       Question and plan cards, when allow/deny is not the question  [docs/approvals.md]
   renderer/permission-mode.ts     The mode catalogue and its picker (plan, auto, accept edits…)  [docs/approvals.md]
   renderer/model-picker.ts        The models an agent offers this session, and the switch  [docs/models.md]
+  renderer/effort-picker.ts       The thinking levels this session's model offers, and the switch  [docs/models.md]
 scripts/
   ensure-electron.js          Fetch the Electron binary if absent; Electron 42+ has no postinstall
   smoke-pty.js                Headless PTY test
@@ -1237,5 +1269,6 @@ scripts/
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
   smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall
   smoke-model-switch.ts       model-select: read each agent's catalogue, switch, confirm the turn ran on it
+  smoke-effort-switch.ts      thinking-level: read each agent's ladder, switch, confirm the level was really taken
   drive.js                    CDP driver for headless verification
 ```

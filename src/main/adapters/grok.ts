@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentModel, AgentModelList } from '../../shared/types';
+import type { AgentEffort, AgentEffortList, AgentModel, AgentModelList } from '../../shared/types';
 import type { StatusUpdate } from './claude';
 
 /**
@@ -233,19 +233,14 @@ function safeReaddir(p: string): string[] {
 }
 
 /**
- * The models this account can run, read from Grok's own cache.
+ * Grok's own model cache, or the reason it could not be read.
  *
- * `~/.grok/models_cache.json` is what the CLI itself fetched from
- * `cli-chat-proxy.grok.com/v1/models` for the signed-in account, stamped with
- * the version and time that fetched it. Reading it is the same class of move
- * as reading `events.jsonl`: Grok's own record on disk, not pixels. The
- * alternative would be shelling out to `grok models`, which prints a table
- * meant for a person and would have to be parsed back out of it.
- *
- * Hidden rows and rows the account cannot reach are dropped, so the picker
- * offers only what a switch would actually be accepted for.
+ * Split out because two catalogues come from this one file: the models, and
+ * the thinking levels each model publishes under `reasoning_efforts`.
  */
-export function listGrokModels(): AgentModelList {
+function readGrokCache():
+  | { ok: true; entries: Record<string, unknown> }
+  | { ok: false; reason: string } {
   const file = path.join(os.homedir(), '.grok', 'models_cache.json');
   let raw: unknown;
   try {
@@ -260,6 +255,26 @@ export function listGrokModels(): AgentModelList {
   if (!entries || typeof entries !== 'object') {
     return { ok: false, reason: 'Grok’s model cache is not in a shape Sertum understands.' };
   }
+  return { ok: true, entries };
+}
+
+/**
+ * The models this account can run, read from Grok's own cache.
+ *
+ * `~/.grok/models_cache.json` is what the CLI itself fetched from
+ * `cli-chat-proxy.grok.com/v1/models` for the signed-in account, stamped with
+ * the version and time that fetched it. Reading it is the same class of move
+ * as reading `events.jsonl`: Grok's own record on disk, not pixels. The
+ * alternative would be shelling out to `grok models`, which prints a table
+ * meant for a person and would have to be parsed back out of it.
+ *
+ * Hidden rows and rows the account cannot reach are dropped, so the picker
+ * offers only what a switch would actually be accepted for.
+ */
+export function listGrokModels(): AgentModelList {
+  const cached = readGrokCache();
+  if (!cached.ok) return cached;
+  const entries = cached.entries;
   const models: AgentModel[] = [];
   for (const [key, value] of Object.entries(entries)) {
     const info = (value as { info?: Record<string, unknown> })?.info;
@@ -300,6 +315,60 @@ export function listGrokModels(): AgentModelList {
  * sequence and the same reason as a composer message. A single write with a
  * trailing CR is read as one paste and leaves the text sitting unsent.
  */
-export function grokModelCommand(model: string): string {
-  return `/model ${model}`;
+export function grokModelCommand(model: string, effort?: string): string {
+  return effort ? `/model ${model} ${effort}` : `/model ${model}`;
+}
+
+/**
+ * The thinking levels the given model publishes, from the same cache.
+ *
+ * Each cached model carries `supports_reasoning_effort` and, when it does, a
+ * `reasoning_efforts` array of `{id, value, label, description, default}` --
+ * Grok's own words, fetched by its own CLI, so the picker offers exactly the
+ * ladder that model accepts and nothing Sertum made up. A model that does not
+ * support effort says so rather than being given an empty menu.
+ */
+export function listGrokEfforts(model: string | null): AgentEffortList {
+  const cached = readGrokCache();
+  if (!cached.ok) return cached;
+  if (!model) {
+    return {
+      ok: false,
+      reason: 'Grok has not reported this session’s model yet — it names one when the first turn starts.',
+    };
+  }
+  const row = Object.entries(cached.entries).find(([key, value]) => {
+    const info = (value as { info?: Record<string, unknown> })?.info;
+    return (typeof info?.id === 'string' ? info.id : key) === model;
+  });
+  const info = (row?.[1] as { info?: Record<string, unknown> })?.info;
+  if (!info) {
+    return { ok: false, reason: `Grok’s cache has no entry for ${model}.` };
+  }
+  if (info.supports_reasoning_effort === false) {
+    return { ok: false, reason: `Grok does not offer a thinking level for ${model}.` };
+  }
+  const rows = Array.isArray(info.reasoning_efforts) ? info.reasoning_efforts : [];
+  const efforts: AgentEffort[] = [];
+  for (const entry of rows) {
+    const r = entry as Record<string, unknown>;
+    const id =
+      typeof r.value === 'string' ? r.value : typeof r.id === 'string' ? r.id : null;
+    if (!id) continue;
+    efforts.push({
+      id,
+      label: typeof r.label === 'string' ? r.label : id,
+      note: typeof r.description === 'string' ? r.description : null,
+    });
+  }
+  return efforts.length
+    ? {
+        ok: true,
+        efforts,
+        // The cache records the level this model runs at as `reasoning_effort`
+        // beside the ladder, which is the answer before any turn has stamped
+        // one on a transcript.
+        current: typeof info.reasoning_effort === 'string' ? info.reasoning_effort : null,
+      }
+    : { ok: false, reason: `Grok’s cache lists no thinking levels for ${model}.` };
 }

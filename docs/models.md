@@ -1,4 +1,4 @@
-# Switching models mid-session
+# Switching models and thinking levels mid-session
 
 Part of [Sertum's technical guide](../AGENTS.md), which states the rules this
 file records the evidence for. Keep verified detail here and the invariant
@@ -99,6 +99,132 @@ nature — it depends on where the agent keeps the control. Claude and Codex
 declare `requires: 'structured-conversation'` because a PTY-backed session's
 stream belongs to its TUI; Grok declares no requirement at all, because a
 prompt is exactly the transport it has.
+
+## How you know it took
+
+A switch used to be silent on exactly the session where it is most often
+made. `ModelChangeResult.appliesToNextTurn` is false on an idle session — a
+brand-new one always is — and the composer note only fired when it was true,
+so the ordinary case wrote nothing at all. The only remaining evidence was
+the chip, and the chip could not carry it either: it showed
+`SessionSnapshot.model`, a slug the reader had never seen (they clicked
+"Opus 5" and the chip said `claude-opus-5[1m]`), capped at `max-width: 42%`
+with an ellipsis, so two ids sharing a prefix rendered identically. Doing
+something and saying nothing reads as doing nothing.
+
+Three things now answer "did that work", and each is the agent's own word
+rather than an echo of the request:
+
+- **The composer says so.** `Now running Opus 5.` under the box you type in,
+  cleared after `NOTE_FADE_MS` because a confirmation has done its job the
+  moment it is read. A refusal has no timer — it is the answer to something
+  that did not happen, and has to still be there when the reader looks up.
+- **The chip uses the agent's own name for it.** `SessionSnapshot.modelLabel`
+  carries the display name off the catalogue row the switch came from, so the
+  chip says the words that were clicked and the tooltip carries both names. It
+  is not a field of its own: it travels with `model` and is dropped whenever
+  the slug moves without one, since a friendly name left attached to a
+  different slug is a claim the agent never made.
+- **The catalogue reports what the session is on.** `AgentModelList.current`
+  and `AgentEffortList.current`, applied to the snapshot when the picker reads
+  them. This is what a session with no turns behind it could not say before:
+  Claude's `get_settings` answers `applied.model` and `applied.effort`
+  immediately, while the snapshot is otherwise seeded from a transcript that
+  does not exist yet. Opening the picker is the first moment such a session
+  can be asked, so the tick lands on the right row and the chip stops reading
+  "Model".
+
+And the caret comes back. `openSessionMenu` focuses its first item, which is
+what makes the arrow keys work; nothing handed focus back when the menu
+closed, and `focusActivePane` refocuses only when the pane it should be in has
+*changed* — which setting a chip on the session you are already looking at
+never does. So the composer was left unfocused and the next keystroke went
+nowhere. Worse, the document-level capturing `mousedown` handler that
+dismisses the menu was removed only by a dismissing click, so *choosing* an
+item left it behind: the next click anywhere in the app hit a detached menu,
+was swallowed by that handler's `preventDefault`, and only the click after it
+reached the composer. Both are fixed in `session-menu.ts` — every close path
+runs through `closeMenu`, which releases the handlers and returns focus to
+whatever had it — and a chip pick additionally puts the caret in the composer,
+because what someone does after choosing how a turn runs is type the turn.
+
+## Thinking level
+
+`thinking-level` is `model-select`'s twin for the same reason `model-select`
+is `permission-mode`'s: what a turn runs on and how hard it reasons are the
+pair that decide how a turn goes, so they are asked about in the same place,
+in the same shape, under the same rules. The three chips sit together under
+the composer.
+
+**The ladder is never Sertum's either**, and it belongs to a *model* rather
+than to an account — which levels exist depends on which model is answering:
+
+| Agent | Catalogue | Switch |
+|---|---|---|
+| Claude | `supportedEffortLevels` on each `list_models` row | `apply_flag_settings { effortLevel }`, then read back |
+| Codex | `supportedReasoningEfforts` on each `model/list` row | `effort` override on the next `turn/start` |
+| Grok | `reasoning_efforts` on each model in `models_cache.json` | `/model <id> <effort>` on its own prompt |
+
+- **Claude**, verified against Claude Code 2.1.266. Every catalogue row
+  carries `supportedEffortLevels` — `low,medium,high,xhigh,max` on `default`,
+  `opus[1m]`, `claude-fable-5-1[1m]` and `sonnet`, and nothing at all on
+  `haiku`, which is why the ladder is read from the row for the model this
+  session is on rather than from the catalogue as a whole.
+
+  There is no `set_effort` control request. The full subtype list is
+  `set_model`, `set_permission_mode`, `interrupt`, `stop_task`,
+  `background_tasks`, `set_max_thinking_tokens`, `rename_session`,
+  `set_color`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_reconnect`,
+  `apply_flag_settings`, `side_question` and `reload_plugins`. The one that
+  looks right is not: `set_max_thinking_tokens` takes an integer budget, and
+  per Claude's own description a numeric budget means *no* effort parameter is
+  sent at all — the two are alternatives rather than two spellings of one
+  setting. The one that works is `apply_flag_settings`, which merges into the
+  session-scoped flag layer, and **the key is `effortLevel`, not `effort`** —
+  the first moved the level, the second was accepted and did nothing.
+
+  **The read-back is load-bearing.** `apply_flag_settings { effortLevel:
+  "bogus" }` answered `{"subtype":"success"}` and left the level exactly where
+  it was: accepted and ignored, the same silent-no-op failure the `http` hook
+  type taught this project to check for. So `setEffort` reads
+  `get_settings().applied.effort` before and after, and reports an unchanged
+  level as a refusal rather than as the success it was handed. `applied` is
+  read rather than `effective` because the two disagree whenever a level is
+  downgraded, and the one worth showing is the one Claude says it "will send
+  on its next request — after env overrides, session state, org caps and
+  model-support downgrades".
+
+  `supportsAdaptiveThinking` is real on these rows and is deliberately not
+  offered: there is no verified way to *select* adaptive over this channel,
+  and a row that does nothing is worse than no row.
+- **Codex**, verified against the generated app-server schema of Codex CLI
+  0.153.4. `turn/start` carries an `effort` field documented as overriding
+  "for this turn and subsequent turns" — `model`'s twin, down to the wording —
+  so it is stashed on the host and sent from then on, with all the same
+  properties: no idle thread needed, no reload, and it works on a thread that
+  has never taken a turn. Each `model/list` row carries
+  `supportedReasoningEfforts` (a `{reasoningEffort, description}` per rung)
+  beside a `defaultReasoningEffort`, which is what a thread with no override
+  actually runs at and therefore what `current` reports.
+- **Grok**, from the same file and the same command as its model switch. Each
+  cached model carries `supports_reasoning_effort` and, when true, a
+  `reasoning_efforts` array of `{id, value, label, description, default}` —
+  Grok's own words, fetched by its own CLI. The switch is the effort argument
+  `setModel` deliberately omits, sent alongside the model the session is
+  already on. That is also its one precondition: with no model reported there
+  is no command to write, and naming one here would switch the model as a side
+  effect of setting the level, so the adapter declines with that reason until
+  plane 2 names a model on `turn_started`.
+
+`scripts/smoke-effort-switch.ts` drives the public daemon handlers the way
+`smoke-model-switch.ts` does. The Claude and Codex legs pass end to end: the
+catalogue comes back (`low, medium, high, xhigh, max` on both), the session
+moves off the level `current` reported (`xhigh` to `low` on Claude, `medium`
+to `low` on Codex), an unlisted level is refused, and the level survives a
+real turn and two 4s transcript polls. The Grok leg reads its ladder and
+confirms the command reaches a live PTY, and skips when the session has not
+named a model yet — which is what it does before its first turn, so that leg
+is currently the unproven one.
 
 `scripts/smoke-model-switch.ts` drives the public daemon handlers for all
 three. The Claude and Codex legs switch models on a live session, refuse an

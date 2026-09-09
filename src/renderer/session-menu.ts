@@ -32,11 +32,46 @@ export const SEPARATOR = 'separator' as const;
 export type MenuEntry = MenuItem | typeof SEPARATOR;
 
 let openMenu: HTMLElement | null = null;
+/**
+ * Where keyboard focus was when the menu took it, so it can be handed back.
+ *
+ * A menu focuses its first item, which is what makes the arrow keys work --
+ * and, until this existed, what made the caret vanish. Removing the element
+ * dropped focus to `<body>`, and nothing put it back: `focusActivePane` in
+ * `app.ts` refocuses only when the pane it should be in has *changed*, which
+ * setting a chip on the session you are already looking at never does. So
+ * picking a model left the composer unfocused and the next keystroke went
+ * nowhere.
+ */
+let focusReturn: HTMLElement | null = null;
+/** Takes the open menu's document-level dismiss handlers off again. */
+let releaseListeners: (() => void) | null = null;
 
 /** Closes whatever menu is open. Safe to call when none is. */
 export function closeSessionMenu(): void {
-  openMenu?.remove();
+  closeMenu(true);
+}
+
+/**
+ * `restore` is false only when a menu is being replaced by its own second
+ * render -- bouncing focus through the composer and back would be visible,
+ * and the replacement decides for itself whether to take it.
+ */
+function closeMenu(restore: boolean): void {
+  const menu = openMenu;
+  if (!menu) return;
+  const back = focusReturn;
+  // Only give focus back if the menu still had it. A click that landed
+  // somewhere else has already said where focus belongs.
+  const held = menu.contains(document.activeElement);
   openMenu = null;
+  const release = releaseListeners;
+  releaseListeners = null;
+  release?.();
+  menu.remove();
+  if (!restore) return;
+  focusReturn = null;
+  if (held && back?.isConnected) back.focus();
 }
 
 /**
@@ -64,7 +99,21 @@ export function openSessionMenu(
   title: string,
   entries: MenuEntry[],
 ): HTMLElement {
-  closeSessionMenu();
+  // A menu whose contents had to be fetched renders twice, and the reader may
+  // well have gone back to typing while it was being read. The second render
+  // takes focus only if nothing has moved on -- the menu it replaces still
+  // holds it, or focus is still on whatever opened the menu -- so the caret
+  // is never pulled out of the composer a second or two after a click.
+  const replacing = openMenu !== null;
+  const keepFocus =
+    !replacing ||
+    openMenu!.contains(document.activeElement) ||
+    document.activeElement === focusReturn;
+  if (!replacing) {
+    const active = document.activeElement;
+    focusReturn = active instanceof HTMLElement && active !== document.body ? active : null;
+  }
+  closeMenu(false);
 
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
@@ -139,7 +188,7 @@ export function openSessionMenu(
   menu.style.visibility = '';
 
   openMenu = menu;
-  menu.querySelector<HTMLButtonElement>('.ctx-item:not(:disabled)')?.focus();
+  if (keepFocus) menu.querySelector<HTMLButtonElement>('.ctx-item:not(:disabled)')?.focus();
   const opened = menu;
 
   menu.onkeydown = (e) => {
@@ -164,16 +213,21 @@ export function openSessionMenu(
     if (menu.contains(e.target as Node)) return;
     e.preventDefault();
     e.stopPropagation();
-    teardown();
-  };
-  const onBlur = () => teardown();
-  function teardown(): void {
-    document.removeEventListener('mousedown', dismiss, true);
-    window.removeEventListener('blur', onBlur);
     closeSessionMenu();
-  }
+  };
+  const onBlur = () => closeSessionMenu();
   document.addEventListener('mousedown', dismiss, true);
   window.addEventListener('blur', onBlur);
+  // Every way the menu can close runs through `closeMenu`, so that is where
+  // these come off -- they used to be removed only by the dismissing click
+  // itself, which meant choosing an item left a document-wide capturing
+  // mousedown handler behind. The next click anywhere in the app then hit a
+  // detached menu, was swallowed by the `preventDefault` above, and only the
+  // click after it reached the composer at all.
+  releaseListeners = () => {
+    document.removeEventListener('mousedown', dismiss, true);
+    window.removeEventListener('blur', onBlur);
+  };
 
   return opened;
 }

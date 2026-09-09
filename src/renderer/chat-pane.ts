@@ -11,6 +11,11 @@ import type {
 } from '../shared/types';
 import { ApprovalBar } from './approval-bar';
 import {
+  effortAvailability,
+  effortLabel,
+  openEffortPicker,
+} from './effort-picker';
+import {
   modelAvailability,
   modelLabel,
   openModelPicker,
@@ -42,6 +47,15 @@ const api = window.sertum;
  */
 const POLL_MS = 1000;
 
+/**
+ * How long a note that reports something *done* stays under the composer.
+ *
+ * Long enough to be read after a click that was looking somewhere else, short
+ * enough that it does not become part of the furniture. A note about
+ * something that did *not* happen has no timer at all -- see `say`.
+ */
+const NOTE_FADE_MS = 6000;
+
 export class ChatPane {
   readonly element: HTMLDivElement;
   private scroll: HTMLDivElement;
@@ -51,6 +65,8 @@ export class ChatPane {
   /** Which of the two things the one composer button currently does. */
   private mode: 'send' | 'stop' = 'send';
   private composerNote: HTMLDivElement;
+  /** Pending clear for a note that says something already happened. */
+  private noteTimer: number | null = null;
   /**
    * The permission-mode button, beside the box you type into.
    *
@@ -68,6 +84,15 @@ export class ChatPane {
    * also where both agents keep their own equivalents.
    */
   private modelButton: HTMLButtonElement;
+  /**
+   * How hard this session thinks, beside the model it thinks with.
+   *
+   * The third chip of the row rather than a fourth thing somewhere else: the
+   * settings that shape a turn belong together at the point the turn is
+   * composed, and this one is read off the same catalogue the model came
+   * from.
+   */
+  private effortButton: HTMLButtonElement;
   private waiting: HTMLDivElement;
   private waitingLabel: HTMLSpanElement;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -189,7 +214,14 @@ export class ChatPane {
         box.bottom + 4,
         this.session,
         this.capabilities,
-        (mode) => void this.setMode(mode),
+        (mode) => {
+          // Setting a chip is not leaving the composer. The menu hands focus
+          // back to the button that opened it, which is right for a menu and
+          // wrong here: what someone does after choosing how a turn runs is
+          // type the turn.
+          this.focus();
+          void this.setMode(mode);
+        },
       );
       e.stopPropagation();
     };
@@ -204,7 +236,28 @@ export class ChatPane {
         rect.bottom + 4,
         this.session,
         this.capabilities,
-        (model) => void this.setModel(model),
+        (model) => {
+          this.focus();
+          void this.setModel(model);
+        },
+      );
+      e.stopPropagation();
+    };
+
+    this.effortButton = document.createElement('button');
+    this.effortButton.type = 'button';
+    this.effortButton.className = 'chat-mode chat-effort';
+    this.effortButton.onclick = (e) => {
+      const rect = this.effortButton.getBoundingClientRect();
+      void openEffortPicker(
+        rect.left,
+        rect.bottom + 4,
+        this.session,
+        this.capabilities,
+        (effort) => {
+          this.focus();
+          void this.setEffort(effort);
+        },
       );
       e.stopPropagation();
     };
@@ -219,7 +272,7 @@ export class ChatPane {
 
     const meta = document.createElement('div');
     meta.className = 'chat-composer-meta';
-    meta.append(this.modeButton, this.modelButton, this.composerNote);
+    meta.append(this.modeButton, this.modelButton, this.effortButton, this.composerNote);
     composer.append(row, meta);
 
     this.waiting = document.createElement('div');
@@ -285,6 +338,7 @@ export class ChatPane {
   }
 
   dispose(): void {
+    this.hushNote();
     this.unmount();
   }
 
@@ -302,6 +356,7 @@ export class ChatPane {
     this.paintAction();
     this.paintMode(s);
     this.paintModel(s);
+    this.paintEffort(s);
     if (writable) {
       this.input.placeholder = `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
       this.input.title = '';
@@ -395,17 +450,70 @@ export class ChatPane {
    */
   private paintModel(s: SessionSnapshot): void {
     const available = modelAvailability(s, this.capabilities);
-    const label = modelLabel(s.model);
+    const label = modelLabel(s);
     this.modelButton.textContent = label;
     this.modelButton.disabled = !available.ok;
+    // Both names when they differ: the chip is capped and elides, so the
+    // tooltip is where the slug a turn will report stays legible in full.
+    const named = s.modelLabel && s.model ? `${s.modelLabel} (${s.model})` : label;
     const title = !available.ok
       ? available.reason
       : s.model
-        ? `Model: ${label} — click to change`
+        ? `Model: ${named} — click to change`
         : 'The agent has not named its model yet — click to set one';
     this.modelButton.title = title;
     this.modelButton.setAttribute('aria-label', title);
     this.modelButton.classList.toggle('is-unset', !s.model);
+  }
+
+  /**
+   * The thinking chip, painted by the same rules as the model beside it:
+   * present even where it cannot act, disabled and carrying the reason.
+   */
+  private paintEffort(s: SessionSnapshot): void {
+    const available = effortAvailability(s, this.capabilities);
+    const label = effortLabel(s);
+    this.effortButton.textContent = label;
+    this.effortButton.disabled = !available.ok;
+    const title = !available.ok
+      ? available.reason
+      : s.effort
+        ? `Thinking level: ${label} — click to change`
+        : 'The agent has not named its thinking level yet — click to set one';
+    this.effortButton.title = title;
+    this.effortButton.setAttribute('aria-label', title);
+    this.effortButton.classList.toggle('is-unset', !s.effort);
+  }
+
+  /**
+   * Ask the session to change how hard it thinks, and say what it landed on.
+   *
+   * `setModel`'s twin, with one thing to be careful about: what comes back is
+   * the level the session is actually on, which is not always the one that
+   * was asked for -- an agent may downgrade a level its model cannot run. So
+   * the confirmation names what the adapter read back rather than what was
+   * requested, and a level that was quietly not taken at all comes back as a
+   * refusal rather than as a success nobody could see through.
+   */
+  private async setEffort(effort: string): Promise<void> {
+    const result = await api.setSessionEffort(this.session.id, effort);
+    if (!result.ok) {
+      this.reportEffortRefusal(result.reason);
+      return;
+    }
+    const named = result.label ?? result.effort;
+    if (result.appliesToNextTurn) {
+      this.say(
+        `Thinking at ${named} from the next turn. The turn already running finishes at the previous level.`,
+      );
+      return;
+    }
+    this.say(`Now thinking at ${named}.`, NOTE_FADE_MS);
+  }
+
+  /** A refused level change, said under the composer where the button is. */
+  reportEffortRefusal(reason: string): void {
+    this.say(`Could not change the thinking level — ${reason}`);
   }
 
   /**
@@ -422,23 +530,65 @@ export class ChatPane {
       this.reportModelRefusal(result.reason);
       return;
     }
+    const named = result.label ?? result.model;
     if (result.appliesToNextTurn) {
-      this.reportModelQueued(result.model);
+      this.reportModelQueued(named);
       return;
+    }
+    this.reportModelSwitched(named);
+  }
+
+  /**
+   * Put one line under the composer, and optionally take it away again.
+   *
+   * A refusal, or anything else the reader may need to find a second time,
+   * has no timer: it is the answer to something that did not happen, and it
+   * stays until the next thing replaces it. A confirmation is the opposite --
+   * it has done its job the moment it is read -- so it is given `fadeAfterMs`
+   * and clears itself, but only if it is still the line on screen. Anything
+   * written since is newer and has not had its own time.
+   */
+  private say(text: string, fadeAfterMs: number | null = null): void {
+    this.hushNote();
+    this.composerNote.textContent = text;
+    this.composerNote.hidden = false;
+    if (fadeAfterMs === null) return;
+    this.noteTimer = window.setTimeout(() => {
+      this.noteTimer = null;
+      if (this.composerNote.textContent === text) this.composerNote.hidden = true;
+    }, fadeAfterMs);
+  }
+
+  /** Clear the note, and cancel any fade still owed to an earlier one. */
+  private hushNote(): void {
+    if (this.noteTimer !== null) {
+      clearTimeout(this.noteTimer);
+      this.noteTimer = null;
     }
     this.composerNote.hidden = true;
   }
 
   /** A refused model change, said under the composer where the button is. */
   reportModelRefusal(reason: string): void {
-    this.composerNote.textContent = `Could not change the model — ${reason}`;
-    this.composerNote.hidden = false;
+    this.say(`Could not change the model — ${reason}`);
   }
 
   /** Switched mid-turn: accepted, but the turn in flight keeps its model. */
   reportModelQueued(model: string): void {
-    this.composerNote.textContent = `Switched to ${model}. The turn already running finishes on the previous model.`;
-    this.composerNote.hidden = false;
+    this.say(`Switched to ${model}. The turn already running finishes on the previous model.`);
+  }
+
+  /**
+   * Switched on an idle session, which is the ordinary case and used to be
+   * the silent one.
+   *
+   * `appliesToNextTurn` is false here, so the note above never fired, and the
+   * only remaining evidence was the chip -- which shows a slug the reader
+   * never saw, truncates, and on a brand-new session may not have moved at
+   * all. Doing something and saying nothing reads as doing nothing.
+   */
+  reportModelSwitched(model: string): void {
+    this.say(`Now running ${model}.`, NOTE_FADE_MS);
   }
 
   /** Ask the agent to change mode, and say plainly when it will not. */
@@ -453,14 +603,15 @@ export class ChatPane {
       return;
     }
     // The snapshot arrives on its own through `session:updated`; nothing is
-    // painted from the request, only from what the agent said.
-    this.composerNote.hidden = true;
+    // painted from the request, only from what the agent said -- and the mode
+    // chip says it in the same words the picker did, so there is nothing here
+    // a confirmation could add.
+    this.hushNote();
   }
 
   /** A refused mode change, said under the composer where the button is. */
   reportModeRefusal(reason: string): void {
-    this.composerNote.textContent = `Could not change the permission mode — ${reason}`;
-    this.composerNote.hidden = false;
+    this.say(`Could not change the permission mode — ${reason}`);
   }
 
   /**
@@ -470,8 +621,7 @@ export class ChatPane {
    * place the pending change is visible in the meantime.
    */
   reportModeQueued(mode: PermissionMode): void {
-    this.composerNote.textContent = `Will switch to ${permissionModeLabel(mode)} once the current turn finishes.`;
-    this.composerNote.hidden = false;
+    this.say(`Will switch to ${permissionModeLabel(mode)} once the current turn finishes.`);
   }
 
   private paintWaiting(s: SessionSnapshot): void {
@@ -496,10 +646,9 @@ export class ChatPane {
     if (this.action.disabled || this.mode !== 'stop') return;
     this.action.disabled = true;
     const accepted = await api.interruptTurn(this.session.id);
-    this.composerNote.textContent = accepted
+    this.say(accepted
       ? 'Stop requested through the agent’s control channel.'
-      : 'The agent no longer has an active turn to stop.';
-    this.composerNote.hidden = false;
+      : 'The agent no longer has an active turn to stop.');
   }
 
   /**
@@ -530,29 +679,24 @@ export class ChatPane {
       this.submitting = true;
       try {
         if (!await api.sendChatMessage(id, text)) {
-          this.composerNote.textContent = 'Message was not sent. Finish or stop the current turn, then try again.';
-          this.composerNote.hidden = false;
+          this.say('Message was not sent. Finish or stop the current turn, then try again.');
           return;
         }
       } catch (error) {
-        this.composerNote.textContent = `Message was not sent: ${String(error)}`;
-        this.composerNote.hidden = false;
+        this.say(`Message was not sent: ${String(error)}`);
         return;
       } finally { this.submitting = false; }
-      this.composerNote.textContent =
-        'Sent — it appears here once the agent records it.';
+      this.say('Sent — it appears here once the agent records it.');
     } else {
       api.write(
         id,
         text.includes('\n') ? `\x1b[200~${text}\x1b[201~` : text,
       );
       setTimeout(() => api.write(id, '\r'), 150);
-      this.composerNote.textContent =
-        'Sent to the terminal — it appears here once the agent records it.';
+      this.say('Sent to the terminal — it appears here once the agent records it.');
     }
     if (this.input.value.replace(/\s+$/, '') === text) this.input.value = '';
     this.paintAction();
-    this.composerNote.hidden = false;
   }
 
   private async refresh(): Promise<void> {
@@ -577,7 +721,7 @@ export class ChatPane {
       ((selection.anchorNode && this.scroll.contains(selection.anchorNode)) ||
        (selection.focusNode && this.scroll.contains(selection.focusNode)))) return;
     this.renderedKey = key;
-    this.composerNote.hidden = true;
+    this.hushNote();
     this.render(snapshot);
   }
 

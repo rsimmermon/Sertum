@@ -140,6 +140,7 @@ export class PtyManager extends EventEmitter {
       lastEventAt: null,
       adapterBound: extra.adapterBound ?? false,
       model: null,
+      modelLabel: null,
       effort: null,
       contextTokens: null,
       contextLimit: null,
@@ -201,6 +202,12 @@ export class PtyManager extends EventEmitter {
     id: string,
     meta: {
       model?: string | null;
+      /**
+       * The agent's display name for `model`. Only a caller holding the
+       * catalogue row the switch came from has one; see below for why it is
+       * not treated as a field of its own.
+       */
+      modelLabel?: string | null;
       effort?: string | null;
       contextTokens?: number | null;
       contextLimit?: number | null;
@@ -215,6 +222,7 @@ export class PtyManager extends EventEmitter {
     if (!session) return;
     const snap = session.snapshot;
     let changed = false;
+    const hadModel = snap.model;
     for (const key of [
       'model',
       'effort',
@@ -229,6 +237,17 @@ export class PtyManager extends EventEmitter {
         (snap[key] as unknown) = next;
         changed = true;
       }
+    }
+    // `modelLabel` travels with `model` rather than being applied like the
+    // rest: it is the agent's own words for one particular slug, so a caller
+    // that moves the slug without supplying one has none to give -- the
+    // agent named an id and nothing else -- and the friendly name from an
+    // earlier switch must not stay attached to a different model. A poller
+    // re-reporting the same slug supplies no label and changes nothing.
+    const label = meta.modelLabel ?? (snap.model === hadModel ? snap.modelLabel : null);
+    if (label !== snap.modelLabel) {
+      snap.modelLabel = label;
+      changed = true;
     }
     if (changed) this.emit('session-updated', { ...snap });
   }
@@ -301,6 +320,7 @@ export class PtyManager extends EventEmitter {
       // The stream is the adapter: status arrives structured or not at all.
       adapterBound: true,
       model: null,
+      modelLabel: null,
       effort: null,
       contextTokens: null,
       contextLimit: null,
@@ -374,6 +394,7 @@ export class PtyManager extends EventEmitter {
       lastEventAt: Date.now(),
       adapterBound: false,
       model: null,
+      modelLabel: null,
       effort: null,
       contextTokens: null,
       contextLimit: null,

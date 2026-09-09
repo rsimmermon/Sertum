@@ -33,9 +33,19 @@ const api = window.sertum;
  * do nothing for two seconds.
  */
 
-/** What to call the model on a button. Null is "the agent has not said". */
-export function modelLabel(model: string | null): string {
-  return model ?? 'Model';
+/**
+ * What to call the model on the chip.
+ *
+ * The agent's own words for it when a catalogue row has supplied them, the
+ * slug when only the agent has spoken, and "Model" when it has not said
+ * anything at all. A slug is not a name: `claude-opus-5[1m]` is what a turn
+ * reports, never what the picker offered, so a reader who just clicked
+ * "Opus 5" has nothing to recognise until the label arrives. The slug stays
+ * in the tooltip either way, which is the convention every other badge here
+ * follows.
+ */
+export function modelLabel(s: SessionSnapshot): string {
+  return s.modelLabel ?? s.model ?? 'Model';
 }
 
 /**
@@ -107,13 +117,16 @@ export async function openModelPicker(
     return;
   }
 
+  // What the agent just said it is on, which on a session with no turns
+  // behind it is newer than the snapshot this picker was opened from.
+  const current = listed.current ?? s.model;
   const entries: MenuEntry[] = listed.models.map((model) => ({
     label: model.label,
     note: model.note ?? model.id,
-    checked: isCurrent(model, s.model),
+    checked: isCurrent(model, current),
     onSelect: () => pick(model.id),
   }));
-  if (!s.model) {
+  if (!current) {
     // Saying nothing would leave every row unticked with no explanation. The
     // model arrives with the session's first turn, exactly as the mode does.
     entries.push(SEPARATOR, {

@@ -31,6 +31,10 @@ import {
 } from './layout-picker';
 import { agentIcon } from './agent-icon';
 import {
+  effortAvailability,
+  openEffortPicker,
+} from './effort-picker';
+import {
   modelAvailability,
   openModelPicker,
 } from './model-picker';
@@ -1365,6 +1369,7 @@ export class App {
     const toolGate = this.capabilities?.[s.agent]['tool-gate'];
     const modeAvailable = permissionModeAvailability(s, this.capabilities);
     const modelAvailable = modelAvailability(s, this.capabilities);
+    const effortAvailable = effortAvailability(s, this.capabilities);
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1405,6 +1410,15 @@ export class App {
         note: modelAvailable.ok ? undefined : modelAvailable.reason,
         onSelect: modelAvailable.ok
           ? () => this.openModelPicker(s, x, y)
+          : undefined,
+      },
+      {
+        // And how hard it thinks with it. The pair sits together here for the
+        // same reason it does under the composer.
+        label: s.effort ? `Thinking: ${s.effort}…` : 'Thinking level…',
+        note: effortAvailable.ok ? undefined : effortAvailable.reason,
+        onSelect: effortAvailable.ok
+          ? () => this.openEffortPicker(s, x, y)
           : undefined,
       },
       {
@@ -1592,6 +1606,22 @@ export class App {
    * The model picker, from the sidebar. The chat pane has its own button;
    * this is the same catalogue reached without bringing the pane forward.
    */
+  /**
+   * The thinking picker, from the sidebar. The chat pane has its own button;
+   * this is the same catalogue reached without bringing the pane forward.
+   */
+  private openEffortPicker(s: SessionSnapshot, x: number, y: number): void {
+    void openEffortPicker(x, y, s, this.capabilities, (effort) => {
+      void api.setSessionEffort(s.id, effort).then((result) => {
+        // Success repaints from the snapshot the daemon pushes back. A
+        // refusal has nowhere else to land from here, so it goes to the
+        // session's pane, exactly as a refused model change does.
+        const pane = this.chatPanes.get(s.id);
+        if (!result.ok) pane?.reportEffortRefusal(result.reason);
+      });
+    });
+  }
+
   private openModelPicker(s: SessionSnapshot, x: number, y: number): void {
     void openModelPicker(x, y, s, this.capabilities, (model) => {
       void api.setSessionModel(s.id, model).then((result) => {

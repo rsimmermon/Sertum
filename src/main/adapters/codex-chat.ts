@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { AgentModel, AgentModelList, ApprovalAnswer, ModelChangeResult, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession } from '../../shared/types';
+import type { AgentEffort, AgentEffortList, AgentModel, AgentModelList, ApprovalAnswer, EffortChangeResult, ModelChangeResult, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession } from '../../shared/types';
 import { CodexAppServer, type CodexNotification, type CodexServerRequest } from './codex-app-server';
 import { mapCodexStatus, resumableThread, type CodexThread, type CodexThreadStatus } from './codex';
 
@@ -34,6 +34,17 @@ interface Hosted {
    * runs whatever it was started with.
    */
   model?: string | null;
+  /**
+   * The thinking level this session has been switched to, passed on every
+   * `turn/start` from then on.
+   *
+   * `turn/start`'s `effort` field is `model`'s twin -- "Override the
+   * reasoning effort for this turn and subsequent turns" in the generated
+   * schema of Codex CLI 0.153.4 -- so it is carried the same way, for the
+   * same reason. Null means the thread reasons at whatever its model's
+   * `defaultReasoningEffort` is.
+   */
+  effort?: string | null;
 }
 interface Held {
   session: Hosted;
@@ -145,6 +156,7 @@ export class CodexChatHost extends EventEmitter {
         threadId: s.threadId,
         input: [{ type: 'text', text }],
         ...(s.model ? { model: s.model } : {}),
+        ...(s.effort ? { effort: s.effort } : {}),
       });
       return this.sessions.get(id) === s;
     } catch (error) {
@@ -246,6 +258,72 @@ export class CodexChatHost extends EventEmitter {
     if (!s || s.closing) return { ok: false, reason: 'That session is gone.' };
     s.model = model;
     return { ok: true, model, appliesToNextTurn: s.busy };
+  }
+
+  /**
+   * The thinking levels this session's model publishes.
+   *
+   * Codex hangs the ladder off the model rather than the account: every
+   * `model/list` row carries `supportedReasoningEfforts` (each a
+   * `{reasoningEffort, description}` pair) alongside a `defaultReasoningEffort`.
+   * So the row read is the one for the model this session runs -- what it was
+   * switched to, else what plane 2 reported, else the row Codex marks
+   * `isDefault`, which is what a thread with no override actually starts on.
+   */
+  async listEfforts(id: string, model: string | null): Promise<AgentEffortList> {
+    if (!this.server.connected) return { ok: false, reason: 'Codex app server is unavailable.' };
+    const wanted = this.sessions.get(id)?.model ?? model;
+    let fallback: { efforts: AgentEffort[]; current: string | null } | null = null;
+    let cursor: string | undefined;
+    try {
+      for (let page = 0; page < 10; page += 1) {
+        const result = object(await this.server.request('model/list', cursor ? { cursor } : {}));
+        for (const row of Array.isArray(result.data) ? result.data : []) {
+          const r = object(row);
+          const id_ = string(r.model) || string(r.id);
+          const efforts = codexEfforts(r);
+          if (!efforts.length) continue;
+          // What this thread will actually reason at: the override it was
+          // given, else the row's own default. Codex reports no effort until
+          // a turn has written one to the rollout, so without this the chip
+          // reads blank on a thread that has a perfectly good answer.
+          const current = this.sessions.get(id)?.effort ?? (string(r.defaultReasoningEffort) || null);
+          if (wanted && id_ === wanted) return { ok: true, efforts, current };
+          if (!fallback && (r.isDefault === true || !wanted)) {
+            fallback = { efforts, current };
+          }
+        }
+        cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined;
+        if (!cursor) break;
+      }
+    } catch (error) {
+      return { ok: false, reason: String(error) };
+    }
+    return fallback
+      ? { ok: true, ...fallback }
+      : {
+          ok: false,
+          reason: wanted
+            ? `Codex lists no thinking levels for ${wanted}.`
+            : 'Codex listed no thinking levels for this account.',
+        };
+  }
+
+  /**
+   * Switches the thinking level this session's turns reason at.
+   *
+   * `setModel`'s twin down to the shape of the answer, because the mechanism
+   * is the same one: the override rides the next `turn/start` rather than
+   * being pushed at the server now, so it needs no idle thread and no reload,
+   * and it works on a thread that has never taken a turn. The cost is the
+   * same too -- it lands when the next turn starts, which is what
+   * `appliesToNextTurn` says out loud while one is already running.
+   */
+  async setEffort(id: string, effort: string): Promise<EffortChangeResult> {
+    const s = this.sessions.get(id);
+    if (!s || s.closing) return { ok: false, reason: 'That session is gone.' };
+    s.effort = effort;
+    return { ok: true, effort, appliesToNextTurn: s.busy };
   }
 
   pending(): PendingApproval[] { return [...this.asks.values()].map(a => a.request); }
@@ -443,6 +521,21 @@ function codexModel(row: unknown): AgentModel | null {
     // Codex names one model per row; there are no aliases to resolve.
     resolved: null,
   };
+}
+
+/** The `supportedReasoningEfforts` rows of one `model/list` entry. */
+function codexEfforts(row: Record<string, unknown>): AgentEffort[] {
+  const rows = Array.isArray(row.supportedReasoningEfforts) ? row.supportedReasoningEfforts : [];
+  const efforts: AgentEffort[] = [];
+  for (const entry of rows) {
+    const r = object(entry);
+    const id = string(r.reasoningEffort);
+    if (!id) continue;
+    // Codex names a level with the level itself and describes it separately;
+    // there is no display name on the row to prefer over the word.
+    efforts.push({ id, label: id, note: string(r.description) || null });
+  }
+  return efforts;
 }
 
 function policyMode(policy: unknown): PermissionMode | null {

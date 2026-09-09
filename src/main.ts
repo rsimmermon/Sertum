@@ -675,6 +675,12 @@ ipcMain.handle('session:models', (_e, id: string) =>
 ipcMain.handle('session:model', (_e, p: { id: string; model: string }) =>
   daemon.request('session/model', p),
 );
+ipcMain.handle('session:efforts', (_e, id: string) =>
+  daemon.request('session/efforts', id),
+);
+ipcMain.handle('session:effort', (_e, p: { id: string; effort: string }) =>
+  daemon.request('session/effort', p),
+);
 ipcMain.handle('session:rename', (_e, p: { id: string; label: string }) =>
   daemon.request('session/rename', p),
 );

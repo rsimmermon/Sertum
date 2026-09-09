@@ -70,6 +70,19 @@ export type AgentCapability =
    */
   | 'permission-mode'
   /**
+   * Change how hard the agent thinks per turn — its reasoning effort — from
+   * the levels that agent publishes for the model the session is on.
+   *
+   * The twin of `model-select`, and for the same reason the two chips sit
+   * together: what a turn runs on and how much it reasons are the pair of
+   * settings that decide how a turn goes. Each agent answers with its own
+   * ladder and its own channel, and the level is never Sertum's invention —
+   * Claude's `list_models` rows carry `supportedEffortLevels`, Codex's
+   * `model/list` rows carry `supportedReasoningEfforts`, and Grok's own
+   * model cache carries `reasoning_efforts`.
+   */
+  | 'thinking-level'
+  /**
    * Render the session as a conversation read from the agent's own
    * transcript on disk — the conversation view's structured content source.
    *
@@ -164,8 +177,18 @@ export interface AgentModel {
   resolved: string | null;
 }
 
+/**
+ * `current` is the model the session says it is on at the moment it was
+ * asked, when the agent will say without a turn having run.
+ *
+ * Worth carrying because the alternative is a chip that reads "Model" on a
+ * session that knows perfectly well what it runs: Claude's `get_settings`
+ * answers `applied.model` before the first turn, and the snapshot is only
+ * seeded from a transcript that does not exist yet. Absent means the agent
+ * did not say, never "it has no model".
+ */
 export type AgentModelList =
-  | { ok: true; models: AgentModel[] }
+  | { ok: true; models: AgentModel[]; current?: string | null }
   | { ok: false; reason: string };
 
 /**
@@ -176,11 +199,52 @@ export type AgentModelList =
  * verified rather than assumed. It is set only when a turn was genuinely in
  * flight, because on an idle session "from the next turn" is simply what
  * changing the model means, and saying so would be noise.
+ *
+ * `label` is the agent's own display name for `model` -- the words on the
+ * row that was clicked. No adapter supplies it, because none of them holds
+ * the catalogue the picker was built from; the fabric fills it in from the
+ * row it validated the request against, so the confirmation under the
+ * composer can name the model in the same words the picker did.
  */
 export type ModelChangeResult =
-  | { ok: true; model: string; appliesToNextTurn: boolean }
+  | { ok: true; model: string; label?: string | null; appliesToNextTurn: boolean }
   | { ok: false; reason: string };
 
+
+/**
+ * One row in a session's thinking-level catalogue.
+ *
+ * Deliberately `AgentModel`'s shape minus `resolved`: a level has no aliases
+ * to resolve, because every agent here names it with the same word it
+ * reports back.
+ */
+export interface AgentEffort {
+  /** What the agent is told to switch to. */
+  id: string;
+  /** What to call it in the picker. */
+  label: string;
+  /** The agent's own one-line description of it, when it wrote one. */
+  note: string | null;
+}
+
+/** `current` carries the same meaning it does on `AgentModelList`. */
+export type AgentEffortList =
+  | { ok: true; efforts: AgentEffort[]; current?: string | null }
+  | { ok: false; reason: string };
+
+/**
+ * What came of asking a session to think harder or less hard.
+ *
+ * `effort` is what the session is on *now*, which is not always what was
+ * asked for: an agent may downgrade a level its current model cannot run,
+ * and Claude Code accepts an unusable level with a success it then ignores.
+ * Every implementation therefore reads the level back rather than echoing
+ * the request, so this field can be shown as fact. `appliesToNextTurn`
+ * carries the same meaning it does for a model change.
+ */
+export type EffortChangeResult =
+  | { ok: true; effort: string; label?: string | null; appliesToNextTurn: boolean }
+  | { ok: false; reason: string };
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true; requires?: 'structured-conversation'; modes?: readonly PermissionMode[] } | { ok: false; reason: string };
@@ -265,6 +329,16 @@ export interface SessionSnapshot extends SessionSpec {
   adapterBound: boolean;
   /** Model slug in use, when known. */
   model: string | null;
+  /**
+   * The agent's own display name for `model`, when one is known.
+   *
+   * Not a field of its own: an agent reports the slug and nothing else, so
+   * this is only ever filled from a catalogue row a picker was built from,
+   * and it travels with the slug -- dropped whenever `model` moves on
+   * without one, since a friendly name left attached to a different slug is
+   * a claim the agent never made.
+   */
+  modelLabel: string | null;
   /** Reasoning effort / thinking level, when the agent reports one. */
   effort: string | null;
   /** Tokens occupying the context window on the latest request. */
@@ -1067,6 +1141,8 @@ export interface SertumApi {
   /** The models this session could switch to, from its agent's catalogue. */
   sessionModels(id: string): Promise<AgentModelList>;
   setSessionModel(id: string, model: string): Promise<ModelChangeResult>;
+  sessionEfforts(id: string): Promise<AgentEffortList>;
+  setSessionEffort(id: string, effort: string): Promise<EffortChangeResult>;
   /**
    * Rename a session. The label is Sertum's own, so this works for every
    * agent -- including a plain shell, which has no notion of a session name.

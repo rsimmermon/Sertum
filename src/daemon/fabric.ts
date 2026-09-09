@@ -65,11 +65,13 @@ import {
 import {
   DEFAULT_SETTINGS,
   type AgentKind,
+  type AgentEffortList,
   type AgentModelList,
   type ApprovalAnswer,
   type BinaryDetection,
   type DiscoveredSession,
   type ManagedAgent,
+  type EffortChangeResult,
   type ModelChangeResult,
   type PendingApproval,
   type PermissionMode,
@@ -863,6 +865,19 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
    * picker as its own sentence rather than as a second, differently worded
    * one written here.
    */
+  /** `modelSwitchable`'s twin, for the setting that sits beside it. */
+  function effortSwitchable(
+    id: string,
+  ): { adapter: AgentAdapter; ref: AgentSessionRef } | { ok: false; reason: string } {
+    const session = ptys.get(id);
+    if (!session) return { ok: false, reason: 'That session is gone.' };
+    const adapter = agentAdapters.get(session.agent);
+    if (!adapter) return { ok: false, reason: 'That agent is unknown.' };
+    const answer = sessionCapability(session, adapter.capabilities, 'thinking-level');
+    if (!answer.ok) return answer;
+    return { adapter, ref: sessionRef(id, session) };
+  }
+
   function modelSwitchable(
     id: string,
   ): { adapter: AgentAdapter; ref: AgentSessionRef } | { ok: false; reason: string } {
@@ -885,6 +900,9 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       // thing that makes a model switch worth qualifying. Never inferred
       // from whether output is moving.
       working: s.status === 'working',
+      // Likewise the model: a thinking-level catalogue belongs to one, and
+      // Grok's switch has to name it. Null until an adapter has said.
+      model: s.model,
     };
   }
 
@@ -1146,7 +1164,13 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     'session/models': async (id: string): Promise<AgentModelList> => {
       const ready = modelSwitchable(id);
       if ('reason' in ready) return ready;
-      return ready.adapter.listModels(ready.ref);
+      const listed = await ready.adapter.listModels(ready.ref);
+      // An agent that named what it is on while listing has just told us
+      // something the transcript poll could not: opening the picker is the
+      // first moment a session with no turns behind it can say. Recorded the
+      // same way an adapter event would be, so the chip and the tick agree.
+      if (listed.ok && listed.current) ptys.applyMeta(id, { model: listed.current });
+      return listed;
     },
 
     /**
@@ -1176,8 +1200,52 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         return { ok: false, reason: 'That model is not one this session offers.' };
       }
       const result = await ready.adapter.setModel(ready.ref, p.model);
-      if (result.ok) ptys.applyMeta(p.id, { model: result.model });
-      return result;
+      if (!result.ok) return result;
+      // The row that was just validated is the only place the agent's own
+      // name for this model exists -- what `setModel` reports back is the
+      // slug a turn will report, which is not what the picker said. Carrying
+      // the label lets the chip and the confirmation under the composer use
+      // the same words the reader clicked.
+      const label = listed.models.find((m) => m.id === p.model)?.label ?? null;
+      ptys.applyMeta(p.id, { model: result.model, modelLabel: label });
+      return { ...result, label };
+    },
+
+    'session/efforts': async (id: string): Promise<AgentEffortList> => {
+      const ready = effortSwitchable(id);
+      if ('reason' in ready) return ready;
+      const listed = await ready.adapter.listEfforts(ready.ref);
+      if (listed.ok && listed.current) ptys.applyMeta(id, { effort: listed.current });
+      return listed;
+    },
+
+    /**
+     * Switch how hard this session thinks.
+     *
+     * `session/model`'s twin, including the validation: the level has to be
+     * one this session's own agent just listed, so a stale picker cannot ask
+     * for a level a different model offered. What lands in the snapshot is
+     * the level the adapter reports back rather than the one requested,
+     * because Claude answers a level its model cannot run with a success it
+     * then ignores -- the adapter reads it back, and this records what it
+     * read.
+     */
+    'session/effort': async (p: { id: string; effort: string }): Promise<EffortChangeResult> => {
+      const ready = effortSwitchable(p.id);
+      if ('reason' in ready) return ready;
+      const listed = await ready.adapter.listEfforts(ready.ref);
+      if (!listed.ok) return listed;
+      const row = listed.efforts.find((e) => e.id === p.effort);
+      if (!row) {
+        return { ok: false, reason: 'That thinking level is not one this session offers.' };
+      }
+      const result = await ready.adapter.setEffort(ready.ref, p.effort);
+      if (!result.ok) return result;
+      // The agent's own name for the level it landed on, which is the row's
+      // only when it landed on the one that was asked for.
+      const label = result.effort === row.id ? row.label : null;
+      ptys.applyMeta(p.id, { effort: result.effort });
+      return { ...result, label };
     },
 
     'approval/answer': (p: {

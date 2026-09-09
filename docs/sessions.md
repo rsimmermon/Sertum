@@ -140,6 +140,29 @@ optimistic status (the real notification supersedes it the instant it
 lands, same as the interrupt path's optimistic label), and `waitIdle` now
 sleeps before its first check.
 
+## A session that cannot start must not end every other one
+
+`ClaudeChatHost.spawn` returns null when the process does not start, and the
+fabric turns that into a `Could not start <binary> for a conversation session`
+the caller can show. The null was right; returning it was not, because of
+*when*.
+
+On Windows a failed `CreateProcess` does not throw — `spawn` returns a
+ChildProcess with no pid and emits `error` on the next tick. The early return
+happened before the `error` listener further down was attached, so nothing was
+listening when it fired, and an unhandled `error` event ends the process it is
+emitted in. That process is `sertumd`. One session that could not start
+therefore killed the daemon, and with it every other session on the machine —
+observed three times in a row while driving the app: `[sertum] lost sertumd;
+reconnecting`, a new daemon in `sertumd.log` seconds later, and `reaped 1
+orphaned codex app server(s)` on its way up.
+
+The listener now goes on before the early return, and its only job is to log
+the reason the caller cannot reach. That is also how the failure above turned
+out to be `spawn ... ENOENT` on a path that plainly existed — an
+ENOENT that was really about the *cwd* — which is exactly the sort of thing a
+swallowed `catch {}` costs an hour to learn.
+
 ## Resuming a previous session
 
 `session-resume` starts a brand-new process bound to a past conversation's

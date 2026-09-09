@@ -2,15 +2,17 @@ import os from 'node:os';
 import path from 'node:path';
 import type {
   AgentCapabilities,
+  AgentEffortList,
   AgentKind,
   AgentModelList,
+  EffortChangeResult,
   ModelChangeResult,
 } from '../../shared/types';
 import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
 import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 import type { ClaudeChatHost } from './claude-chat';
 import type { CodexChatHost } from './codex-chat';
-import { grokModelCommand, listGrokModels } from './grok';
+import { grokModelCommand, listGrokEfforts, listGrokModels } from './grok';
 
 /** The part of a session an adapter needs in order to act on it. */
 export interface AgentSessionRef {
@@ -24,12 +26,22 @@ export interface AgentSessionRef {
   /**
    * True while plane 2 says a turn is running.
    *
-   * Only `setModel` reads it, and only to say so: every agent verified here
-   * leaves a turn already in flight on the model it started with, so the
-   * reader is told that rather than left to discover it from a reply that
-   * came back in the old voice.
+   * Only `setModel` and `setEffort` read it, and only to say so: every agent
+   * verified here leaves a turn already in flight on the model and effort it
+   * started with, so the reader is told that rather than left to discover it
+   * from a reply that came back in the old voice.
    */
   working: boolean;
+  /**
+   * The model this session runs, when plane 2 has named one.
+   *
+   * A thinking level belongs to a model rather than to an account -- which
+   * levels exist depends on which model is answering -- so the catalogue is
+   * read for this one. Grok needs it for a second reason: its effort is set
+   * by naming both in one `/model` command, so without a model there is no
+   * command to send.
+   */
+  model: string | null;
 }
 
 /**
@@ -149,6 +161,19 @@ export interface AgentAdapter {
 
   /** Switch this session to one of those models, without restarting it. */
   setModel(session: AgentSessionRef, model: string): Promise<ModelChangeResult>;
+
+  /**
+   * The thinking levels this session could run, from the agent's own
+   * catalogue for the model it is on.
+   *
+   * Asked per session for the same reason `listModels` is, and per *model* on
+   * top of that: every agent here publishes the ladder against a model rather
+   * than against the account, and a level one model offers another may not.
+   */
+  listEfforts(session: AgentSessionRef): Promise<AgentEffortList>;
+
+  /** Switch this session to one of those levels, without restarting it. */
+  setEffort(session: AgentSessionRef, effort: string): Promise<EffortChangeResult>;
 }
 
 /**
@@ -204,6 +229,17 @@ class InertAgentAdapter implements AgentAdapter {
     _model: string,
   ): Promise<ModelChangeResult> {
     return { ok: false, reason: this.declined('model-select') };
+  }
+
+  async listEfforts(_session: AgentSessionRef): Promise<AgentEffortList> {
+    return { ok: false, reason: this.declined('thinking-level') };
+  }
+
+  async setEffort(
+    _session: AgentSessionRef,
+    _effort: string,
+  ): Promise<EffortChangeResult> {
+    return { ok: false, reason: this.declined('thinking-level') };
   }
 
   /**
@@ -262,6 +298,13 @@ class CodexAdapter implements AgentAdapter {
     // app owns has a turn/start of ours to put it on, so a TUI-backed Codex
     // session is told to use its own picker instead.
     'model-select': { ok: true, requires: 'structured-conversation' },
+    // Each `model/list` row carries `supportedReasoningEfforts` and a
+    // `defaultReasoningEffort`, and `turn/start` takes an `effort` override
+    // "for this turn and subsequent turns" -- the same shape as its `model`
+    // override, verified against the generated schema of Codex CLI 0.153.4.
+    // Owned threads only, for the same reason: a TUI-owned turn has no
+    // `turn/start` of ours to carry it.
+    'thinking-level': { ok: true, requires: 'structured-conversation' },
   };
 
   constructor(
@@ -372,6 +415,17 @@ class CodexAdapter implements AgentAdapter {
   ): Promise<ModelChangeResult> {
     return this.chat().setModel(session.id, model);
   }
+
+  async listEfforts(session: AgentSessionRef): Promise<AgentEffortList> {
+    return this.chat().listEfforts(session.id, session.model);
+  }
+
+  async setEffort(
+    session: AgentSessionRef,
+    effort: string,
+  ): Promise<EffortChangeResult> {
+    return this.chat().setEffort(session.id, effort);
+  }
 }
 
 /**
@@ -416,6 +470,12 @@ class ClaudeAdapter extends InertAgentAdapter {
       // own stream, verified against Claude Code 2.1.266. A PTY-backed
       // session's stream belongs to the TUI, which keeps `/model` for itself.
       'model-select': { ok: true, requires: 'structured-conversation' },
+      // `list_models` rows carry `supportedEffortLevels` per model, and
+      // `apply_flag_settings { effortLevel }` moves what `get_settings`
+      // reports as `applied.effort` -- both verified against Claude Code
+      // 2.1.266. Same transport rule as the model: the control channel of a
+      // PTY-backed session belongs to its TUI.
+      'thinking-level': { ok: true, requires: 'structured-conversation' },
     });
   }
 
@@ -476,6 +536,18 @@ class ClaudeAdapter extends InertAgentAdapter {
     model: string,
   ): Promise<ModelChangeResult> {
     const result = await this.chat.setModel(session.id, model);
+    return result.ok ? { ...result, appliesToNextTurn: session.working } : result;
+  }
+
+  override async listEfforts(session: AgentSessionRef): Promise<AgentEffortList> {
+    return this.chat.listEfforts(session.id, session.model);
+  }
+
+  override async setEffort(
+    session: AgentSessionRef,
+    effort: string,
+  ): Promise<EffortChangeResult> {
+    const result = await this.chat.setEffort(session.id, effort);
     return result.ok ? { ...result, appliesToNextTurn: session.working } : result;
   }
 
@@ -558,6 +630,10 @@ class GrokAdapter extends InertAgentAdapter {
       // its own prompt rather than a control channel it does not have. No
       // `requires`, therefore -- this works on exactly the transport Grok has.
       'model-select': { ok: true },
+      // The same command and the same file: `models_cache.json` carries
+      // `reasoning_efforts` per model, and `/model <name> <effort>` is the
+      // published form whose effort argument `setModel` omits on purpose.
+      'thinking-level': { ok: true },
     });
   }
 
@@ -581,14 +657,63 @@ class GrokAdapter extends InertAgentAdapter {
     session: AgentSessionRef,
     model: string,
   ): Promise<ModelChangeResult> {
-    if (!this.input.write(session.id, grokModelCommand(model))) {
+    const sent = await this.sendCommand(session, grokModelCommand(model));
+    return sent.ok ? { ok: true, model, appliesToNextTurn: session.working } : sent;
+  }
+
+  override async listEfforts(session: AgentSessionRef): Promise<AgentEffortList> {
+    return listGrokEfforts(session.model);
+  }
+
+  /**
+   * Grok sets effort through the same command, naming both at once.
+   *
+   * `/model <name> <effort>` is the published form, and the effort argument
+   * is the half `setModel` deliberately omits -- omitting it preserves the
+   * current level, which is right when the reader asked about the model and
+   * wrong when they asked about the level. So this sends the model the
+   * session is already on, which is also why it needs one: with no model
+   * reported there is no command to write, and inventing a name here would
+   * switch the model as a side effect of setting the level.
+   */
+  override async setEffort(
+    session: AgentSessionRef,
+    effort: string,
+  ): Promise<EffortChangeResult> {
+    if (!session.model) {
+      return {
+        ok: false,
+        reason:
+          'Grok sets the thinking level as part of a model switch, and this session has not reported its model yet — it names one when the first turn starts.',
+      };
+    }
+    const sent = await this.sendCommand(
+      session,
+      grokModelCommand(session.model, effort),
+    );
+    return sent.ok ? { ok: true, effort, appliesToNextTurn: session.working } : sent;
+  }
+
+  /**
+   * One command down Grok's own prompt: the body, then the carriage return a
+   * beat later.
+   *
+   * The two writes and the pause between them are the composer's sequence,
+   * for the composer's reason: one write ending in CR is read as a paste and
+   * leaves the line sitting there unsent.
+   */
+  private async sendCommand(
+    session: AgentSessionRef,
+    command: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!this.input.write(session.id, command)) {
       return { ok: false, reason: 'The session is no longer accepting input.' };
     }
     await new Promise((resolve) => setTimeout(resolve, ENTER_DELAY_MS));
     if (!this.input.write(session.id, ENTER)) {
       return { ok: false, reason: 'The session ended before the command was sent.' };
     }
-    return { ok: true, model, appliesToNextTurn: session.working };
+    return { ok: true };
   }
 
   // The installer puts Grok in its own home rather than on PATH: a fresh
@@ -675,6 +800,10 @@ export function createAgentAdapters(deps: {
         'model-select': {
           ok: false,
           reason: 'A shell runs no model to switch.',
+        },
+        'thinking-level': {
+          ok: false,
+          reason: 'A shell runs no model, so there is no thinking to set.',
         },
       }),
     ],

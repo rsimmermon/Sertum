@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  AgentEffortList,
   AgentModelList,
+  EffortChangeResult,
   ModelChangeResult,
   AgentKind,
   ApprovalAnswer,
@@ -102,6 +104,10 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:models', id),
   setSessionModel: (id: string, model: string): Promise<ModelChangeResult> =>
     ipcRenderer.invoke('session:model', { id, model }),
+  sessionEfforts: (id: string): Promise<AgentEffortList> =>
+    ipcRenderer.invoke('session:efforts', id),
+  setSessionEffort: (id: string, effort: string): Promise<EffortChangeResult> =>
+    ipcRenderer.invoke('session:effort', { id, effort }),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
   agentCapabilities: () => ipcRenderer.invoke('agent:capabilities'),
