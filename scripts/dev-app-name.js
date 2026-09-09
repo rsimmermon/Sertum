@@ -50,6 +50,14 @@ const distDir = path.join(root, 'node_modules', 'electron', 'dist');
 const pristineApp = path.join(distDir, 'Electron.app');
 const appDir = path.join(distDir, `${APP_NAME}.app`);
 
+if (!fs.existsSync(distDir)) {
+  // Electron 42+ has no postinstall of its own; ensure-electron.js fetches the
+  // binary and runs ahead of this script in postinstall and prestart.
+  console.error('[dev-app-name] node_modules/electron/dist is missing -- the Electron '
+    + 'binary was never downloaded. Run `node scripts/ensure-electron.js` first.');
+  process.exit(1);
+}
+
 if (fs.existsSync(pristineApp)) {
   // A reinstall restores Electron.app; any previously renamed copy is stale.
   if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true, force: true });

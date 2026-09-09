@@ -2062,6 +2062,31 @@ agent daemon…") or kill the pid in `~/.sertum/daemon.json`; the next GUI
 launch spawns one from the current build. `~/.sertum/sertumd.log` is the
 daemon's console.
 
+### Electron fetches its own binary on first use, not at `npm install`
+
+Electron 42 removed the `postinstall` script that downloaded the binary during
+`npm install` (electron/electron#49328, after the npm supply-chain attacks
+that used install scripts as their vector). The package now fetches itself the
+first time `require('electron')` is asked for the executable's path -- which
+is what `electron-forge start` does -- and offers `npx install-electron` to
+do it deliberately. This repo is on 44.
+
+That is why a fresh checkout worked on Windows and failed on macOS. Windows
+downloaded at the first `npm start`. On macOS, `dev-app-name.js` brands the
+dev bundle from `postinstall`, before anything has asked for the path, and
+read `node_modules/electron/dist` -- which on a fresh install no longer
+exists -- so `npm install` died with `ENOENT: scandir .../electron/dist`
+every time `node_modules` was rebuilt. Not a network or permissions problem,
+and re-running did not help, since the next run hit the same missing directory.
+
+`scripts/ensure-electron.js` now runs ahead of the branding in both
+`postinstall` and `prestart`. It calls `require('electron')` rather than
+`install.js`, because the former goes by `path.txt` and leaves a bundle
+already renamed to `Sertum.app` alone, while `install.js`'s own check
+compares `path.txt` against the stock path and would fetch again on every
+run. Verified from an emptied `node_modules`: the binary is extracted from
+Electron's cache, branded, and a second `npm install` is a silent no-op.
+
 ## Verification
 
 Screen capture is unavailable in some environments, so the app can be checked
@@ -2122,7 +2147,10 @@ fixed along the way:
   installer maker, Windows-only) all need their `postinstall`/`install`
   scripts to run. Without an `allowScripts` block in `package.json`, `npm
   install` silently skips them and `node-pty` ends up with no native binary
-  at all.
+  at all. Electron itself needs no entry: from 42 on it has no install script
+  to allow, and its binary arrives another way -- see "Electron fetches its own
+  binary on first use" under Running. npm 10.x (macOS here runs 10.9.8) has no
+  `allowScripts` at all and simply runs every install script.
 - **Codex sessions failed to start — `resolveCodexBinary()` had no Windows
   branch.** Its candidate list was entirely POSIX paths (`~/.codex/…`,
   `/opt/homebrew/…`, `/usr/local/…`), so on win32 it always fell through to
@@ -2383,6 +2411,7 @@ src/
   renderer/approval-card.ts       Question and plan cards, when allow/deny is not the question
   renderer/permission-mode.ts     The mode catalogue and its picker (plan, auto, accept edits…)
 scripts/
+  ensure-electron.js          Fetch the Electron binary if absent; Electron 42+ has no postinstall
   smoke-pty.js                Headless PTY test
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable

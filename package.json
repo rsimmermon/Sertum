@@ -11,8 +11,8 @@
     "make": "electron-forge make",
     "publish": "electron-forge publish",
     "lint": "oxlint src",
-    "prestart": "node scripts/dev-app-name.js",
-    "postinstall": "node scripts/dev-app-name.js"
+    "prestart": "node scripts/ensure-electron.js && node scripts/dev-app-name.js",
+    "postinstall": "node scripts/ensure-electron.js && node scripts/dev-app-name.js"
   },
   "keywords": [],
   "author": "SimmTech Software, LLC",
