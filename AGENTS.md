@@ -833,6 +833,24 @@ verified yet. `scripts/smoke-codex-fabric.ts` verifies the public daemon handler
 for creation, send, pending approvals, denial, status and exact transcript
 resolution under Electron’s Node runtime.
 
+`CodexChatHost.send` reports `working` optimistically, the moment a turn is
+requested, rather than waiting on the app server's own `turn/started` /
+`thread/status/changed` notifications -- the same pattern `ClaudeChatHost`
+already used. Found via a real GUI click-through of `session-resume`:
+those notifications are a separate async frame that landed up to ~90ms after
+`turn/start`'s own response, verified with raw notification logging, leaving
+a real window where a turn had genuinely begun but the session still read
+`idle`. That window is invisible in the UI, which only ever polls once a
+second, but it is exactly what `scripts/smoke-resume.ts`'s `waitIdle` helper
+raced: it checked status *before* ever sleeping, so it could observe the
+stale `idle`, declare a turn that had just started already finished, and
+let the harness's own `fabric.shutdown()` kill the codex app server
+mid-turn -- which is why a resumed session's second turn was seen answering
+with its *first* turn's stale reply. Fixed on both sides: `send` emits the
+optimistic status (the real notification supersedes it the instant it
+lands, same as the interrupt path's optimistic label), and `waitIdle` now
+sleeps before its first check.
+
 ### Resuming a previous session
 
 `session-resume` starts a brand-new process bound to a past conversation's

@@ -119,6 +119,16 @@ export class CodexChatHost extends EventEmitter {
     const s = this.sessions.get(id);
     if (!s || s.closing || s.busy || !text.trim()) return false;
     s.busy = true;
+    // Optimistic, like Claude's own send() -- `turn/started` and
+    // `thread/status/changed` are separate async notifications that can
+    // land a beat after this request's own response, verified up to ~90ms
+    // apart. Reporting 'working' only once they arrive left a real window
+    // where a turn had genuinely begun but the session still read 'idle',
+    // which a synchronous status check right after send (as a resume/turn
+    // round trip test does) could observe and mistake for the turn already
+    // being finished. The real notification supersedes this the moment it
+    // lands, same as the interrupt path's optimistic label.
+    this.emit('update', { id, status: 'working', activity: 'working' });
     try {
       await this.server.request('turn/start', { threadId: s.threadId, input: [{ type: 'text', text }] });
       return this.sessions.get(id) === s;

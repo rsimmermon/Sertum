@@ -18,10 +18,19 @@ async function waitIdle(
   timeoutMs = 60_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (current.get(id)?.status !== 'idle') {
-    assert(Date.now() < deadline, `session ${id} never went idle (status: ${current.get(id)?.status})`);
+  // chat/send's own promise resolves as soon as turn/start's request round
+  // trip completes; the status transition to 'working' is a separate,
+  // asynchronous notification that can land a beat later (verified up to
+  // ~90ms for Codex, which has no optimistic status on send the way Claude
+  // does). Checking status *before* ever giving that notification a chance
+  // to arrive can see a turn that just started as already 'idle' and return
+  // instantly -- which is exactly what let a real in-flight second turn get
+  // reported as already finished. Always wait at least one interval before
+  // trusting an idle read.
+  do {
     await new Promise((r) => setTimeout(r, 150));
-  }
+    assert(Date.now() < deadline, `session ${id} never went idle (status: ${current.get(id)?.status})`);
+  } while (current.get(id)?.status !== 'idle');
 }
 
 function lastAssistantText(c: ConversationSnapshot): string {
