@@ -31,6 +31,10 @@ import {
 } from './layout-picker';
 import { agentIcon } from './agent-icon';
 import {
+  modelAvailability,
+  openModelPicker,
+} from './model-picker';
+import {
   openPermissionModePicker,
   permissionModeAvailability,
   permissionModeLabel,
@@ -1360,6 +1364,7 @@ export class App {
     const interrupt = this.capabilities?.[s.agent]['turn-interrupt'];
     const toolGate = this.capabilities?.[s.agent]['tool-gate'];
     const modeAvailable = permissionModeAvailability(s, this.capabilities);
+    const modelAvailable = modelAvailability(s, this.capabilities);
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1390,6 +1395,16 @@ export class App {
         note: modeAvailable.ok ? undefined : modeAvailable.reason,
         onSelect: modeAvailable.ok
           ? () => this.openPermissionModePicker(s, x, y)
+          : undefined,
+      },
+      {
+        // What this session's turns run on. Beside the composer too; here it
+        // is reachable without bringing the pane forward, exactly as the
+        // permission mode above it is.
+        label: s.model ? `Model: ${s.model}…` : 'Model…',
+        note: modelAvailable.ok ? undefined : modelAvailable.reason,
+        onSelect: modelAvailable.ok
+          ? () => this.openModelPicker(s, x, y)
           : undefined,
       },
       {
@@ -1569,6 +1584,23 @@ export class App {
         // nowhere else to land from here, so it goes to the session's own pane.
         if (!result.ok) this.chatPanes.get(s.id)?.reportModeRefusal(result.reason);
         else if (result.queued) this.chatPanes.get(s.id)?.reportModeQueued(result.mode);
+      });
+    });
+  }
+
+  /**
+   * The model picker, from the sidebar. The chat pane has its own button;
+   * this is the same catalogue reached without bringing the pane forward.
+   */
+  private openModelPicker(s: SessionSnapshot, x: number, y: number): void {
+    void openModelPicker(x, y, s, this.capabilities, (model) => {
+      void api.setSessionModel(s.id, model).then((result) => {
+        // Success repaints from the snapshot the daemon pushes back. A
+        // refusal, or the note that a running turn keeps its old model, has
+        // nowhere else to land from here, so it goes to the session's pane.
+        const pane = this.chatPanes.get(s.id);
+        if (!result.ok) pane?.reportModelRefusal(result.reason);
+        else if (result.appliesToNextTurn) pane?.reportModelQueued(result.model);
       });
     });
   }

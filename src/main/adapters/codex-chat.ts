@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { ApprovalAnswer, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession } from '../../shared/types';
+import type { AgentModel, AgentModelList, ApprovalAnswer, ModelChangeResult, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession } from '../../shared/types';
 import { CodexAppServer, type CodexNotification, type CodexServerRequest } from './codex-app-server';
 import { mapCodexStatus, resumableThread, type CodexThread, type CodexThreadStatus } from './codex';
 
@@ -23,6 +23,17 @@ interface Hosted {
    * mode you actually land on when the turn ends is meaningful.
    */
   pendingMode?: PermissionMode | null;
+  /**
+   * The model this session has been switched to, passed on every
+   * `turn/start` from then on.
+   *
+   * `turn/start` documents its `model` field as overriding "for this turn and
+   * subsequent turns", so sending it once would be enough -- it is sent every
+   * turn anyway because that costs nothing and cannot be undone by anything
+   * that later reloads the thread's own configuration. Null means the thread
+   * runs whatever it was started with.
+   */
+  model?: string | null;
 }
 interface Held {
   session: Hosted;
@@ -130,7 +141,11 @@ export class CodexChatHost extends EventEmitter {
     // lands, same as the interrupt path's optimistic label.
     this.emit('update', { id, status: 'working', activity: 'working' });
     try {
-      await this.server.request('turn/start', { threadId: s.threadId, input: [{ type: 'text', text }] });
+      await this.server.request('turn/start', {
+        threadId: s.threadId,
+        input: [{ type: 'text', text }],
+        ...(s.model ? { model: s.model } : {}),
+      });
       return this.sessions.get(id) === s;
     } catch (error) {
       if (this.sessions.get(id) === s) {
@@ -177,6 +192,60 @@ export class CodexChatHost extends EventEmitter {
       this.finish(s, -1);
       return { ok: false, reason: String(error) };
     } finally { s.busy = false; s.reconfiguring = false; }
+  }
+
+  /**
+   * The models this account can run, from the app server's own roster.
+   *
+   * `model/list` is a plain request needing no thread, and it pages, so the
+   * cursor is followed rather than assumed to be absent -- with a bound,
+   * because a catalogue that never stops paging must not hang the picker.
+   * Hidden rows are exactly the ones Codex keeps out of its own picker, so
+   * they stay out of ours.
+   */
+  async listModels(): Promise<AgentModelList> {
+    if (!this.server.connected) return { ok: false, reason: 'Codex app server is unavailable.' };
+    const models: AgentModel[] = [];
+    let cursor: string | undefined;
+    try {
+      for (let page = 0; page < 10; page += 1) {
+        const result = object(await this.server.request('model/list', cursor ? { cursor } : {}));
+        for (const row of Array.isArray(result.data) ? result.data : []) {
+          const model = codexModel(row);
+          if (model) models.push(model);
+        }
+        cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined;
+        if (!cursor) break;
+      }
+    } catch (error) {
+      return { ok: false, reason: String(error) };
+    }
+    return models.length
+      ? { ok: true, models }
+      : { ok: false, reason: 'Codex listed no models for this account.' };
+  }
+
+  /**
+   * Switches the model this session's turns run on.
+   *
+   * Deliberately not the `thread/unsubscribe` + `thread/resume` dance
+   * `setPermissionMode` has to perform: `turn/start` carries a `model`
+   * override of its own, so the change needs no idle thread, no reload, and
+   * has no window in which the thread is unowned. It also works on a thread
+   * that has never taken a turn, which resume does not -- `thread/resume` on
+   * a brand-new thread answers `no rollout found for thread id`, since
+   * nothing has been written to disk for it to load yet.
+   *
+   * The cost is that it lands when the next turn starts rather than the
+   * instant it is asked, which is what `appliesToNextTurn` says out loud
+   * while a turn is running. On an idle session the next turn is the next
+   * thing that happens, so there is nothing to say.
+   */
+  async setModel(id: string, model: string): Promise<ModelChangeResult> {
+    const s = this.sessions.get(id);
+    if (!s || s.closing) return { ok: false, reason: 'That session is gone.' };
+    s.model = model;
+    return { ok: true, model, appliesToNextTurn: s.busy };
   }
 
   pending(): PendingApproval[] { return [...this.asks.values()].map(a => a.request); }
@@ -295,6 +364,15 @@ export class CodexChatHost extends EventEmitter {
           this.asks.delete(id); this.emit('approval-gone', id);
         }
       }
+    } else if (method === 'model/rerouted') {
+      // The server moved the turn to a different model of its own accord.
+      // That is its own account of what is running, the same class of source
+      // as any other notification here, so it supersedes what we asked for.
+      const to = string(params.toModel);
+      if (to) {
+        s.model = to;
+        this.emit('model-applied', { id: s.id, model: to });
+      }
     } else if (method === 'thread/status/changed') {
       this.emit('update', { id: s.id, ...mapCodexStatus(params.status as CodexThreadStatus) });
     }
@@ -351,6 +429,20 @@ export class CodexChatHost extends EventEmitter {
     this.asks.set(request.id, { session: s, wire, request, decisions });
     this.emit('approval', request);
   }
+}
+
+/** One `model/list` row, in the wire's own field names. */
+function codexModel(row: unknown): AgentModel | null {
+  const r = object(row);
+  const id = string(r.model) || string(r.id);
+  if (!id || r.hidden === true) return null;
+  return {
+    id,
+    label: string(r.displayName) || id,
+    note: string(r.description) || null,
+    // Codex names one model per row; there are no aliases to resolve.
+    resolved: null,
+  };
 }
 
 function policyMode(policy: unknown): PermissionMode | null {

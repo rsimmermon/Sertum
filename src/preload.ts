@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  AgentModelList,
+  ModelChangeResult,
   AgentKind,
   ApprovalAnswer,
   DiffCommitRequest,
@@ -96,6 +98,10 @@ const api: SertumApi = {
     ipcRenderer.invoke('session:tool-gate', { id, paused }),
   setPermissionMode: (id: string, mode: PermissionMode) =>
     ipcRenderer.invoke('session:permission-mode', { id, mode }),
+  sessionModels: (id: string): Promise<AgentModelList> =>
+    ipcRenderer.invoke('session:models', id),
+  setSessionModel: (id: string, model: string): Promise<ModelChangeResult> =>
+    ipcRenderer.invoke('session:model', { id, model }),
   renameSession: (id: string, label: string) =>
     ipcRenderer.invoke('session:rename', { id, label }),
   agentCapabilities: () => ipcRenderer.invoke('agent:capabilities'),

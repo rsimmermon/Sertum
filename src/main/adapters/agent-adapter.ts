@@ -1,9 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentCapabilities, AgentKind } from '../../shared/types';
+import type {
+  AgentCapabilities,
+  AgentKind,
+  AgentModelList,
+  ModelChangeResult,
+} from '../../shared/types';
 import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
 import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 import type { ClaudeChatHost } from './claude-chat';
+import type { CodexChatHost } from './codex-chat';
+import { grokModelCommand, listGrokModels } from './grok';
 
 /** The part of a session an adapter needs in order to act on it. */
 export interface AgentSessionRef {
@@ -14,7 +21,40 @@ export interface AgentSessionRef {
   /** The active provider turn, when its event plane exposes one. */
   activeTurnId: string | null;
   cwd: string;
+  /**
+   * True while plane 2 says a turn is running.
+   *
+   * Only `setModel` reads it, and only to say so: every agent verified here
+   * leaves a turn already in flight on the model it started with, so the
+   * reader is told that rather than left to discover it from a reply that
+   * came back in the old voice.
+   */
+  working: boolean;
 }
+
+/**
+ * The one input channel a terminal-backed agent has.
+ *
+ * Narrowed to a single method on purpose: an adapter given the whole PTY
+ * manager could reach for lifecycle it has no business touching, and the only
+ * thing any adapter here legitimately needs is to write bytes to the session
+ * the user is acting on.
+ */
+export interface PtyInput {
+  write(id: string, data: string): boolean;
+}
+
+/** A real Enter press, once the line before it has landed. */
+const ENTER = '\r';
+
+/**
+ * How long after a line the carriage return follows it.
+ *
+ * The same 150ms the composer uses, for the same verified reason: a TUI reads
+ * `text + CR` arriving in one write as a paste and swallows the return, so the
+ * line ends up visible in its prompt and never submitted.
+ */
+const ENTER_DELAY_MS = 150;
 
 interface ClaudeTurnControl {
   queueSteer(sessionId: string, text: string): void;
@@ -97,6 +137,18 @@ export interface AgentAdapter {
 
   /** Deny or resume tool execution through the structured control plane. */
   setToolGate(session: AgentSessionRef, paused: boolean): Promise<boolean>;
+
+  /**
+   * The models this session could run, from the agent's own catalogue.
+   *
+   * Every implementation asks the agent rather than answering from a list of
+   * its own, so a model added or withdrawn from an account shows up here
+   * without Sertum being rebuilt.
+   */
+  listModels(session: AgentSessionRef): Promise<AgentModelList>;
+
+  /** Switch this session to one of those models, without restarting it. */
+  setModel(session: AgentSessionRef, model: string): Promise<ModelChangeResult>;
 }
 
 /**
@@ -142,6 +194,27 @@ class InertAgentAdapter implements AgentAdapter {
   ): Promise<boolean> {
     return false;
   }
+
+  async listModels(_session: AgentSessionRef): Promise<AgentModelList> {
+    return { ok: false, reason: this.declined('model-select') };
+  }
+
+  async setModel(
+    _session: AgentSessionRef,
+    _model: string,
+  ): Promise<ModelChangeResult> {
+    return { ok: false, reason: this.declined('model-select') };
+  }
+
+  /**
+   * The adapter's own reason, so a declining implementation that is somehow
+   * called anyway still answers with the sentence it published rather than a
+   * second, differently worded one.
+   */
+  protected declined(capability: keyof AgentCapabilities): string {
+    const answer = this.capabilities[capability];
+    return answer.ok ? 'This agent cannot change models here.' : answer.reason;
+  }
 }
 
 /**
@@ -184,9 +257,23 @@ class CodexAdapter implements AgentAdapter {
     // Codex CLI 0.153.4 from an app server that never saw it: turn/start
     // afterward answered with full context from before that process existed.
     'session-resume': { ok: true, requires: 'structured-conversation' },
+    // `model/list` answers for the account and `turn/start` takes a `model`
+    // override "for this turn and subsequent turns" -- but only a thread this
+    // app owns has a turn/start of ours to put it on, so a TUI-backed Codex
+    // session is told to use its own picker instead.
+    'model-select': { ok: true, requires: 'structured-conversation' },
   };
 
-  constructor(private server: CodexAppServer) {}
+  constructor(
+    private server: CodexAppServer,
+    /**
+     * Read late rather than injected: the chat host subscribes to the same
+     * app server this adapter holds and is built after it, so the adapter
+     * asks for it at the moment it needs one instead of forcing the two
+     * constructions into a particular order.
+     */
+    private chat: () => CodexChatHost,
+  ) {}
 
   // The app server already had to solve this to start at all; one list of
   // install locations serves both it and the TUI we spawn for the user.
@@ -273,6 +360,18 @@ class CodexAdapter implements AgentAdapter {
   ): Promise<boolean> {
     return false;
   }
+
+  /** The account's catalogue, which needs no thread of its own. */
+  async listModels(_session: AgentSessionRef): Promise<AgentModelList> {
+    return this.chat().listModels();
+  }
+
+  async setModel(
+    session: AgentSessionRef,
+    model: string,
+  ): Promise<ModelChangeResult> {
+    return this.chat().setModel(session.id, model);
+  }
 }
 
 /**
@@ -313,6 +412,10 @@ class ClaudeAdapter extends InertAgentAdapter {
       // transcript file and answer a follow-up turn with full prior context,
       // even from a brand-new process.
       'session-resume': { ok: true, requires: 'structured-conversation' },
+      // `list_models` and `set_model` are control requests on the session's
+      // own stream, verified against Claude Code 2.1.266. A PTY-backed
+      // session's stream belongs to the TUI, which keeps `/model` for itself.
+      'model-select': { ok: true, requires: 'structured-conversation' },
     });
   }
 
@@ -364,6 +467,18 @@ class ClaudeAdapter extends InertAgentAdapter {
     return true;
   }
 
+  override async listModels(session: AgentSessionRef): Promise<AgentModelList> {
+    return this.chat.listModels(session.id);
+  }
+
+  override async setModel(
+    session: AgentSessionRef,
+    model: string,
+  ): Promise<ModelChangeResult> {
+    const result = await this.chat.setModel(session.id, model);
+    return result.ok ? { ...result, appliesToNextTurn: session.working } : result;
+  }
+
   resolveBinary(): string {
     const home = os.homedir();
     if (process.platform === 'win32') {
@@ -394,7 +509,7 @@ class ClaudeAdapter extends InertAgentAdapter {
  * local label is the whole truth here, exactly as it is for Claude.
  */
 class GrokAdapter extends InertAgentAdapter {
-  constructor() {
+  constructor(private input: PtyInput) {
     super('grok', {
       'rename-remote': {
         ok: false,
@@ -438,7 +553,42 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok has no way to resume a past session by id.',
       },
+      // The one capability here a terminal session can answer: Grok's
+      // catalogue is a file its own CLI wrote, and `/model` is a command on
+      // its own prompt rather than a control channel it does not have. No
+      // `requires`, therefore -- this works on exactly the transport Grok has.
+      'model-select': { ok: true },
     });
+  }
+
+  override async listModels(_session: AgentSessionRef): Promise<AgentModelList> {
+    return listGrokModels();
+  }
+
+  /**
+   * Sends Grok's own `/model` command down its own prompt.
+   *
+   * The two writes and the pause between them are the composer's sequence,
+   * for the composer's reason: one write ending in CR is read as a paste and
+   * leaves the line sitting there unsent. Verified against Grok 1.0.13 in a
+   * real PTY -- the session answered "Switched to Grok 4.6 (low effort)" and
+   * its footer changed -- and equally verified is what does *not* happen:
+   * nothing is written to `events.jsonl` at the moment of the switch, so
+   * there is no acknowledgement to wait on here. Which model this session is
+   * on is reported by plane 2 the ordinary way, on the next `turn_started`.
+   */
+  override async setModel(
+    session: AgentSessionRef,
+    model: string,
+  ): Promise<ModelChangeResult> {
+    if (!this.input.write(session.id, grokModelCommand(model))) {
+      return { ok: false, reason: 'The session is no longer accepting input.' };
+    }
+    await new Promise((resolve) => setTimeout(resolve, ENTER_DELAY_MS));
+    if (!this.input.write(session.id, ENTER)) {
+      return { ok: false, reason: 'The session ended before the command was sent.' };
+    }
+    return { ok: true, model, appliesToNextTurn: session.working };
   }
 
   // The installer puts Grok in its own home rather than on PATH: a fresh
@@ -468,11 +618,13 @@ export function createAgentAdapters(deps: {
   codex: CodexAppServer;
   claudeControl: ClaudeTurnControl;
   claudeChat: ClaudeChatHost;
+  codexChat: () => CodexChatHost;
+  ptyInput: PtyInput;
 }): Map<AgentKind, AgentAdapter> {
   return new Map<AgentKind, AgentAdapter>([
     ['claude', new ClaudeAdapter(deps.claudeControl, deps.claudeChat)],
-    ['codex', new CodexAdapter(deps.codex)],
-    ['grok', new GrokAdapter()],
+    ['codex', new CodexAdapter(deps.codex, deps.codexChat)],
+    ['grok', new GrokAdapter(deps.ptyInput)],
     [
       'shell',
       new InertAgentAdapter('shell', {
@@ -519,6 +671,10 @@ export function createAgentAdapters(deps: {
         'session-resume': {
           ok: false,
           reason: 'A shell has no prior agent conversation to resume.',
+        },
+        'model-select': {
+          ok: false,
+          reason: 'A shell runs no model to switch.',
         },
       }),
     ],

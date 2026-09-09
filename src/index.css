@@ -1998,5 +1998,13 @@ select.field {
    never made, so the button says less until it does. */
 .chat-mode.is-unset { font-style: italic; }
 
+/* Its neighbour: what the session's turns actually run on. Same chip, a
+   different mark, because the two settings that shape a turn belong together
+   at the point the turn is composed. A model id can be long
+   (`claude-opus-5[1m]`), so the chip truncates and the full value stays in
+   the tooltip -- the convention every other badge here follows. */
+.chat-model { max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-model::before { content: '◆'; }
+
 /* B5: inspect server-provided changes before answering. */
 .approval-detail { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font-size: 12px; }

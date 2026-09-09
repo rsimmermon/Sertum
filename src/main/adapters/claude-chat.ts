@@ -1,6 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type {
+  AgentModel,
+  AgentModelList,
+  ModelChangeResult,
   PermissionMode,
   PermissionModeResult,
   SessionStatus,
@@ -343,6 +346,54 @@ export class ClaudeChatHost extends EventEmitter {
   }
 
   /**
+   * The models this session could run, asked of the session itself.
+   *
+   * `list_models` is a control request like `set_permission_mode`, and its
+   * answer is the account's own catalogue rather than anything Sertum keeps
+   * -- verified against Claude Code 2.1.266, which answered before any turn
+   * had opened, listing `default`, `opus[1m]`, `claude-fable-5-1[1m]`,
+   * `sonnet` and `haiku` with the id to send in `value` and the model each
+   * one actually resolves to in `resolvedModel`.
+   */
+  async listModels(id: string): Promise<AgentModelList> {
+    const reply = await this.request(id, { subtype: 'list_models' });
+    if (!reply.ok) return reply;
+    const rows = Array.isArray(reply.response.models) ? reply.response.models : [];
+    const models = rows.map(claudeModel).filter((m): m is AgentModel => m !== null);
+    return models.length
+      ? { ok: true, models }
+      : { ok: false, reason: 'Claude Code listed no models for this session.' };
+  }
+
+  /**
+   * Switches the model for the rest of the session.
+   *
+   * `set_model` takes the catalogue's `value` and answers success with no
+   * payload at all -- unlike `set_permission_mode`, there is nothing echoed
+   * to read the result off -- so the resolved name is looked up in the same
+   * catalogue the picker was built from rather than guessed. A model the CLI
+   * does not recognise is refused by name, and that sentence is worth
+   * showing: verified against Claude Code 2.1.266, `not-a-model` came back
+   * as `Model "not-a-model" is not a recognized model id. Run /model to see
+   * available models.`
+   *
+   * Sent mid-turn it is still accepted immediately -- also verified, 20ms
+   * into a turn that then ran for another 55 seconds -- and the running turn
+   * keeps the model it started with, while the next turn's `system/init`
+   * reports the new one. That is what `appliesToNextTurn` is telling the
+   * reader about; nothing here waits for the turn to end.
+   */
+  async setModel(id: string, model: string): Promise<ModelChangeResult> {
+    const reply = await this.request(id, { subtype: 'set_model', model });
+    if (!reply.ok) return reply;
+    const listed = await this.listModels(id);
+    const resolved = listed.ok
+      ? listed.models.find((m) => m.id === model)?.resolved
+      : null;
+    return { ok: true, model: resolved || model, appliesToNextTurn: false };
+  }
+
+  /**
    * Stops the current turn immediately over the control channel, rather
    * than waiting for a hook boundary that pure text generation may never
    * reach before the turn ends on its own.
@@ -647,6 +698,26 @@ export class ClaudeChatHost extends EventEmitter {
   ): void {
     this.emit('update', { id, ...update } satisfies ChatStreamEvents['update']);
   }
+}
+
+/**
+ * One catalogue row, in the wire's own field names.
+ *
+ * `value` is what `set_model` takes and `resolvedModel` is what a turn will
+ * report, so both are kept: the first is what we send, the second is what we
+ * will be told back.
+ */
+function claudeModel(row: unknown): AgentModel | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const id = wireText(r.value);
+  if (!id) return null;
+  return {
+    id,
+    label: wireText(r.displayName) ?? id,
+    note: wireText(r.description) ?? null,
+    resolved: wireText(r.resolvedModel) ?? null,
+  };
 }
 
 /**

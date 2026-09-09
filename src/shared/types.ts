@@ -103,7 +103,18 @@ export type AgentCapability =
    * state to resume into, only the agent's own transcript — so every adapter
    * answering `ok` also sets `requires: 'structured-conversation'`.
    */
-  | 'session-resume';
+  | 'session-resume'
+  /**
+   * List the models this session could run, and switch it to one of them
+   * without restarting it.
+   *
+   * Unlike `permission-mode` this is not structured-transport-bound by
+   * nature; it depends on where the agent keeps the control. Claude and
+   * Codex answer over their structured channels and so declare
+   * `requires: 'structured-conversation'`, while Grok's is a command on its
+   * own prompt, which a PTY-backed session has.
+   */
+  | 'model-select';
 
 /**
  * How the agent decides whether a tool call may run.
@@ -125,6 +136,51 @@ export type PermissionMode =
   | 'codex-on-request'
   | 'codex-never'
   | 'bypassPermissions';
+
+/**
+ * One model an agent offers, read from that agent's own catalogue.
+ *
+ * Never a list Sertum keeps: Claude answers `list_models` on the session's
+ * own control channel, Codex answers `model/list` on its app server, and
+ * Grok's `models_cache.json` is what its own CLI fetched for this account. A
+ * hardcoded list would go stale the week a model shipped, and would offer
+ * models an account cannot actually run.
+ */
+export interface AgentModel {
+  /** What the agent is told to switch to. */
+  id: string;
+  /** What to call it in the picker. */
+  label: string;
+  /** The agent's own one-line description of it, when it wrote one. */
+  note: string | null;
+  /**
+   * The concrete model an alias stands for, when the agent names it.
+   *
+   * Claude's `default` and `opus[1m]` both resolve to a specific id, and the
+   * resolved name is the one the session reports back once a turn starts, so
+   * recording that rather than the alias is what stops the chip changing
+   * under the reader a turn later.
+   */
+  resolved: string | null;
+}
+
+export type AgentModelList =
+  | { ok: true; models: AgentModel[] }
+  | { ok: false; reason: string };
+
+/**
+ * What came of asking a session to switch models.
+ *
+ * `appliesToNextTurn` is the one thing a reader could otherwise get wrong: a
+ * turn already running keeps the model it started with, on all three agents,
+ * verified rather than assumed. It is set only when a turn was genuinely in
+ * flight, because on an idle session "from the next turn" is simply what
+ * changing the model means, and saying so would be noise.
+ */
+export type ModelChangeResult =
+  | { ok: true; model: string; appliesToNextTurn: boolean }
+  | { ok: false; reason: string };
+
 
 /** Yes, or no with the reason in user-facing words. */
 export type CapabilityAnswer = { ok: true; requires?: 'structured-conversation'; modes?: readonly PermissionMode[] } | { ok: false; reason: string };
@@ -1008,6 +1064,9 @@ export interface SertumApi {
    * would not change -- never a silent no-op.
    */
   setPermissionMode(id: string, mode: PermissionMode): Promise<PermissionModeResult>;
+  /** The models this session could switch to, from its agent's catalogue. */
+  sessionModels(id: string): Promise<AgentModelList>;
+  setSessionModel(id: string, model: string): Promise<ModelChangeResult>;
   /**
    * Rename a session. The label is Sertum's own, so this works for every
    * agent -- including a plain shell, which has no notion of a session name.

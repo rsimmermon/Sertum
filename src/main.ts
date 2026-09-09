@@ -669,6 +669,12 @@ ipcMain.handle(
   (_e, p: { id: string; mode: PermissionMode }) =>
     daemon.request('session/permission-mode', p),
 );
+ipcMain.handle('session:models', (_e, id: string) =>
+  daemon.request('session/models', id),
+);
+ipcMain.handle('session:model', (_e, p: { id: string; model: string }) =>
+  daemon.request('session/model', p),
+);
 ipcMain.handle('session:rename', (_e, p: { id: string; label: string }) =>
   daemon.request('session/rename', p),
 );

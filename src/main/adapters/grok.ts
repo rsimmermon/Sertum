@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { AgentModel, AgentModelList } from '../../shared/types';
 import type { StatusUpdate } from './claude';
 
 /**
@@ -229,4 +230,76 @@ function safeReaddir(p: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * The models this account can run, read from Grok's own cache.
+ *
+ * `~/.grok/models_cache.json` is what the CLI itself fetched from
+ * `cli-chat-proxy.grok.com/v1/models` for the signed-in account, stamped with
+ * the version and time that fetched it. Reading it is the same class of move
+ * as reading `events.jsonl`: Grok's own record on disk, not pixels. The
+ * alternative would be shelling out to `grok models`, which prints a table
+ * meant for a person and would have to be parsed back out of it.
+ *
+ * Hidden rows and rows the account cannot reach are dropped, so the picker
+ * offers only what a switch would actually be accepted for.
+ */
+export function listGrokModels(): AgentModelList {
+  const file = path.join(os.homedir(), '.grok', 'models_cache.json');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return {
+      ok: false,
+      reason: 'Grok has not cached a model list yet — start a Grok session, or run `grok models` once.',
+    };
+  }
+  const entries = (raw as { models?: Record<string, unknown> })?.models;
+  if (!entries || typeof entries !== 'object') {
+    return { ok: false, reason: 'Grok’s model cache is not in a shape Sertum understands.' };
+  }
+  const models: AgentModel[] = [];
+  for (const [key, value] of Object.entries(entries)) {
+    const info = (value as { info?: Record<string, unknown> })?.info;
+    if (!info || typeof info !== 'object') continue;
+    if (info.hidden === true) continue;
+    const id = typeof info.id === 'string' ? info.id : key;
+    models.push({
+      id,
+      label: typeof info.name === 'string' ? info.name : id,
+      note: typeof info.description === 'string' ? info.description : null,
+      resolved: null,
+    });
+  }
+  return models.length
+    ? { ok: true, models }
+    : { ok: false, reason: 'Grok’s model cache lists no models for this account.' };
+}
+
+/**
+ * The bytes that switch a Grok session's model.
+ *
+ * Grok has no control channel: no `--settings` endpoint, no app server, and
+ * an event log that is strictly read-only. What it does have is `/model
+ * <name> [effort]` on its own prompt — "Switch the active model" — so the
+ * switch goes down the one input channel the session has, which is the same
+ * channel the composer already writes every message to. This is not the
+ * synthesized-keystroke move `turn-interrupt` refuses: nothing here stands in
+ * for a control plane by pretending to be a chord, it is Grok's own published
+ * command sent as the text it is.
+ *
+ * The effort argument is deliberately omitted. Verified against Grok 1.0.13:
+ * `/model grok-4.6` after `/model grok-4.6 low` left the session on low, so a
+ * bare switch preserves the reasoning effort rather than resetting it — which
+ * it would be wrong to change on the reader's behalf when they asked about
+ * the model.
+ *
+ * Two writes, not one, with the carriage return a beat later: the same
+ * sequence and the same reason as a composer message. A single write with a
+ * trailing CR is read as one paste and leaves the text sitting unsent.
+ */
+export function grokModelCommand(model: string): string {
+  return `/model ${model}`;
 }

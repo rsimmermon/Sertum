@@ -11,6 +11,11 @@ import type {
 } from '../shared/types';
 import { ApprovalBar } from './approval-bar';
 import {
+  modelAvailability,
+  modelLabel,
+  openModelPicker,
+} from './model-picker';
+import {
   openPermissionModePicker,
   permissionModeAvailability,
   permissionModeLabel,
@@ -55,6 +60,14 @@ export class ChatPane {
    * mode the agent reported, never a guess.
    */
   private modeButton: HTMLButtonElement;
+  /**
+   * Which model this session runs, beside the mode button.
+   *
+   * The two settings that decide how a turn goes -- what it runs on and how
+   * much it asks -- sit together at the point the turn is composed, which is
+   * also where both agents keep their own equivalents.
+   */
+  private modelButton: HTMLButtonElement;
   private waiting: HTMLDivElement;
   private waitingLabel: HTMLSpanElement;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -181,6 +194,21 @@ export class ChatPane {
       e.stopPropagation();
     };
 
+    this.modelButton = document.createElement('button');
+    this.modelButton.type = 'button';
+    this.modelButton.className = 'chat-mode chat-model';
+    this.modelButton.onclick = (e) => {
+      const rect = this.modelButton.getBoundingClientRect();
+      void openModelPicker(
+        rect.left,
+        rect.bottom + 4,
+        this.session,
+        this.capabilities,
+        (model) => void this.setModel(model),
+      );
+      e.stopPropagation();
+    };
+
     const box = document.createElement('div');
     box.className = 'chat-input-box';
     box.append(this.input, this.action);
@@ -191,7 +219,7 @@ export class ChatPane {
 
     const meta = document.createElement('div');
     meta.className = 'chat-composer-meta';
-    meta.append(this.modeButton, this.composerNote);
+    meta.append(this.modeButton, this.modelButton, this.composerNote);
     composer.append(row, meta);
 
     this.waiting = document.createElement('div');
@@ -273,6 +301,7 @@ export class ChatPane {
     this.input.disabled = !writable;
     this.paintAction();
     this.paintMode(s);
+    this.paintModel(s);
     if (writable) {
       this.input.placeholder = `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
       this.input.title = '';
@@ -357,6 +386,59 @@ export class ChatPane {
     this.modeButton.title = title;
     this.modeButton.setAttribute('aria-label', title);
     this.modeButton.classList.toggle('is-unset', !s.permissionMode);
+  }
+
+  /**
+   * The model button says what the session reports it runs, and is present
+   * even where it cannot act -- disabled, carrying the reason -- for the same
+   * reason the mode button is: hiding it would hide the reason.
+   */
+  private paintModel(s: SessionSnapshot): void {
+    const available = modelAvailability(s, this.capabilities);
+    const label = modelLabel(s.model);
+    this.modelButton.textContent = label;
+    this.modelButton.disabled = !available.ok;
+    const title = !available.ok
+      ? available.reason
+      : s.model
+        ? `Model: ${label} — click to change`
+        : 'The agent has not named its model yet — click to set one';
+    this.modelButton.title = title;
+    this.modelButton.setAttribute('aria-label', title);
+    this.modelButton.classList.toggle('is-unset', !s.model);
+  }
+
+  /**
+   * Ask the session to switch models, and say plainly when it will not.
+   *
+   * A turn already running keeps the model it started with on every agent
+   * here, so that is said rather than left to be noticed a reply later. The
+   * chip itself repaints from the snapshot the daemon pushes back, never from
+   * this request.
+   */
+  private async setModel(model: string): Promise<void> {
+    const result = await api.setSessionModel(this.session.id, model);
+    if (!result.ok) {
+      this.reportModelRefusal(result.reason);
+      return;
+    }
+    if (result.appliesToNextTurn) {
+      this.reportModelQueued(result.model);
+      return;
+    }
+    this.composerNote.hidden = true;
+  }
+
+  /** A refused model change, said under the composer where the button is. */
+  reportModelRefusal(reason: string): void {
+    this.composerNote.textContent = `Could not change the model — ${reason}`;
+    this.composerNote.hidden = false;
+  }
+
+  /** Switched mid-turn: accepted, but the turn in flight keeps its model. */
+  reportModelQueued(model: string): void {
+    this.composerNote.textContent = `Switched to ${model}. The turn already running finishes on the previous model.`;
+    this.composerNote.hidden = false;
   }
 
   /** Ask the agent to change mode, and say plainly when it will not. */

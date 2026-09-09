@@ -40,6 +40,18 @@ export function closeSessionMenu(): void {
 }
 
 /**
+ * Whether a menu this caller opened is still the one on screen.
+ *
+ * A menu whose contents have to be fetched opens once saying so and again
+ * with the answer, and between the two the reader may have clicked away or
+ * opened something else. Re-rendering then would put back a menu they
+ * dismissed, so the second render asks this first.
+ */
+export function isSessionMenuOpen(menu: HTMLElement | null): boolean {
+  return menu !== null && openMenu === menu;
+}
+
+/**
  * Opens the menu at the pointer, keeping it inside the window.
  *
  * `title` is the highlighted header the wireframe puts at the top, which names
@@ -51,7 +63,7 @@ export function openSessionMenu(
   y: number,
   title: string,
   entries: MenuEntry[],
-): void {
+): HTMLElement {
   closeSessionMenu();
 
   const menu = document.createElement('div');
@@ -128,6 +140,7 @@ export function openSessionMenu(
 
   openMenu = menu;
   menu.querySelector<HTMLButtonElement>('.ctx-item:not(:disabled)')?.focus();
+  const opened = menu;
 
   menu.onkeydown = (e) => {
     if (e.key === 'Escape') {
@@ -161,4 +174,6 @@ export function openSessionMenu(
   }
   document.addEventListener('mousedown', dismiss, true);
   window.addEventListener('blur', onBlur);
+
+  return opened;
 }

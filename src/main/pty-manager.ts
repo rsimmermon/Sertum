@@ -478,8 +478,19 @@ export class PtyManager extends EventEmitter {
     return true;
   }
 
-  write(id: string, data: string): void {
-    this.sessions.get(id)?.proc?.write(data);
+  /**
+   * Bytes to a session's PTY, answering whether one was actually there.
+   *
+   * The boolean is not decoration: a caller that composes several writes --
+   * `GrokAdapter.setModel` sends a line and its Enter separately -- must be
+   * able to tell a delivered command from one whose session ended between
+   * the two, rather than reporting a switch that never happened.
+   */
+  write(id: string, data: string): boolean {
+    const proc = this.sessions.get(id)?.proc;
+    if (!proc) return false;
+    proc.write(data);
+    return true;
   }
 
   resize(id: string, { cols, rows }: PtySize): void {

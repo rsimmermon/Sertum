@@ -48,7 +48,11 @@ import {
   findTranscriptForSession,
   listResumableClaudeSessions,
 } from '../main/adapters/transcript';
-import { createAgentAdapters } from '../main/adapters/agent-adapter';
+import {
+  createAgentAdapters,
+  type AgentAdapter,
+  type AgentSessionRef,
+} from '../main/adapters/agent-adapter';
 import { approvalCardFor } from '../main/adapters/interactive-tools';
 import {
   addRule,
@@ -61,10 +65,12 @@ import {
 import {
   DEFAULT_SETTINGS,
   type AgentKind,
+  type AgentModelList,
   type ApprovalAnswer,
   type BinaryDetection,
   type DiscoveredSession,
   type ManagedAgent,
+  type ModelChangeResult,
   type PendingApproval,
   type PermissionMode,
   type PermissionModeResult,
@@ -226,7 +232,16 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   // its interrupt needs to ask this host whether a session has a live
   // control channel before falling back to the hook queue.
   const claudeChat = new ClaudeChatHost();
-  const agentAdapters = createAgentAdapters({ codex, claudeControl: hooks, claudeChat });
+  const agentAdapters = createAgentAdapters({
+    codex,
+    claudeControl: hooks,
+    claudeChat,
+    // Both are read at call time rather than passed as values: `codexChat`
+    // and `ptys` are both built below this line, and an adapter method only
+    // ever runs from a request handler, long after either exists.
+    codexChat: () => codexChat,
+    ptyInput: { write: (id, data) => ptys.write(id, data) },
+  });
 
   /** Codex sessions awaiting their thread, oldest first. */
   const awaitingThread: Array<{ id: string; cwd: string }> = [];
@@ -282,6 +297,12 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   // the snapshot only ever reports the mode actually in effect.
   codexChat.on('mode-applied', ({ id, mode }: { id: string; mode: PermissionMode }) =>
     ptys.applyMeta(id, { permissionMode: mode }),
+  );
+  // Codex rerouted a turn to a different model of its own accord. Its own
+  // account of what is running outranks what was asked for, exactly as
+  // mode-applied does above.
+  codexChat.on('model-applied', ({ id, model }: { id: string; model: string }) =>
+    ptys.applyMeta(id, { model }),
   );
   codexChat.on('approval-gone', (id: string) => emit('approval:gone', id));
   codexChat.on('approval', (request: PendingApproval) => {
@@ -832,12 +853,38 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     return { ...snapshot, model: model ?? snapshot.model };
   }
 
+  /**
+   * The session and adapter a model control may act through, or the reason
+   * it may not.
+   *
+   * Both handlers below need the identical five-line preamble, and a `reason`
+   * shaped exactly like the refusal half of both their result types is what
+   * lets each return it untouched -- so a declined capability reaches the
+   * picker as its own sentence rather than as a second, differently worded
+   * one written here.
+   */
+  function modelSwitchable(
+    id: string,
+  ): { adapter: AgentAdapter; ref: AgentSessionRef } | { ok: false; reason: string } {
+    const session = ptys.get(id);
+    if (!session) return { ok: false, reason: 'That session is gone.' };
+    const adapter = agentAdapters.get(session.agent);
+    if (!adapter) return { ok: false, reason: 'That agent is unknown.' };
+    const answer = sessionCapability(session, adapter.capabilities, 'model-select');
+    if (!answer.ok) return answer;
+    return { adapter, ref: sessionRef(id, session) };
+  }
+
   function sessionRef(id: string, s: SessionSnapshot) {
     return {
       id,
       externalId: s.externalId,
       activeTurnId: activeCodexTurns.get(id) ?? null,
       cwd: s.cwd,
+      // Plane 2's own word on whether a turn is running, which is the only
+      // thing that makes a model switch worth qualifying. Never inferred
+      // from whether output is moving.
+      working: s.status === 'working',
     };
   }
 
@@ -1082,6 +1129,54 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       const result = await structuredHostFor(p.id).setPermissionMode(p.id, p.mode);
       // Queued Codex changes are not effective until mode-applied arrives.
       if (result.ok && !result.queued) ptys.applyMeta(p.id, { permissionMode: result.mode });
+      return result;
+    },
+
+    /**
+     * The models this session could switch to, from the agent's own
+     * catalogue.
+     *
+     * Asked per session rather than per agent because that is where the
+     * answer actually lives: Claude's catalogue is the account's, read off
+     * the session's own control channel, and a session that has exited or
+     * that Sertum does not own has no channel to read it from. The capability
+     * answer is checked here for the same reason every other control does --
+     * so a decline arrives as its reason rather than as an empty list.
+     */
+    'session/models': async (id: string): Promise<AgentModelList> => {
+      const ready = modelSwitchable(id);
+      if ('reason' in ready) return ready;
+      return ready.adapter.listModels(ready.ref);
+    },
+
+    /**
+     * Switch this session to one of them.
+     *
+     * The model recorded is the one the adapter reports back -- Claude
+     * resolves an alias to a concrete id before answering, so what lands in
+     * the snapshot is the same name the next turn will report and the chip
+     * does not change again underneath the reader.
+     *
+     * It is recorded even when a turn is running, because
+     * `SessionSnapshot.model` has always meant "the model this session runs"
+     * -- it is seeded from the agent's configuration before any turn has
+     * happened -- and from here on that is the new one. The turn already in
+     * flight keeps the old model, which is what `appliesToNextTurn` carries
+     * up to the composer to say.
+     */
+    'session/model': async (p: { id: string; model: string }): Promise<ModelChangeResult> => {
+      const ready = modelSwitchable(p.id);
+      if ('reason' in ready) return ready;
+      // Never a name the renderer invented: it has to be one this session's
+      // own agent just listed, so a stale picker cannot ask for a model the
+      // account no longer has.
+      const listed = await ready.adapter.listModels(ready.ref);
+      if (!listed.ok) return listed;
+      if (!listed.models.some((m) => m.id === p.model)) {
+        return { ok: false, reason: 'That model is not one this session offers.' };
+      }
+      const result = await ready.adapter.setModel(ready.ref, p.model);
+      if (result.ok) ptys.applyMeta(p.id, { model: result.model });
       return result;
     },
 
