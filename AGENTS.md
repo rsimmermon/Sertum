@@ -2,9 +2,27 @@
 
 This is the canonical technical reference for Sertum and the repository-level
 instruction file for AI coding agents. Keep architecture, invariants, status,
-platform notes, and implementation guidance here rather than duplicating them
-in `README.md` or tool-specific instruction files. `README.md` is the
-user-facing getting-started guide; `CLAUDE.md` imports this file.
+platform notes, and implementation guidance in this file and the `docs/`
+files it links, rather than duplicating them in `README.md` or tool-specific
+instruction files. `README.md` is the user-facing getting-started guide;
+`CLAUDE.md` imports this file.
+
+**The rule lives here; the evidence lives in `docs/`.** Every section below
+states the invariants that govern a change, and links to the file carrying
+the contract behind them — captured payloads, version numbers, timing tables,
+and the mechanisms that were tried and verified wrong. Those files are *not*
+imported into an agent's context: read the one covering the area you are
+about to change, before you change it.
+
+| File | Covers |
+|---|---|
+| [docs/conversation.md](docs/conversation.md) | The conversation view, markdown classification, images in messages |
+| [docs/sessions.md](docs/sessions.md) | Stream sessions, owned Codex threads, resume, Claude `--bg` hosting |
+| [docs/approvals.md](docs/approvals.md) | Permission rules, the B5 bar, question and plan cards, permission modes |
+| [docs/models.md](docs/models.md) | Per-agent model catalogues and switching mid-session |
+| [docs/terminal.md](docs/terminal.md) | Key handling, clipboard, WebGL context loss, helper-process death |
+| [docs/windows.md](docs/windows.md) | Packaging, binary resolution, icons, installer, platform no-ops |
+| [docs/git.md](docs/git.md) | Commit from the review, pull requests through `gh` |
 
 When changing the project:
 
@@ -16,8 +34,10 @@ When changing the project:
 - Test lifecycle-sensitive changes against real PTY and adapter events where
   practical; stale events must not revive exited sessions.
 - Update this file when an architectural decision, verified capability, or
-  known constraint changes. Update `README.md` only when user setup or the
-  first-run experience changes.
+  known constraint changes, and the matching `docs/` file when the evidence
+  behind it does — a new verified payload or refuted mechanism belongs there,
+  not here. Update `README.md` only when user setup or the first-run
+  experience changes.
 
 ## Product summary
 
@@ -47,131 +67,88 @@ its pixels stopped moving.
 
 ## Status
 
-What's built and verified so far:
+What's built and verified so far. Each entry that has a section of its own
+below, or a file of its own in `docs/`, is described there rather than here:
 
 - [x] Electron 44 + Vite + TypeScript, strict mode clean
-- [x] `node-pty` PTY transport; spawn / write / read / resize / kill
-- [x] The PTY transport handles real agent TUIs (Claude Code and Codex were
-      verified on macOS and Windows; Grok was verified end to end on Windows),
-      although supported agents now present their transcript-backed chat view
-      rather than the terminal surface
+- [x] `node-pty` PTY transport; spawn / write / read / resize / kill, driving
+      real agent TUIs (Claude Code and Codex verified on macOS and Windows,
+      Grok end to end on Windows) — though supported agents now present their
+      transcript-backed chat view rather than the terminal surface
 - [x] Terminal keystrokes and chat-composer submissions reach PTY-backed
       sessions
 - [x] Tab strip, sidebar grouped by status, pane header, status bar
-- [x] New Session dialog (wireframe C1) with a **native folder picker**, live
-      git validation, recent folders, and auto-derived tab labels
-- [x] **Plane 2 for Claude Code** — loopback hook endpoint, per-session binding,
-      status and activity driven by real agent events
-- [x] **Plane 2 for Codex** — a private app-server instance owned by `sertumd`,
-      driven over JSON-RPC (`thread/status/changed`, mapped by
-      `mapCodexStatus`); the TUI still renders for real while status arrives
-      out-of-band
-- [x] **Plane 2 for Grok** — the session is named with `--session-id` at spawn,
-      then its own `events.jsonl` is tailed and mapped by `mapGrokEvent`;
-      verified end to end against a real turn
+- [x] New Session dialog (C1) with a **native folder picker**, live git
+      validation, recent folders, and auto-derived tab labels
+- [x] **Plane 2 for Claude Code** — loopback hook endpoint, per-session
+      binding, status and activity driven by real agent events
+- [x] **Plane 2 for Codex** — a private app-server instance owned by
+      `sertumd`, driven over JSON-RPC (`thread/status/changed`, mapped by
+      `mapCodexStatus`)
+- [x] **Plane 2 for Grok** — named with `--session-id` at spawn, then its own
+      `events.jsonl` tailed and mapped by `mapGrokEvent`
 - [x] **Adopting sessions started elsewhere** — discovery, transcript
       summaries, and raising the owning OS window
-- [x] **Worktree management** (wireframe C9) — inventory of what exists on
-      disk and what it costs, creation handed off to C1's isolation preset,
-      safe removal
+- [x] **Worktree management** (C9) — inventory of what exists on disk and what
+      it costs, creation handed off to C1's isolation preset, safe removal
 - [x] **Agent binary resolution you can see and override** — Settings >
-      Agents shows each agent's resolved path, a Detect button re-runs
-      discovery, Browse... sets a manual override; the status bar calls out a
-      binary that can't be found at all
-- [x] **Claude Remote Control publish** — an opt-in control in C1 starts a
-      Claude session with `--remote-control <label>` so it can be steered from
-      claude.ai or the Claude app; published panes carry a REMOTE chip
-- [x] **Structured turn steer and interrupt** — Claude through command-hook
-      JSON responses, Codex through app-server `turn/steer` and
-      `turn/interrupt`; Grok and shell explicitly decline
-- [x] **Claude tool gating** — Pause tool use persistently denies
-      `PreToolUse` through structured hook responses until resumed; the pane
-      carries a TOOLS PAUSED chip and no terminal bytes are synthesized
-- [x] **Diff review, commit and pull request** (wireframes C11, C15, C16) —
-      changed-file inventory, per-file unified diff, types-to-confirm discard,
-      a commit sheet that commits the reviewed paths and optionally pushes,
-      and a pull-request sheet driven by the GitHub CLI
-- [x] **Settings E1–E7** — one window with a nav down the left. Terminal (E3),
-      Worktrees' base branch and bootstrap command (E4), and Appearance's
-      theme, accent, compact rows, tabs, badges and type sizes (E6) are wired
-      end to end; E2 keeps the agent-path resolver. Controls whose subsystem
-      does not exist — pane-occupancy restoration, launch at login, repository
-      cataloguing and diagnostic/session storage — render disabled carrying
-      the reason
-- [x] **Remappable shortcuts** (wireframe E6) — a command registry behind the
-      menu, click-to-record chords, and a collision refused with the command
-      that already holds it
-- [x] **Permission rules and in-app approval** (wireframes E2, B5) — stored
-      allow/deny/ask rules answered at Claude's `PreToolUse`, and an approval
-      bar that holds the call open for the ones Claude actually asks about:
-      `PermissionRequest` for a PTY-backed session, a `can_use_tool` control
-      request for a conversation session, which without it could not ask at
-      all. The bar sits directly above the composer, and a held call survives
-      the window being reloaded or closed to the tray. A call whose card *is*
-      the question — `AskUserQuestion`, `ExitPlanMode` — is drawn as that card
-      and answered on it
-- [x] **Permission mode per session** — plan, auto, accept edits and the rest
-      set from a chip beside the composer or the sidebar row menu, over
-      Claude's `set_permission_mode` control request; the mode shown is the
-      one the agent reported, and a mode it will not take says why
-- [x] **System notifications** (wireframes C20, E5) — fired from adapter
-      events on a status transition, only when the window is unfocused, with
-      per-session mute and snooze
-- [x] **Split views** (wireframes G1–G8) — Single, Columns, Rows and Grid,
-      each pane independently sized; PTY-backed panes propagate their own
-      geometry, gutters clamp at a readable surface, focus moves spatially,
-      and a session dropped on a pane moves rather than duplicates. See
-      "Pane layouts" below.
-- [x] **Conversation view** — every agent session is shown as a conversation read
-      from the agent's own transcript, with a composer that writes to the
-      PTY where required. Works for monitored sessions too, read-only. Declared
-      as the `conversation-view` capability; a shell declines and remains a
-      terminal. See "The
-      conversation view" below.
-- [x] **Conversation sessions** — stage 2: the preferred transport has no terminal
-      at all, carried over Claude's stream-json protocol by a headless
-      process. Same sidebar, same status vocabulary, same permission rules
-      and hooks as a terminal session; the chat view is the whole surface.
-      Declared as `structured-conversation`; Claude and Codex provide owned
-      structured hosts. Grok and shell decline and retain PTYs (visible only
-      for Shell). See "Conversation sessions" below.
+      Agents shows each resolved path, Detect re-runs discovery, Browse... sets
+      a manual override; the status bar calls out a binary it cannot find
+- [x] **Claude Remote Control publish** — an opt-in C1 control starts a session
+      with `--remote-control <label>`; published panes carry a REMOTE chip
+- [x] **Structured turn steer and interrupt** — Claude over its control
+      channel or hook responses, Codex over `turn/steer` and `turn/interrupt`;
+      Grok and shell explicitly decline
+- [x] **Claude tool gating** — Pause tool use persistently denies `PreToolUse`
+      through structured hook responses until resumed; a TOOLS PAUSED chip,
+      and no terminal bytes are synthesized
+- [x] **Diff review, commit and pull request** (C11, C15, C16) — changed-file
+      inventory, per-file unified diff, types-to-confirm discard, a commit
+      sheet that commits the reviewed paths and optionally pushes, and a
+      pull-request sheet driven by the GitHub CLI
+- [x] **Settings E1–E7** — one window with a nav down the left; Terminal (E3),
+      Worktrees (E4) and Appearance (E6) wired end to end, E2 keeping the
+      agent-path resolver, and every control whose subsystem does not exist
+      rendered disabled carrying its reason
+- [x] **Remappable shortcuts** (E6) — a command registry behind the menu,
+      click-to-record chords, and a collision refused by name
+- [x] **Permission rules and in-app approval** (E2, B5) — stored
+      allow/deny/ask rules, and an approval bar that holds open the calls
+      Claude actually asks about, on either transport; a call whose card *is*
+      the question (`AskUserQuestion`, `ExitPlanMode`) is drawn as that card
+- [x] **Permission mode per session** — plan, auto, accept edits and the rest,
+      from a chip beside the composer or the sidebar row menu
+- [x] **System notifications** (C20, E5) — fired from adapter events on a
+      status transition, only when the window is unfocused, with per-session
+      mute and snooze
+- [x] **Split views** (G1–G8) — Single, Columns, Rows and Grid, each pane
+      independently sized
+- [x] **Conversation view** — every agent session shown as a conversation read
+      from its own transcript, monitored sessions included, read-only; a shell
+      declines and remains a terminal
+- [x] **Conversation sessions** — stage 2: the preferred transport has no
+      terminal at all. Claude and Codex provide owned structured hosts; Grok
+      and shell decline and retain PTYs (visible only for Shell)
 - [x] **Resuming a previous session** — a Resume dialog lists past
-      conversations for a chosen folder (Claude's own transcript directory,
-      Codex's `thread/list`) and starts a brand-new process bound to the
-      picked one's id, continuing it rather than beginning blank. Declared as
-      `session-resume`; Grok and shell decline. See "Resuming a previous
-      session" below.
-- [x] **Claude-native background hosting** — an optional, agent-specific path
-      predating `sertumd`: an Agents setting starts Claude under its own daemon
-      (`--bg`) and Sertum attaches as a client. Declared as `background-host`;
-      Codex, Grok and shell decline. This is no longer the general persistence
-      mechanism; `sertumd` provides that for every agent. See
-      "Claude-native background hosting" below.
+      conversations for a chosen folder and starts a new process bound to the
+      picked one's id; Grok and shell decline
+- [x] **Claude-native background hosting** — an optional agent-specific path
+      predating `sertumd`, no longer the general persistence mechanism
 - [x] **sertumd, the session broker** — stage 3 proper: the whole session
-      fabric (PTYs, hook server, Codex app-server, Grok logs, chat host,
-      adapters, rules) lives in a daemon; the Electron window is a disposable
-      client over a named pipe / unix socket while the Electron process stays
-      alive for the tray. Every owned Claude, Codex, Grok and shell session
-      survives the window closing; a recreated window lists them again and
-      restores buffered PTY output where applicable. Verified end to end on
-      Windows, including a force-killed Electron client. See "The daemon:
-      sertumd" below.
-- [x] **System tray companion** — starting Sertum creates a tray/menu-bar icon
-      on Windows, Linux and macOS. Closing the window hides the UI while the
-      tray continues to show truth-plane session state and deliver
-      notifications; sessions can be opened or ended there. “Quit Sertum
-      completely…” stops sertumd and every session it owns.
-- [x] **Markdown in the conversation** — an agent's markup is rendered as
-      markup, unless the turn asked for the markup itself, in which case the
-      characters are the answer and are shown in the mono face. A fenced
-      block is always code, ```markdown included. Every classified message
-      carries a toggle, so the guess is never the last word. GFM footnotes
-      render; a local image inside the session's folder is shown for real
-      while a remote one stays a link. Nothing is assembled as an HTML
-      string. See “Markdown, and when the markup is the answer” below.
-- [x] **A waiting bubble and a stop sign** — bouncing dots and the
-      session's activity line while plane 2 says the agent is working, and a
-      red stop square at the right edge of the composer.
+      fabric lives in a daemon and the window is a disposable client, so every
+      owned session survives it closing. Verified end to end on Windows,
+      including a force-killed Electron client
+- [x] **System tray companion** — a tray/menu-bar icon on all three platforms,
+      showing truth-plane state and delivering notifications while the window
+      is closed
+- [x] **Markdown in the conversation** — an agent's markup rendered as markup
+      unless the turn asked for the markup itself, with a toggle on every
+      classified message, GFM footnotes, and local images shown for real
+- [x] **Switching models mid-session** — a chip beside the permission-mode
+      chip listing the models the *agent* offers this account
+- [x] **A waiting bubble and a stop sign** — bouncing dots and the session's
+      activity line while plane 2 says the agent is working, and a red stop
+      square at the right edge of the composer
 
 ## How status actually works
 
@@ -433,590 +410,73 @@ turns; Grok's event log is read-only and shell has no agent policy to gate.
 
 ## The conversation view
 
-The truth plane extends from status to content without a new channel. Every
-Claude, Codex and Grok pane renders the transcript
-as a conversation — user and assistant messages, collapsed thinking, and tool
-calls paired with their results. When the adapter still needs a PTY, it keeps
-running underneath and collecting bytes, but there is no terminal/chat choice
-in the product UI. Shell declines the conversation capability and remains a
-normal terminal.
+Every Claude, Codex and Grok pane renders the agent's own transcript as a
+conversation — user and assistant messages, collapsed thinking, and tool
+calls paired with their results. A shell declines `conversation-view` and
+remains a terminal. What it reads is each agent's transcript on disk, the
+same class of source as a hook payload, so this does not touch the
+two-planes rule.
 
-What it reads is each agent's own transcript on disk, through
-`main/adapters/conversation.ts` — the same class of source as a hook payload,
-so this does not touch the two-planes rule. Record shapes were verified
-against real files, not documentation: Claude's `message.content` blocks
-(`text`/`thinking`/`tool_use`/`tool_result`, with `isMeta` and `isSidechain`
-marking what is not conversation), Codex's `response_item` payloads
-(`function_call`/`custom_tool_call` and their `*_output` twins paired by
-`call_id`), and Grok's role-as-type records with `tool_calls` and
-`tool_result` paired by `tool_call_id`. Injected context is skipped by its
-tag opener, never by a blanket "starts with `<`", so pasted XML still shows.
-Explicit TeX spans (`\[...\]` and `\(...\)`) are typeset by KaTeX with trust
-disabled, while all surrounding transcript content remains text nodes rather
-than injectable HTML. Markdown is rendered — see below for how a message that
-should stay source is told apart.
+Four rules constrain any change here:
 
-The renderer polls `conversation:read` once a second while the view is on
-screen, for the reasons Grok's event log established: the file may not exist
-yet, watch semantics differ by platform, and one update per batch is the
-point. Transcript resolution reuses `transcriptFor`, so a Claude session is
-only ever matched exactly and a shell never inherits another agent's
-transcript.
+- **Nothing is ever assembled as an HTML string.** Every node is created and
+  every leaf filled through `textContent` or a text node, so a transcript
+  can no more inject markup than before `renderer/message-text.ts` existed.
+- **An agent's markdown is rendered as markdown**, unless the turn asked for
+  the markup itself, in which case the characters are the answer and are set
+  in the mono face. A fenced block is always code, and every classified
+  message carries a toggle, so the guess is never the last word.
+- **An address out of a transcript is never fetched by the renderer.** A
+  local image inside the session's own folder is read in the main process
+  and returned as a `data:` URL; a remote one, or one outside that folder,
+  keeps the labelled link it already had.
+- **The composer writes the body and then a CR 150ms later**, never as one
+  burst — Claude's and Codex's TUIs both silently fail to submit otherwise.
 
-Conversation reads keep complete transcripts up to a 32MB safety ceiling and
-cache the parsed snapshot by file size and mtime. A fixed 512KB tail was not a
-complete-turn boundary: one image-generation result embeds a multi-megabyte
-data URL in a single JSONL record and pushed the user's prompt, tool call and
-earlier conversation out of view. Structured `data:image/*` fields in tool
-results now become `image` chat items and render as bounded previews; ordinary
-prose is never interpreted as an image URL. Beyond the ceiling, the tail and
-its truncation notice remain the honest bounded fallback.
+The waiting bubble is on because an adapter reported a turn in progress,
+never because output went quiet, and the stop button calls the declared
+`turn-interrupt` capability rather than writing Ctrl+C into a PTY.
 
-Conversation content opts back into native text selection (`user-select:
-text`) beneath the app-wide chrome rule that prevents accidental interface
-selection. The selection tint uses the solid accent with the theme background
-as its text color (the soft accent matches the user bubble and hides selection), so copied text is
-visibly selected in both themes; composer controls remain outside that
-transcript selection surface.
-
-Chromium descendants explicitly opt into text selection too. Transcript polls
-defer replacing conversation nodes while the reader has selected text, then
-catch up once the selection is cleared. Codex's `<recommended_plugins>` user
-record is injected context and is excluded from conversation, like its
-environment preamble; ordinary pasted XML remains visible.
-
-Input still goes to the PTY, and the byte sequence matters. The composer
-sends the body as a bracketed paste and the final CR **separately, a beat
-later**, so it arrives as a real Enter press. Encoding newlines as ESC CR
-with a trailing CR in one burst was tried first and failed silently: Claude's
-TUI read the whole burst as a paste, swallowed the CR into it, and left the
-message sitting unsent in its composer. A single line goes as one plain
-write, verified, which keeps the common case free of paste markers for any
-agent that never enabled bracketed paste.
-
-The delayed Enter boundary applies to single-line PTY messages too. Codex
-0.153.0 visibly accepted a one-write `text + CR` into its composer but did not
-submit it, leaving plane 2 at the startup `turn finished` state and writing no
-transcript. The body is now one write (bracketed only when multiline) and CR
-is always a second write 150ms later.
-
-The composer carries **one button with two jobs**, at the right edge of the
-box you type into — the control that acts on a turn sits where the turn is
-composed. Text in the composer makes it a paper plane that sends; an empty
-composer during a turn makes it a red square that stops. The two are never
-both available, so a second button would always be dead, and the composer's
-own content is the signal: it flips on the first keystroke and back on the
-last backspace.
-
-Stop calls the declared `turn-interrupt` capability and never writes Ctrl+C
-or Escape into the PTY. The square stays on screen when the agent declines
-that capability — disabled, carrying the adapter's reason — because that
-reason is user-facing copy and hiding the button would hide it. Being a sign
-rather than a word, both modes put their reason in `aria-label` as well as
-the tooltip.
-
-A waiting bubble — three bouncing dots and the session's `activity` line —
-sits at the tail of the conversation while plane 2 says the agent is working.
-This is the truth plane at conversation scale, and the same rule applies as
-everywhere else: the dots are on because an adapter reported a turn in
-progress, never because output went quiet. The caption is the same string the
-sidebar reads, so a pane cannot disagree with the dot beside it. A
-`needs-input` session is deliberately *not* shown as waiting — it is not
-working, it is waiting on the reader, which the status dot and B5's bar
-already say. The bubble is one long-lived element re-appended on each repaint
-rather than rebuilt, so the transcript poll does not restart its animation
-once a second.
-
-Before the transcript
-has conversational content, the pane renders a Sertum-owned welcome card from
-the session's real identity, cwd and model metadata. Agent startup protocols
-(Claude's `system/init` included) report readiness and identity but do not send
-the terminal's welcome banner as an assistant message, and the banner is not
-parsed from terminal pixels.
-
-`conversation-view` is a declared capability: Claude, Codex and Grok answer
-ok (Grok's read-only event plane is exactly what a read-only view asks for);
-a shell declines with its reason on the disabled button. Monitored sessions
-get the view too — the transcript is on disk whoever owns the process, which
-is the property that already let discovery summarise them — with the
-composer disabled and saying where input actually lives. This is the part of
-an adopted session that genuinely can live here, so selecting a monitored
-row no longer jumps to its owning window while its conversation is up.
-
-What stage 1 deliberately does not do: no synthetic "pending" messages (a
-sent message is acknowledged under the composer until the agent records it),
-and no structured input channel — that is stage 2, below.
-
-### Markdown, and when the markup is the answer
-
-Stage 1 showed every message as literal characters, on the principle that
-inventing formatting the agent did not send is the same class of mistake as
-inventing a commit message. That principle stands; the conclusion drawn from
-it was wrong. Agents emit `##`, `-` and fenced blocks *deliberately* — that
-markup is theirs, not ours — so printing it as characters is the same
-misrepresentation pointed the other way. Rendering it is reading what the
-agent wrote. The mistake would be adding structure to text that has none, and
-that is what the classifier exists to avoid.
-
-`main/adapters/markdown-format.ts` stamps each assistant message with a
-`MessageFormat` — `text`, `markdown` or `markdown-source` — from two signals,
-both read from the transcript, never from pixels:
-
-- **The message's own syntax.** No constructs means no decision: the message
-  is `text` and takes the original plain path. The inline patterns require a
-  non-space beside each delimiter and a non-word character outside the
-  underscore forms, so `snake_case_names` and `a * b * c` stay prose.
-- **The request the turn answers**, which says whether the markup is the
-  subject rather than the presentation. "Give me the markdown for a table"
-  wants characters; "summarise this in markdown" names a house style and
-  wants a summary. A request to *render* is asked first and settles it, so
-  "render the markdown" is not read as a request for source by the phrase it
-  contains.
-
-The narrower signal costs nothing to trust: **a fenced block is always shown
-as code, ```markdown included.** That fence is the agent's own declaration
-that these characters are the subject, so the common case of an answer *about*
-markdown needs no heuristic at all — only a whole reply that is unfenced
-source falls to the request test.
-
-Neither signal is load-bearing. A guess about intent will sometimes be wrong,
-so every classified message carries a toggle: source mode is set in the mono
-face — the only way a markdown table's columns line up — and a message shown
-as source because the request asked for source says so, or being handed
-characters reads as the app failing. A user's own message is never
-classified; they typed those characters into the composer, and handing them
-back reformatted would hide what was actually sent.
-
-`renderer/message-text.ts` owns both paths, so the rule they share cannot
-drift: **nothing is ever assembled as an HTML string.** Every node is created
-and every leaf filled through `textContent` or a text node, so raw HTML in a
-message is shown as the characters the agent wrote and a transcript can no
-more inject markup than before the file existed. Verified against a message
-carrying `<img src=x onerror=...>` and a `<script>` tag: both come out as
-escaped text with no element created. Two things are deliberately not
-rendered — a bare URL does not become a link, and a remote image is not
-fetched, both being the renderer acting on an address out of a transcript.
-Only http(s) links become anchors, matching what `shell:open-external`
-accepts, so the app never draws an affordance that would silently fail;
-every other address keeps its label and carries its target in a tooltip.
-Newlines inside a paragraph stay line breaks rather than being reflowed,
-because reflowing an agent's deliberate line breaks is exactly the invented
-formatting this view exists to avoid.
-
-Three constructs used to render *wrongly* rather than merely plainly, which
-is the worse failure and the reason they are called out here:
-
-- **A setext underline.** `Sub Title` over `---------` produced a paragraph
-  *and* a horizontal rule: the heading became body text and a rule appeared
-  that the agent never wrote. The underline now closes the paragraph above it
-  as a heading, which is also where it outranks the thematic-break reading of
-  `---`. A `---` after a blank line, with no paragraph above it, is still a
-  rule.
-- **`\[` is display math in TeX and an escaped bracket in markdown**, and
-  agents write both. Nothing in the delimiters says which, so the content
-  decides: real math carries operators, digits or a backslash macro, and a
-  single token with no spaces is a variable. `\[not a link\]` has none of
-  that and goes to the escape rule. The asymmetry is deliberate — typesetting
-  a sentence as an equation is a far worse failure than leaving one that was
-  meant as math — and it applies on the plain path too, so a `text` message
-  cannot be turned into algebra either.
-- **Four-space indented code.** Read as a paragraph, the inline pass then ran
-  over it, so `*ptr` became emphasis and the code was altered on screen. A
-  line that is also a list item is still a list: an agent indenting a whole
-  list is commoner here than one relying on indented code, and misreading a
-  list as code is the worse trade.
-
-**Links and images are scanned with balanced brackets, not matched with a
-regex.** A link's label can itself contain brackets, and the commonest case
-of that is an image wrapped in a link — which is what every badge is. A
-`[^\]]*` label stops at the image's own `]`, so `[![alt](src)](href)`
-produced a link captioned `![alt` pointing at the *image*, with the real
-address left in the text as characters. The scanner counts depth and skips
-escapes, so a label may hold brackets, and the same routine serves images,
-links, and both by reference.
-
-Reference links (`[text][label]` and `[text][]`) resolve against definitions
-lifted out of the flow alongside the footnote ones, and so do reference
-*images* (`![alt][label]`). The shortcut form
-(`[label]` alone) is deliberately not supported — it would swallow ordinary
-bracketed prose. An undefined reference stays literal text, the same answer an
-orphan footnote gets.
-
-**Dollar-delimited TeX** is supported, because agents emit `$...$` far more
-often than `\(...\)`. `$$` is unambiguous and is handled both inline and as
-a block opened by `$$` alone on a line — the inline rule cannot see that
-form, since a paragraph reaches the inline pass one line at a time. A single
-`$` is ambiguous, because money looks the same, so it must hug its content,
-must not be followed by a digit, and must contain a character belonging to
-TeX rather than to a price. That last test is deliberately stricter than
-`looksLikeMath`: a digit alone is enough to call `\(2\)` math, but would
-typeset "$5 and $10" as well.
-
-**Character references are decoded from a table**, not by handing a string to
-an HTML parser, which keeps the promise at the top of `message-text.ts`
-literally true. A reference the table does not know stays as written, and a
-code span keeps every character it was given — decoding happens on prose runs
-only. Decoded angle brackets are still text: `&lt;tag&gt;` shows `<tag>` as
-characters and creates no element.
-
-Known and deliberate: a bare URL is not linked, and the shortcut reference
-form (`[label]` alone) is not resolved — it would swallow ordinary bracketed
-prose.
-
-GFM footnotes are supported. Definitions are lifted out of the block flow
-before parsing — a definition is not a paragraph wherever the agent happened
-to write it — and the *references* fix both the numbering and the order,
-because that is the order a reader meets them in. A reference whose
-definition is missing stays literal text: inventing a marker for a note that
-does not exist is the same mistake as inventing formatting. A definition
-nothing referenced is still listed rather than dropped, since it is something
-the agent wrote. Marks scroll within the pane rather than navigating, so they
-are buttons wired to their elements — an `href="#id"` would need ids unique
-across every message on screen and would move the renderer's own URL — and a
-brief highlight is what says "here" when the target was already in view and
-nothing scrolled.
-
-### A local image is shown; a remote one stays a link
-
-A markdown image carries an address written by the agent, and the two useful
-answers are different for different addresses:
-
-- **`data:`** — already trusted from structured tool results, shown directly.
-- **A readable local file** — read by `main/local-image.ts` and returned as a
-  `data:` URL, so what reaches the renderer is the same trusted shape.
-- **Anything else** — remote, missing, outside the session's folder, or not
-  actually an image — keeps the labelled link it already had.
-
-The read happens in the main process because the renderer is a web page: it
-cannot open a `file://` path, and letting it fetch an arbitrary address out of
-a transcript is exactly what the conversation view avoids. The link is
-rendered synchronously and *upgraded* to a picture only if the read succeeds,
-so every way it can fail leaves the link that was already there — the failure
-mode and the fallback are the same thing.
-
-Three bounds, each failing to `null`:
-
-- **Scope is the session's own folder.** The path resolves against the cwd
-  from `SessionSnapshot` — never a value the message supplied — and must
-  still be inside it, so a transcript cannot widen its own reach. Without
-  that check, message text could make the app read any file on disk and hand
-  it to the renderer. Worktrees beneath a repository are covered by the same
-  prefix test the permission rules use. **This is narrower than "anywhere on
-  the machine"**; a temp-dir screenshot outside the folder stays a link.
-- **It must actually be an image**, decided by magic bytes rather than the
-  extension, so a `.png` that is really something else is not sent. SVG is
-  deliberately never inlined: it can carry script, and this is a page.
-- **It must be small enough to inline** (8MB), since a data URL is base64 in
-  the renderer's memory.
-
-Resolved reads are cached, so the once-a-second repaint does not re-read a
-file per image. A file that changes on disk keeps the bytes the message was
-first shown with, which is the right answer for a transcript: it records what
-the agent produced, not what that path holds now.
+Verified record shapes, the classifier's two signals, the markdown parser's
+constructs, image bounds, selection and polling:
+[docs/conversation.md](docs/conversation.md).
 
 ## Conversation sessions
 
-An agent can use a structured stream rather than a PTY.
-`SessionSpec.transport` is `'pty' | 'stream'`, and
-a stream session has no terminal — not hidden, nonexistent. C1 no longer asks
-the user to choose a transport: Claude declares `structured-conversation` and
-therefore starts as a stream unless Remote Control or background hosting needs
-its interactive process; the surface remains chat either way. Codex also declares this capability and
-starts an owned app-server thread, without a TUI. Grok declines (no input
-channel) and retains a PTY beneath the same chat UI. A shell declines
-and is the one session kind whose PTY is shown.
+`SessionSpec.transport` is `'pty' | 'stream'`, and a stream session has no
+terminal — not hidden, nonexistent. Claude and Codex declare
+`structured-conversation` and start as owned structured hosts: Claude over
+`--print --input-format stream-json --output-format stream-json`, hosted by
+`main/adapters/claude-chat.ts`; Codex over its private app server's
+`thread/start`. Grok declines (no input channel) and shell declines, both
+retaining PTYs, visible only for Shell. C1 no longer asks the user to choose
+a transport.
 
-The Claude implementation, all verified against Claude Code 2.1.252:
-
-- **The process** is `claude --print --input-format stream-json
-  --output-format stream-json --include-partial-messages --verbose`, hosted
-  by `main/adapters/claude-chat.ts` over plain pipes. This is a persistent
-  bidirectional protocol, not one-shot: one process answered consecutive
-  turns on one session id. Input is one JSON user message per line on stdin.
-  The process and its stdin belong to `sertumd`, so closing or crashing the
-  Electron GUI does not end the stream session.
-- **The stream is plane 2 at full width.** `system/init` names the session
-  and model, `stream_event` partials drive activity (a tool's name,
-  "responding", "thinking"), `result` closes the turn. Content is
-  deliberately not routed from the stream into the UI: a headless session
-  writes the same transcript an interactive one does, so the stage 1
-  conversation view reads stream sessions with zero new code.
-- **Hooks ride along.** Command hooks fire in `--print` mode —
-  UserPromptSubmit, PreToolUse, PostToolUse and Stop all verified arriving
-  — so the same `--settings` blob is attached and permission rules, the
-  tool gate, steer and interrupt all work unchanged. Verified end to end: a
-  deny rule answered a stream session's `PreToolUse` and the tool result
-  carried the rule's own reason.
-- **Permission questions ride the stream, not the hook.** See "A
-  conversation session asks on its own channel" below: `PermissionRequest`
-  does fire in print mode, but only once an approval surface exists, and by
-  then the same call is already held on the control channel — so the hook is
-  deliberately a no-op for these sessions.
-- **Identity is chosen at spawn.** `--session-id` mints the agent-side id
-  up front — the same move Grok's spawn makes — so the transcript is
-  matched exactly from the first poll, before any hook has named it.
+- **Identity is chosen at spawn** — `--session-id`, or the thread id the app
+  server returns — so the transcript is matched exactly from the first poll,
+  before any hook has named the session.
+- **Content is not routed from the stream into the UI.** A headless session
+  writes the same transcript an interactive one does, so the conversation
+  view reads it with no new code.
 - **The registry stays one registry.** `PtyManager.registerStream` records
-  the snapshot with `StreamControls` (kill/terminate) supplied by the host,
-  so tab close, daemon shutdown, `ownedPids` discovery exclusion, rename, mute and
-  the sidebar treat both transports identically. The manager never learns
-  the chat protocol; the host never learns bookkeeping.
+  the snapshot with host-supplied controls, so tab close, daemon shutdown,
+  discovery exclusion, rename and mute treat both transports identically.
+- **Hooks ride along**, so permission rules, the tool gate, steer and
+  interrupt work unchanged; permission questions ride the control channel
+  instead (see [docs/approvals.md](docs/approvals.md)).
+- **`session-resume` starts a new process bound to a past conversation's own
+  id** rather than beginning blank. Claude needs `RESUME_SETTLE_MS` before
+  its first turn and Codex does not; Grok and shell decline.
+- **Claude-native background hosting** (`--bg`) remains an optional
+  agent-specific mode, declared as `background-host`. General persistence
+  belongs to `sertumd`, not to it.
 
-What a stream session gives up is what the TUI was carrying: slash commands,
-plan mode, Claude's own diff and todo rendering. This is now the deliberate
-Claude default; adapters without a verified structured transport retain their
-PTY instead of being forced through a fictional chat protocol.
+What a stream session gives up is what the TUI carried: slash commands, plan
+mode, Claude's own diff and todo rendering.
 
-### Owned Codex conversations
-
-`main/adapters/codex-chat.ts` owns `thread/start` and `turn/start` on the
-private app-server. The response supplies the exact thread id, model and
-transcript path; no cwd matching or terminal parsing is involved. The registry
-records a structured session with per-thread termination controls. Closing one
-thread interrupts/unsubscribes it, never kills the shared server. A dropped
-connection ends the local owned handles and clears their held requests; they
-are not silently revived after reconnect. Existing transcripts remain readable.
-The old PTY route remains available to explicit PTY callers; its startup queue
-accepts only CLI-source threads, so a structured thread cannot consume it.
-
-App-server requests carry reply closures bound to their original connection.
-Only the host owning that exact thread answers them. Command execution and
-file changes use B5; file changes join the preceding item by `itemId` to show
-the proposed paths and diff. `availableDecisions` limits approval scopes. A
-persistent command rule sends the server-proposed amendment verbatim, after
-showing it; it does not create a Sertum rule. Additional permission requests
-show their exact grant and denial returns an empty grant. Stored Sertum rules
-remain declined for Codex; its native session cache and command rules are the
-supported policy surfaces.
-
-`item/tool/requestUserInput` uses the question card and returns answers keyed
-by question id, not the display header. Secret input uses a password control.
-Withdrawal, item completion, turn completion and exit clear pending cards.
-A question marked `isBlocking: false` does not change the session to needs-input.
-Unsupported server requests receive an explicit protocol error instead of
-hanging indefinitely. Codex's plan output remains conversation content: it has
-no Claude `ExitPlanMode` approval contract here. Selecting Codex collaboration
-plan mode is not implemented; the permission picker offers only the three
-verified native approval policies, with the workspace sandbox retained.
-
-`permission-mode` declarations must name their structured-conversation
-dependency and supported modes in the type. `shared/session-capabilities.ts`
-combines that declaration with ownership, transport and exit state, shared by
-the daemon and picker. Codex's policies are distinct from Claude's permission
-modes. Applying a policy change requires an idle turn: `thread/resume` on a
-loaded thread ignores overrides, so the host unsubscribes first, resumes, and
-uses the returned effective policy. Failed sends keep the composer's text.
-
-That idle requirement used to mean an outright refusal -- "Finish or stop
-the current turn before changing its policy" -- however long the turn ran,
-which read as the picker simply not working. `CodexChatHost` now queues the
-request instead: a mode asked for while `busy` is stashed as `pendingMode`
-and applied the instant `turn/completed` lands. A later ask while one is
-already queued simply overwrites it -- only the mode you actually land on
-when the turn ends is meaningful, the same as retyping over an unsent draft.
-`PermissionModeResult` carries a `queued` flag for exactly this reply,
-distinct from both an applied change and a refusal. The daemon must not publish
-that queued mode as effective session metadata; the composer note under
-the mode chip is the only place a queued change is visible until
-`mode-applied` lands and the chip repaints from the snapshot like any other
-mode change. A failure applying the queued mode reaches the session as an
-activity string rather than silently vanishing, the same pattern turn-steer
-and turn-interrupt failures already follow.
-
-Verified on Windows with Codex CLI 0.153.1: a real file approval stayed held,
-denial prevented the write, duplicate replies were refused, a policy change
-was echoed, multiple turns completed, and a native question was answered by id and
-acknowledged by the agent. Unsubscribe ended only the owned thread. `scripts/smoke-codex-chat.ts` retains that live probe;
-`scripts/test-codex-chat.ts` covers question ids, approval scopes, cancellation,
-permission denial, session isolation and late events. Questions are also verified against a live model-driven request. Additional
-permission grants remain schema/fixture tested; a live grant has not been
-verified yet. `scripts/smoke-codex-fabric.ts` verifies the public daemon handlers
-for creation, send, pending approvals, denial, status and exact transcript
-resolution under Electron’s Node runtime.
-
-`CodexChatHost.send` reports `working` optimistically, the moment a turn is
-requested, rather than waiting on the app server's own `turn/started` /
-`thread/status/changed` notifications -- the same pattern `ClaudeChatHost`
-already used. Found via a real GUI click-through of `session-resume`:
-those notifications are a separate async frame that landed up to ~90ms after
-`turn/start`'s own response, verified with raw notification logging, leaving
-a real window where a turn had genuinely begun but the session still read
-`idle`. That window is invisible in the UI, which only ever polls once a
-second, but it is exactly what `scripts/smoke-resume.ts`'s `waitIdle` helper
-raced: it checked status *before* ever sleeping, so it could observe the
-stale `idle`, declare a turn that had just started already finished, and
-let the harness's own `fabric.shutdown()` kill the codex app server
-mid-turn -- which is why a resumed session's second turn was seen answering
-with its *first* turn's stale reply. Fixed on both sides: `send` emits the
-optimistic status (the real notification supersedes it the instant it
-lands, same as the interrupt path's optimistic label), and `waitIdle` now
-sleeps before its first check.
-
-### Resuming a previous session
-
-`session-resume` starts a brand-new process bound to a past conversation's
-own id, so the agent continues exactly where it left off instead of
-beginning blank. It is declared like every other capability -- Claude and
-Codex answer `ok` with `requires: 'structured-conversation'`, since there is
-no PTY state to resume into, only a transcript; Grok and shell decline, the
-former because its CLI has no way to resume a session by id at all.
-
-Both mechanisms were verified live against the installed CLIs rather than
-assumed from `--help` text:
-
-- **Claude**: `claude --resume <id>` in place of `--session-id <id>` on the
-  same `--print --input-format stream-json --output-format stream-json`
-  invocation `createConversationSession` already builds. Verified against
-  Claude Code 2.1.263 end to end: a first turn taught a session a secret
-  value under a fresh `--session-id`; a wholly separate process, given only
-  `--resume <that id>`, answered a follow-up turn with the secret correctly
-  and `system/init` echoed the same session id back. The transcript file
-  grew from 12 lines to 19 across the two processes -- one continuous file,
-  not two -- which is also why the conversation view needs no changes at
-  all to show a resumed session's earlier turns: `transcriptFor` already
-  matches by exact session id.
-- **Codex**: `thread/resume` needs nothing but a `threadId` -- verified
-  against Codex CLI 0.153.4 by starting a thread on one app-server process,
-  killing that process's entire tree (not just the client connection), and
-  resuming the same id from a brand-new server that had never seen it: the
-  resumed thread answered a follow-up turn with full context from before
-  that process existed. `thread/list` with a `cwd` filter finds such threads
-  purely from what is on disk, with no live process or pid involved, which
-  is what makes it usable here where the same call was rejected for live
-  discovery (see "Discovery is agent-agnostic by construction" above) --
-  that rejection was specifically about attributing a *pid* to a `notLoaded`
-  thread, a problem resuming never has because it does not need one.
-  `CodexThread` gained `parentThreadId` so `resumableThread` can exclude
-  AgentControl sub-agent threads the same way `isUserThread` already excludes
-  the throwaway title-generation thread.
-
-Listing past sessions is therefore two genuinely different reads, one per
-agent, both landing on the shared `ResumableSession` shape: Codex's comes
-from its own roster (`CodexChatHost.listResumable`, wrapping `thread/list`);
-Claude has no roster API, so `listResumableClaudeSessions` enumerates
-`~/.claude/projects/<cwd-hash>/*.jsonl` directly -- the same directory
-`findClaudeTranscript` already reads, scoped to one folder for the same
-reason every session-creation surface in this app asks for a folder first.
-A session already live in Sertum is filtered out of the list before it
-reaches the dialog: resuming it a second time would race the copy already
-running for the same id, which is exactly what Codex's own "already has an
-active writer" refusal was verified to say when that race was tried
-deliberately.
-
-The resume dialog (`renderer/resume-dialog.ts`) mirrors C18's adopt dialog's
-list-of-rows shape but reads past conversations instead of live processes,
-and mirrors C1's own convention of asking for a working folder first with
-the same folder field, Browse button and recents. Picking a row performs the
-resume itself and reports a failure inline, the same convention C1 uses for
-a failed spawn, rather than closing and losing the choice.
-
-### A resumed Claude process needs a moment before its first turn
-
-Sending a message the instant a `--resume`d process spawns is not safe, and
-this was found and fixed by driving the real CLI rather than trusting that
-`--resume` behaves like `--session-id` with older history attached. Verified
-against Claude Code 2.1.263: a message written to stdin immediately after
-spawn came back `"No response requested."` — a real reply, not an error, so
-nothing in the transport looked broken — while the identical message held
-back for `RESUME_SETTLE_MS` (2000ms) answered correctly and recalled the
-earlier turn.
-
-Two mechanisms that look like the obvious fix were tried and verified wrong
-before this one, and both are worth naming so they are not tried again:
-
-- **Gating the first send on `system/init`, unconditionally.** This
-  deadlocked a *fresh* session outright: driving a real spawn with the send
-  withheld showed the process staying completely silent, because `system/init`
-  is emitted as part of *beginning* a turn ("Init opens every turn") and a
-  turn cannot begin without input already sent. Withholding input to wait for
-  a signal that only input produces is a real deadlock, not a race that
-  usually resolves.
-- **Gating the first send on `system/init`, scoped to only a resumed
-  process.** This does not deadlock, but it does not work either: driving a
-  real `--resume` spawn with the send withheld showed the same silence for
-  60+ seconds, proving `init` needs a turn to open for a resumed process too
-  -- there is no independent "history finished loading" event to wait on.
-
-What actually discriminates the working case from the broken one is real
-wall-clock time since spawn, not any observable event, which is why
-`ClaudeChatHost.awaitingResumeSettle` is a plain timer: `spawn` starts it
-only when `resuming` is passed, `send` queues into it while it is pending,
-and its callback flushes the queue in order once it fires. An ordinary fresh
-spawn never sets it at all, so the fix changes nothing about the path that
-already worked.
-
-This uncovered a second, independent bug already present before resume
-existed: `SessionStart`'s hook payload carries a `source` field --
-`"startup"`, `"resume"`, `"clear"`, `"compact"` -- verified with a raw hook
-capture, and `mapClaudeHook` was mapping every `SessionStart` to
-`{status: 'idle', activity: 'ready'}` regardless of which. That is correct
-for `"startup"`, where nothing has happened yet, but a resumed session's
-`SessionStart:resume` hook can land *after* `chat/send`'s own optimistic
-`{status: 'working', activity: 'thinking'}` -- verified by capturing the
-exact interleaving -- silently overwriting a turn that has genuinely begun
-with a stale "ready". `mapClaudeHook` now reports nothing (`{}`) for every
-`source` but `"startup"`, letting the turn's own lifecycle stay the only
-authority on whether one is running, the same rule every other event in that
-function already follows.
-
-A third, unrelated finding from the same live testing: Claude's own
-`~/.claude/projects/` directory name replaces `.` in the cwd exactly like
-`/`, `\` and `:` -- one dash per character, never collapsed -- which
-`claudeProjectDirName` now matches. Missing this made a dotted working
-folder (a `.temp` scratch directory, in the case that surfaced it) silently
-show no past Claude sessions at all, since `listResumableClaudeSessions` has
-nothing but that directory name to go on.
-
-Codex needed no equivalent settle delay -- verified by resuming a thread and
-calling `turn/start` in the same tick, which answered correctly -- but
-`thread/list` itself has a brief indexing lag after a thread is created, so
-a session resumed within about a second of being created may not appear in
-`session/resumable` yet. This does not matter in practice: the dialog lists
-sessions that have already been sitting closed, not ones from the last
-second, and `scripts/smoke-resume.ts` polls past the lag rather than
-assuming it away.
-
-## Claude-native background hosting
-
-This was the first implementation of sessions outliving the window and remains
-as an optional Claude-specific hosting mode. General persistence now belongs
-to `sertumd`: ordinary Claude, Codex, Grok and shell sessions all survive the
-window closing without this capability. `background-host` instead means that the
-agent's own service owns the process. Claude answers ok; Codex, Grok and shell
-decline. Agents & permissions shows the option only for an adapter that
-answered ok.
-
-The flow, verified end to end on Windows: the per-agent "Use Claude’s
-background host" setting makes new Claude sessions run `claude --bg -n <label>`,
-which returns immediately and prints
-the id that `attach`, `logs`, `stop` and `rm` take (`--bg` manages its own
-session id — a passed `--session-id` is ignored with a warning, so the
-printed id plus one `claude agents --json` lookup is the binding). Sertum
-then opens a terminal onto it with `claude attach`, registered with origin
-`attached` — a terminal that is only a client. Killing that client was
-verified leaving the session running. `sertumd` now owns the attach client, so
-closing or crashing the GUI does not tear down that attachment. A full Sertum
-shutdown explicitly stops Claude background sessions that Sertum created;
-externally imported sessions remain detach-only. After relaunch, the daemon
-snapshot restores the row and the conversation view matches history by the
-exact session id reported by Claude's roster.
-
-Three things follow from origin `attached` now being real:
-
-- **Closing an attached tab never confirms.** The confirm dialog exists to
-  warn that work mid-turn dies with the process; detaching kills nothing,
-  so the gate correctly does not apply (it keys on origin `owned`).
-- **Status comes from the roster, not the attach client.** The monitor
-  poll now sweeps attached rows too: `claude agents --json` is the daemon's
-  own account of whether a session is busy, the same class of source as any
-  adapter event. The attach client's PTY says nothing about the agent.
-- **The transcript is matched by the roster's session id** — exact, never
-  guessed by cwd — so the conversation view works on attached rows the
-  same way it does everywhere else.
-
-Claude-native background hosting still does not combine with structured stream
-sessions or Remote Control; C1 keeps those choices exclusive. This limitation
-does not affect broker persistence: `sertumd` owns stream processes and PTYs
-for every ordinary Sertum session.
+The stream contract, Codex's owned-thread and approval rules, both resume
+mechanisms, and the two mechanisms tried and verified wrong before the
+settle timer: [docs/sessions.md](docs/sessions.md).
 
 ## The daemon: sertumd
 
@@ -1097,26 +557,25 @@ Sertum can end an externally owned agent.
 
 **The tray is the persistent GUI surface.** The Electron process stays alive
 when its last window is closed and owns a cross-platform tray/menu-bar icon.
+Its menu is rebuilt from the GUI's daemon-fed `SessionSnapshot` mirror, so
+its status labels come only from adapter events and process lifecycle — never
+PTY pixels. It can reveal a session, end an owned session, or detach an
+externally hosted one, and reopening recreates or shows the same disposable
+window.
+
 It holds Electron's single-instance lock, so launching Sertum again reveals
 the existing window instead of creating a duplicate tray and notification
 client. The losing launch never reaches `ready` -- `app.quit()` called this
 early aborts startup outright, before a window or a daemon of its own exists
--- so silently exiting there would leave someone who just double-clicked
-Sertum again with no visible sign anything happened at all, which for a tool
-whose whole point is consolidating every session into one place reads as
-broken rather than as "already running". It now shows `dialog.showErrorBox`
-(which blocks until dismissed and works before the app is ready, exactly the
-moment this is) naming that only one copy runs at a time, before quitting.
-`sertumd` needs no equivalent: it has no window to show one in, and its
-listen-race loss is already the fully correct, silent outcome for a headless
-process -- logged to `sertumd.log`, never surfaced live, the same pattern
-other background failures in this file follow.
-Its menu is rebuilt from the GUI's daemon-fed `SessionSnapshot` mirror, so its
-status labels come only from adapter events and process lifecycle — never PTY
-pixels. It can reveal a session, end an owned session, or detach an externally
-hosted one. Reopening recreates or shows the same disposable window. The
-explicit “Quit Sertum completely…” action first requests `daemon/stop`, which
-drains all daemon-owned sessions, and only then exits the tray process.
+-- so silently exiting would leave someone who just double-clicked Sertum
+with no sign anything happened, which for a tool whose whole point is
+consolidating every session into one place reads as broken rather than as
+"already running". It shows `dialog.showErrorBox` (which blocks until
+dismissed and works before the app is ready, exactly the moment this is)
+naming that only one copy runs at a time, before quitting. `sertumd` needs no
+equivalent: it has no window to show one in, and its listen-race loss is
+already the correct silent outcome for a headless process -- logged to
+`sertumd.log`, never surfaced live.
 
 **What is deliberately not solved yet.** Session restore in the *renderer*
 sense (which panes held what) is unchanged — the daemon restores existence
@@ -1129,9 +588,8 @@ real `npm run make` audit found that the old dot-directory glob silently
 omitted it). A Windows packaged executable has loaded the daemon bundle under
 RunAsNode and safely lost the listen race to the live daemon. A clean-start
 and GUI reconnect test remains; it was not forced while that daemon owned a
-live shell session. Run Forge under Node 20 LTS for now: with Node 26.7.0,
-Electron Packager 18.4.4 silently exits after beginning Electron archive
-extraction, before package finalization or maker artifacts.
+live shell session. Packaging must run under Node 20 LTS — see
+[docs/windows.md](docs/windows.md).
 
 ## Adopting sessions started outside the app
 
@@ -1213,254 +671,60 @@ stable process/session identity; stored thread metadata alone is not Plane 2.
 
 ## Terminal key handling
 
-A bare Enter is how you send a message to an agent, so composing a multi-line
-prompt needs a second chord. `terminal-pane.ts` intercepts Enter before xterm
-encodes it and writes `ESC CR` (`\x1b\r`) to the PTY for:
+A bare Enter sends a message to an agent, so composing a multi-line prompt
+needs a second chord: `terminal-pane.ts` intercepts Shift, Ctrl and Alt+Enter
+(and Cmd+Enter on macOS) before xterm encodes them and writes `ESC CR`, which
+is what Claude Code's `/terminal-setup` installs and what Codex reads as
+Alt+Enter. Ctrl+C copies and clears the selection only when there is one, and
+otherwise falls through to xterm as the interrupt that stops the agent.
+Ctrl/Cmd+V pastes through the main process, because an image has to become a
+path before a byte stream can carry it — both Claude Code and Codex treat an
+image path in the prompt as an image.
 
-| Chord | Platform |
-|---|---|
-| Shift+Enter | all |
-| Ctrl+Enter | all |
-| Alt+Enter | all |
-| Cmd+Enter | macOS |
+Two invariants for anything touching a live pane:
 
-One sequence covers both agents: `ESC CR` is what Claude Code's own
-`/terminal-setup` installs for Shift+Enter, and what Codex reads as Alt+Enter.
+- **The WebGL renderer must be allowed to die.** Every terminal's context
+  lives in the one shared GPU process, and a reset loses them all at once
+  while xterm goes on painting nothing. `webglcontextlost` is the signal to
+  listen for — in the capture phase, on the host element — not
+  `WebglAddon.onContextLoss`, which never fires on the common branch where
+  Chromium restores the context and the addon's rebuild fails anyway. The
+  answer is to dispose the addon, fall back to the DOM renderer and refresh
+  the viewport, once, when the window is visible.
+- **A dead helper process must not be a dead window.** `watchForProcessDeath`
+  reloads a killed renderer exactly once — sessions live in the daemon, so a
+  reload costs only scrollback — and logs a lost GPU process or an
+  unresponsive window rather than leaving either invisible.
 
-The handler requires *exactly one* modifier, so `⌘⌥↩` / `Ctrl+Alt+Enter` still
-falls through to the menu accelerator that maximises a pane.
-
-Ctrl+C is overloaded the way a terminal user expects. With a selection it
-copies and then clears the selection; with nothing selected it falls through to
-xterm untouched and stays the interrupt that stops the agent's current
-operation. Clearing matters: a selection left on screen would otherwise keep
-swallowing every interrupt. The copy goes through `api.copyText` (the main
-process's `clipboard:write`) rather than `navigator.clipboard`, matching how the
-rest of the app copies.
-
-Ctrl+V (Cmd+V on macOS) pastes, handled here rather than left to the browser
-because an image has to be turned into something a byte stream can carry before
-xterm sees it. `main/clipboard-paste.ts` answers with one of three things:
-
-| Clipboard holds | Pasted as |
-|---|---|
-| a bitmap (screenshot, image copied from a browser) | path to a PNG spilled into the temp dir |
-| an image file copied in Explorer/Finder | that file's own path, used where it lies |
-| text | the text, through `term.paste` so bracketed-paste mode is honoured |
-
-A bitmap wins over text, because copying an image from a browser puts both on
-the clipboard and the image is the part worth having. Spilled files are swept
-on the next paste once they are a day old -- nothing tracks whether an agent
-ever read one, so age is the only safe signal.
-
-Pasting a *path* rather than bytes is the whole trick: a PTY carries
-characters, and both Claude Code and Codex treat an image path in the prompt as
-an image, while a plain shell just shows the path.
-
-### Electron 44's clipboard is async and ClipboardItem-shaped
-
-There is no `clipboard.readImage()` or `clipboard.readBuffer()` any more. The
-API is modelled on the W3C one: `await clipboard.read()` gives
-`ClipboardItem[]`, each with `types` and `getType(mime)` resolving to a `Blob`.
-`getType` *rejects* for a format the item doesn't carry, which is how this code
-probes for one.
-
-Two things that cost time and are not obvious from the types:
-
-- **The `clipboard` export type-checks against lib.dom's `Clipboard`, not
-  Electron's.** With `"lib": [..., "DOM"]` in `tsconfig.json`, `Clipboard`
-  resolves to the browser interface even for an import from `electron` or
-  `electron/main`, so reaching for a removed method fails with a puzzling
-  "Property 'readImage' does not exist on type 'Clipboard'". The two interfaces
-  are close enough that the code compiles and runs correctly regardless.
-- **A file copied in Explorer arrives as `text/uri-list`, not `FileNameW`.**
-  Verified on Windows 11: the item's types are `text/uri-list` plus
-  `electron application/osclipboard;format="FileName"` (ANSI, note, not the
-  wide `FileNameW` the Win32 docs point at), and the uri-list body is a plain
-  `file:///C:/...` URL. A bitmap arrives as `image/png`.
-
-### The WebGL renderer must be allowed to die
-
-A WebGL context is not the pane's to keep. Every terminal's context lives in
-the one shared GPU process, so a GPU reset -- display sleep, a
-discrete/integrated switch, that process being recycled -- loses all of them
-at once. xterm goes on rendering into the dead addon regardless, which paints
-nothing: the canvas is left with no backing store and the pane reads as a
-blank rectangle with a broken-image mark in one corner, while the PTY behind
-it carries on unharmed and the status bar keeps saying `adapters ok`. It
-looks like every session died and is in fact only a display that stopped.
-
-Switching the renderer setting does not rescue an open pane either, since an
-addon cannot be swapped under a live terminal.
-
-**`WebglAddon.onContextLoss` is the wrong signal, and subscribing to it alone
-left the bug in place.** The addon answers `webglcontextlost` by calling
-`preventDefault()` -- which asks Chromium to restore the context -- and
-starting a three-second timer, then fires `onContextLoss` only if nothing was
-restored before it expires. Chromium usually *does* restore, so the common
-case clears that timer and `onContextLoss` never fires at all. What follows a
-restore is the addon rebuilding its GL state in place, and that rebuild does
-not survive the round trip: the terminal is left with a live renderer that
-paints nothing, permanently.
-
-Verified by killing the GPU process of a running packaged build with two
-panes open. Both went blank and stayed blank -- through the window being
-raised, focused and left alone -- while `.xterm-rows` was absent, so no
-renderer was painting at all. The console carried the whole story:
-`webglcontextlost` at once, `webglcontextrestored` a second later (so
-`onContextLoss` never fired), then `WebGL: INVALID_OPERATION: delete: object
-does not belong to this context` from the failed rebuild. Typing into a blank
-pane still ran the command -- a `touch` landed from a terminal showing
-nothing -- which is exactly how this reads as a frozen app rather than a
-broken display.
-
-`webglcontextlost` is therefore what `TerminalPane` listens to, since it
-arrives on both branches. It does **not** bubble (verified: a listener on
-`.term-host` sees it only in the capture phase), so capture is not optional.
-Listening on the host element rather than the addon's canvas keeps this off
-xterm's private fields and covers whatever canvas a later reload creates, and
-the handler defers by a tick because disposing the addon tears down the very
-canvas the event is still being delivered to. `onContextLoss` is kept as a
-second subscription for the no-restore branch; both land in one idempotent
-handler.
-
-`TerminalPane` answers the loss: dispose the addon, which returns
-xterm to its DOM renderer, then `refresh` the whole viewport, because that
-renderer only paints what changes from here and the screen it inherits was
-drawn by the addon that just died. Recovery is attempted once and waits for
-the window to be visible -- the loss usually arrives while the machine is
-asleep, so retrying at that moment would only fail again. A second loss means
-the GPU is unreliable here, and staying on DOM beats flapping between
-renderers for the rest of the session.
-
-**On the no-restore branch the addon sits on the loss for three seconds
-first**, so a pane is legitimately blank for those three seconds and any test
-that samples inside that window sees nothing happen.
-
-Verified against a live pane by taking the addon's own canvas
-(`addon._renderer._canvas`) and calling `WEBGL_lose_context.loseContext()` --
-note that reaching for a context on any other canvas in `.term-host` creates
-a fresh one rather than finding xterm's, and killing that proves nothing:
-
-| t | State |
-|---|---|
-| 0ms | context lost for real (`isContextLost()` true) |
-| 500-2500ms | still on WebGL, inside the addon's grace window |
-| 3300ms | `onContextLoss` fires: addon disposed, DOM renderer painting the real scrollback |
-| 4200ms | the retry lands, WebGL back with three canvases |
-| 7000ms | stable, and the PTY echoes new input |
-
-Before the fix, everything from 3300ms on was a blank canvas for the life of
-the app.
-
-Note that `TerminalRenderer`'s `canvas` value names a renderer that no longer
-exists: xterm dropped the canvas addon, so anything other than `webgl` simply
-loads no addon and gets the DOM renderer.
-
-### A dead helper process must not be a dead window
-
-The pane blanking above has a louder sibling, and neither used to be
-survivable or even visible: nothing in the main process was subscribed to a
-child process dying. `watchForProcessDeath` in `main.ts` now is.
-
-- **The renderer.** Verified by killing it under a running build: the window
-  is left an empty rectangle painted in `backgroundColor`, answering nothing,
-  and Electron never brings it back -- every tab, pane and control gone for
-  good while the main process sits there healthy, still owning every PTY.
-  Reloading is safe precisely because sessions live in the main process and
-  the renderer re-lists them on start, so what a reload costs is pane
-  scrollback and nothing else. Verified after a kill: the window comes back,
-  the session is still listed, and its PTY still echoes. It reloads **once** --
-  a replacement that dies too means reloading is not the answer, and a window
-  left alone beats one flickering through fresh renderers all session.
-- **The GPU process.** Recovered by `TerminalPane`, but silently, so
-  `child-process-gone` is logged (`[sertum] GPU (GPU) gone: killed`) to make
-  the cause legible afterwards.
-- **Unresponsive.** Not recoverable from here; logged so it stops being
-  invisible.
-
-### Quitting drains before it exits — in the daemon, now
-
-`disposeAll` kills every PTY, and node-pty reports each death from a
-`waitpid` thread through a ThreadSafeFunction. Exiting immediately after
-means those callbacks arrive while `node::FreeEnvironment` is already
-running: the call into JS fails, node-addon-api turns the failure into a C++
-throw, and nothing above it catches one -- `std::terminate`, SIGABRT, and a
-crash report. Two such reports on this machine, identical stacks,
-`Napi::ThreadSafeFunction::CallJS` under `node::Environment::CleanupHandles`
-in both.
-
-This race lives wherever the PTYs live, and since sertumd that is the
-daemon: its `stop` gives the exits `QUIT_DRAIN_MS` to land in a live
-environment before `process.exit`. The GUI's quit stopped being dangerous at
-all -- it owns no PTYs, so `before-quit` is now a socket disconnect and
-nothing more; session teardown now lives in the daemon rather than disappearing.
+Chords and their platforms, the three clipboard shapes Electron 44 answers
+with, the context-loss timeline, and the node-pty teardown crash the quit
+drain dodges: [docs/terminal.md](docs/terminal.md).
 
 ## Committing from the review
 
 C15 is reached from C11's Commit & push button and writes through Git alone
-(`main/diff-review.ts`). Four decisions are worth keeping:
+(`main/diff-review.ts`); C16 opens a pull request through the GitHub CLI
+(`main/pull-request.ts`), because `gh` already owns the credential and
+reimplementing auth here would mean holding a token the user has already
+handed to a tool built for it.
 
 - **The inventory on screen never authorises the write.** `commitDiff`
   re-resolves the repository and re-reads its changes before touching
-  anything, exactly as `discardDiff` does. A path the user chose that Git no
-  longer reports as changed fails the whole commit rather than being dropped
-  quietly -- a commit silently missing a file someone selected is worse than
-  one that did not happen.
-- **The commit is pathspec-limited.** `git commit -- <paths>` means a file
-  staged outside Sertum stays in the index instead of being swept in. C11 has
-  no hunk selection, so a chosen path is committed whole. Untracked paths are
-  staged first, since a pathspec commit only accepts paths Git already knows.
-- **Committing and pushing are reported independently.** `DiffCommitResult`
-  carries the commit and the push outcome separately, so a commit that lands
-  behind a push that fails is shown as exactly that. The sheet stays open
-  saying "Committed <sha>. Not pushed -- <reason>" instead of implying the
-  work was lost.
-- **The push destination is resolved before it is offered, not assumed.**
-  `resolvePushTarget` prefers the branch's upstream, adopts a lone remote
-  explicitly, and otherwise declines with a reason; the same answer labels the
-  checkbox and performs the push, so the control names where the push will
-  actually land rather than promising `origin`. Verified against real repos in
-  all six states, including detached HEAD and two remotes with no upstream.
+  anything, and a chosen path Git no longer reports as changed fails the
+  whole commit rather than being dropped quietly.
+- **The commit is pathspec-limited**, so a file staged outside Sertum stays
+  in the index instead of being swept in; untracked paths are staged first.
+- **Committing and pushing are reported independently**, so a commit that
+  lands behind a failed push is shown as exactly that.
+- **The push destination is resolved before it is offered**, never assumed to
+  be `origin`; the same answer labels the control and performs the push.
+- **Sertum composes no commit message, title or body.** They stay empty
+  unless a lone commit's own words seed them, and no trailer of any kind is
+  appended. Inferring one from a terminal is what the two planes forbid.
 
-Sertum does not compose the commit message. The sheet opens with an empty
-field and a placeholder: an invented summary would be committed under the
-user's name, and inferring one from a terminal is what the two planes forbid.
-No trailer of any kind is appended.
-
-### C16 goes through the GitHub CLI
-
-`main/pull-request.ts` shells out to `gh` rather than calling the REST API,
-for one reason: **`gh` already owns the credential**. Reimplementing auth here
-would mean discovering, storing or prompting for a token the user has already
-handed to a tool built to hold it.
-
-Two things the CLI's contract dictates, both verified against gh 2.89.0:
-
-- **`gh pr view` exits 1 when a branch has no pull request**, printing to
-  stderr, so it cannot distinguish "none" from "failed". Existence detection
-  uses `gh pr list --head <branch> --json ...`, which exits 0 and returns `[]`.
-- **`gh pr create` cannot open a request for commits GitHub has never seen**,
-  and running it non-interactively means its own offer to push simply fails.
-  Rather than refuse, the sheet says so on its button -- "Push and create pull
-  request" -- and performs the push first, reusing the same `pushBranch` and
-  the same resolved target C15 uses.
-
-Every other precondition is answered before the sheet offers anything, in the
-same spirit as a declined agent capability: no `gh`, signed out, detached
-HEAD, sitting on the default branch, or a branch that already has a pull
-request each produce a reason the user can act on rather than a button that
-fails when pressed.
-
-Title and body are seeded only from a **lone** commit's own subject and body.
-Those are the user's words. Several commits have no such answer, so the fields
-stay empty rather than being invented -- the same rule the commit message
-follows.
-
-`shell:open-external` was added for the resulting URL and is restricted to
-http(s). `shell.openExternal` hands any other scheme to whatever the OS
-registered for it, which is how a renderer bug or a hostile string turns into
-launching a local program -- and these URLs come from `gh`'s output.
+Every precondition C16 answers before offering a button, `gh`'s exit-code
+contract, and the six push-target states:
+[docs/git.md](docs/git.md).
 
 ## Settings say what they cannot do
 
@@ -1552,348 +816,90 @@ Two platform facts shape the surface rather than being hidden:
 
 ## Permission rules are the tool gate made selective
 
-`tool-gate` already proved the mechanism: `PreToolUse` is a structured
-decision point that accepts `allow` or `deny` and attributes to exactly one
-session. Rules add a matcher in front of that answer and need no new channel,
-which is why this is a small module rather than a subsystem.
+Stored allow/deny/ask rules answer at Claude's `PreToolUse`, a structured
+decision point that attributes to exactly one session, so they need no new
+channel. They answer at the boundary before *every* tool call precisely
+because they need no one present; nothing here ever waits for a person.
 
-Four decisions, all verified by driving the hook server over real HTTP:
-
-- **Deny wins.** When several rules match, one deny beats any number of
-  allows. A permission control that resolves ambiguity by permitting is not a
-  permission control: the cost of failing closed is one extra prompt, the cost
-  of failing open is the command the user wrote a rule to stop.
-- **No rule is not an approval.** An unmatched call returns nothing at all, so
-  Claude runs its own permission flow exactly as it would without Sertum.
-- **`*` is the only wildcard.** Full regex in a permission rule is a foot-gun,
-  because the character that makes a pattern broader than intended is
-  invisible in a settings row. Every other character is literal -- `a.b` does
-  not match `aXb` -- so what a rule covers can be read off the row.
+- **Deny wins.** A permission control that resolves ambiguity by permitting
+  is not a permission control.
+- **No rule is not an approval.** An unmatched call returns nothing at all,
+  so Claude runs its own permission flow exactly as it would without Sertum.
+- **`*` is the only wildcard**, so what a rule covers can be read off the
+  row; every other character is literal.
 - **Scope is a path prefix**, so a rule bound to a repository also covers the
   worktrees beneath it.
 
-The precedence chain at a `PreToolUse` boundary, outermost first: a queued
-interrupt returns `{ continue: false }`; the wholesale tool gate denies; then
-rules answer; then nothing. The gate is the blunter instrument and must
-outrank rules, or pausing tool use would be quietly overridden by an allow.
-
-Rules answer here, at the boundary before *every* tool call, precisely because
-they need no one present -- a deny rule should stop a call the agent was about
-to make unprompted. A rule the user set to `ask` is the exception, and it
-answers `ask`: that makes Claude raise its own dialog, which is what summons
-B5's bar below. Nothing here ever waits for a person.
-
-A rule matches on the field a person would actually write it about -- a Bash
-command, an edited path -- not on the tool name, which a bare `*` still
-covers.
-
-`permission-rules` is a declared capability. Claude answers `ok`; Codex, Grok
-and shell decline with reasons, so E2 can say the rules are Claude-only rather
-than implying a fleet-wide policy.
+A rule matches the field a person would write it about — a Bash command, an
+edited path — not the tool name, which a bare `*` still covers. The
+precedence chain at that boundary, outermost first: a queued interrupt
+returns `{ continue: false }`; the wholesale tool gate denies; then rules;
+then nothing. `permission-rules` is declared ok by Claude and declined with
+a reason by Codex, Grok and shell.
 
 ## B5 holds the turn open
 
-Everything else here answers a hook immediately. B5 does not: it holds the
-HTTP response while a person looks at it. That hold *is* the feature -- it is
-what lets you answer without switching to the terminal, and what lets "Always
-allow" write a rule from the moment it matters -- and it is also the only
-thing in Sertum that can stall an agent.
+Everything else answers a hook immediately. B5 holds the HTTP response while
+a person looks at it — the only thing in Sertum that can stall an agent, and
+the reason **which event is held is the whole design**.
 
-**Which event is held is the whole design.** It is `PermissionRequest`, which
-Claude Code describes as firing "when a permission dialog is displayed" -- so
-an arriving event is a question the agent is *already* blocked on, and holding
-it costs the turn nothing it was not already paying. Answering is strictly
-faster than walking over to the terminal.
+- **It is `PermissionRequest`**, which fires when a permission dialog is
+  displayed, so the agent is already blocked and holding costs the turn
+  nothing it was not already paying. It is emphatically **not**
+  `PreToolUse`, which fires before every tool call, under every permission
+  mode, for calls that raise no dialog at all. *An event named for a moment
+  in the tool lifecycle is not an event about permission.*
+- **A conversation session asks on its own channel.** With no terminal and no
+  dialog it declares `--permission-prompt-tool stdio`, and the CLI sends a
+  `can_use_tool` control request and holds the turn. The hook is then a
+  deliberate no-op for that session, so one call is never asked twice.
+- **Every path out of the hold answers** — a choice, the timeout, session
+  exit, a client hangup, or quit. A held call is `needs-input`, not
+  `working`, and returns to `working` only when it is *answered*.
+- **The bar shows the subject** — the command or the path, in the mono face
+  — never the agent's own summary of it, since the subject is what a rule
+  would be written from.
+- **A held call survives the window.** The daemon answers `approval/pending`
+  on both channels and a starting window asks once.
+- **A card that is itself the question** — `AskUserQuestion`, `ExitPlanMode`
+  — is drawn as that card rather than an approve/deny bar, skips the rules
+  and the session-scoped allows, and never writes a rule.
+- **The permission mode is read, never assumed.** `SessionSnapshot.permissionMode`
+  is null until the agent has said, and the chip beside the composer sets it
+  over `set_permission_mode`, showing the mode the agent reported back.
 
-It is emphatically **not** `PreToolUse`, which this was built on first and
-which is a different kind of event entirely: Claude Code's own summary of it is
-"before tool execution". It fires for every tool call, before and independently
-of any permission check. Verified against Claude Code 2.1.251 by capturing real
-payloads: `PreToolUse` arrives under `bypassPermissions`, `dontAsk`,
-`acceptEdits` and `auto` alike, for calls that raise no dialog at all.
+The reply shapes, the two curl deadlines, the four choices and their reach,
+the card contract and every verified payload:
+[docs/approvals.md](docs/approvals.md).
 
-Holding it therefore meant Sertum stopped every Read, Grep and Bash the agent
-was going to run unprompted, held each for up to two minutes, and captioned it
-"Bash needs permission" -- a claim Claude never made. A session in auto mode,
-which by definition had nothing to ask, was interrupted on every tool call.
-That is exactly the crying-wolf failure the two planes exist to prevent,
-arriving through Sertum's own UI rather than through parsed pixels. The lesson
-generalises: *an event named for a moment in the tool lifecycle is not an event
-about permission*, however convenient its position.
+## The model is a setting too, and it sits beside the mode
 
-`permission_mode` rides on every payload and is kept as a backstop only --
-`bypassPermissions` and `dontAsk` never raise a bar. It cannot be the
-mechanism, because `auto` and `manual` both arrive as `default`; the event
-itself is what carries the fact that a person is wanted.
+Which model a session runs is the other half of the pair the permission mode
+belongs to: both decide how a turn goes, both are asked about where the turn
+is composed, and both are reached from the sidebar row menu as well. So
+`model-select` is built as `permission-mode`'s twin — same chip, same picker
+shape, same "declined is an answer" rule — and the two chips sit together
+under the composer.
 
-Every path out of the hold answers:
+- **The list is never Sertum's.** A hardcoded catalogue goes stale the week a
+  model ships and offers models an account cannot run, so every
+  implementation asks the agent, per session, each time the picker opens:
+  Claude's `list_models` control request, Codex's `model/list`, and for Grok
+  the cache its own CLI fetched. A model is only ever sent if that session's
+  agent just listed it, so the renderer can never name one of its own.
+- **A running turn keeps the model it started with**, verified on all three,
+  so `ModelChangeResult.appliesToNextTurn` says so when a turn was in flight.
+- **The model recorded is the resolved one.** `SessionSnapshot.model` means
+  "the model this session runs", so a successful switch writes to it at once
+  and the agent's own later reports keep superseding it.
 
-| Ending | Response | Result |
-|---|---|---|
-| Someone chooses | `200` with the decision | the call proceeds or is refused |
-| Two minutes pass | `204` empty | Claude's own dialog is still up |
-| The session exits | `204` empty | nothing is left waiting |
-| The client hangs up | nothing to answer | the bar comes down, unanswered |
-| The app quits | released, then closed | quit is not blocked |
+Claude and Codex declare `requires: 'structured-conversation'` because a
+PTY-backed session's stream belongs to its TUI; Grok declares no requirement,
+because a prompt is the transport it has. Shell declines.
 
-**The reply shape is not `PreToolUse`'s.** `PermissionRequest` nests its answer
-under `decision` and spells the verdict `behavior`:
-`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`,
-or `{"behavior":"deny","message":"..."}`. A flat `behavior` -- the obvious
-reading of the schema, and the first thing tried -- is rejected, and the
-failure is silent in the direction that matters: the dialog simply stays up as
-though no hook had answered. A correct answer is acknowledged in the
-transcript as `Allowed by PermissionRequest hook`.
-
-That last row was a real deadlock before it was tested. `server.close()` waits
-for in-flight requests to finish, and a held approval is deliberately an
-in-flight request with no response yet, so settling *after* the close
-completed meant the close never completed. Pending calls are now released
-before the server closes, with `closeAllConnections()` as a backstop for
-keep-alive sockets that outlive their request.
-
-**The hook command needs two deadlines, because only one event is ever held.**
-Every hook but `PermissionRequest` is answered the moment it arrives and keeps
-a `-m 2` ceiling, so a Sertum that stops answering never stalls a turn.
-`PermissionRequest` is the call the bar holds, so its curl must outlast the
-hold (`-m` = the hold plus five seconds), with `--connect-timeout 2` keeping
-the fast failure where it belongs: an endpoint that is gone refuses the
-connection at once. One shared `-m 2` made B5 impossible in a way that looked
-like working software -- the bar appeared, curl gave up two seconds later, the
-terminal filled with `hook error -- Failed with non-blocking status code: No
-stderr output` (exit 28, stderr silenced by `-s`), Claude fell back to its own
-dialog, and every button on the bar wrote into a socket that had already gone.
-The long deadline stays off `PreToolUse` for the same reason the hold does: it
-is the busiest hook of a turn and none of it is a question.
-
-That timeout is also why the client-hangup row exists. A held call has a turn
-behind it only while its connection lives, so the socket closing without an
-answer -- curl's own deadline, or the user interrupting Claude -- takes the bar
-down rather than leaving it asking about a turn that has ended.
-
-**A held call is `needs-input`, not `working`.** The preceding `PreToolUse`
-sets the session working, which is true of the agent and wrong about what it is
-waiting for, so the dot would read working beside a bar asking for permission.
-Claude said it needs a decision by firing `PermissionRequest`, so this is
-plane-2 truth rather than an inference from pixels. The status returns to
-`working` only when the bar is *answered*: a call that expired or was abandoned
-leaves Claude's dialog on screen, where it still needs you.
-
-Claude issues tool calls in parallel, so the bar is a queue rather than a
-single slot, and it says how many are behind the one on screen. A later request
-replacing an earlier one would leave a turn held open with no way to answer it
-until the timeout. That parallelism is also why rules are re-consulted at
-`PermissionRequest` and not merely trusted from `PreToolUse`: several calls can
-pass that earlier boundary before "Always allow" writes a rule, and their
-dialogs arrive after it. Re-asking lets the new rule answer them instead of
-stacking more bars for a call the user has already decided.
-
-The bar is never over the pane, because deciding means reading what led to the
-request, and it is never dismissed by clicking away: every route off it
-answers the call. **In a conversation it sits directly on top of the
-composer** -- the question is part of the turn being read, and the answer to
-it belongs where every other reply to that agent is typed. A pane that is not
-a conversation keeps it at the top of the pane, above the terminal. Since
-every Claude session renders as a conversation, the second placement is a
-fallback: the app owns the queue and hands each conversation pane the calls
-for its own session, and anything a visible conversation pane will not show
-falls back to the old host above the pane, so a held turn is never invisible.
-
-What the bar says about a call is the **subject** -- the command or the path,
-in the mono face -- and never the agent's own summary of it. The subject is
-the string the decision is actually about and the one "Always allow" would
-write into a rule, so a gloss standing in its place ("Echo the probe marker
-string" where `echo probe-marker-hello` belonged) would be asking someone to
-approve something they were not shown. Underneath it goes the reason the call
-escalated, which is the sentence that otherwise reaches the reader only as the
-agent explaining, a turn later, that it lacked permission. Both are
-producer-authored and may carry ANSI escapes, so both are stripped and set as
-text.
-
-The four choices differ only in reach. **Allow once** answers this call.
-**Allow this session** is remembered in memory and dropped when the session
-ends, so an approval given to one run cannot silently govern the next.
-**Always allow** writes a permission rule scoped to that session's repository
-and matched literally -- a rule written by pressing a button should cover what
-was on screen and nothing broader; a call whose ask says a persistent rule
-would reach wider than itself does not offer the button at all. **Deny**
-offers an optional reason, which goes back to the agent so it can try
-something else rather than guess why it was stopped.
-
-**A held call survives the window.** The queue lives in the renderer, so a
-reload, a devtools restart, or closing to the tray and reopening all lose it
--- and a conversation session's ask has no deadline behind it, so a bar lost
-that way would strand the turn for good rather than merely delaying it. The
-daemon answers `approval/pending` with everything it is still holding, on
-both channels, and a starting window asks once. Verified by reloading the
-renderer mid-hold: the bar came back with the same call and answering it
-resumed the turn.
-
-The whole feature is switchable in E2, and the switch is the presence of the
-handler: with none, the hook server never holds a call at all, so turning it
-off cannot leave a turn waiting on a bar that will not appear. A conversation
-session is the exception, because it has nowhere else to ask: with approvals
-off its calls are refused outright, carrying that as the reason.
-
-### A conversation session asks on its own channel
-
-A stream session has no terminal and no dialog, and that is why the reader
-used to see nothing at all. Headless Claude refuses anything that would prompt
--- `no approval surface in this session; permission request denied
-automatically` -- and the only trace reaching the conversation was the agent
-explaining afterwards that it had lacked permission. Nothing was broken in
-Sertum; there was simply no question to catch.
-
-`--permission-prompt-tool stdio` is the declaration that a surface exists.
-`stdio` names the stream itself rather than a real MCP tool: from then on the
-CLI sends a `control_request` of subtype `can_use_tool` down its own stdout
-and **holds the turn** until a `control_response` comes back on stdin. All
-verified against Claude Code 2.1.260:
-
-| Verified | Result |
-|---|---|
-| Without the flag | a Write outside the working directory is denied outright, `decision_reason_type: workingDir` |
-| With it | the same call arrives as a control request carrying the input, `description`, `decision_reason` and the CLI's own `permission_suggestions` |
-| Holding 25s | still accepted; there is no deadline on this wire |
-| `deny` with a message | the message is the tool result the model reads, and it acts on it |
-| Answering twice | the second answer is refused, since the ask is no longer held |
-
-The reply is `{behavior:'allow', updatedInput?}` or `{behavior:'deny',
-message}` -- `message` is required on a deny -- plus a
-`decisionClassification`, which Sertum sets from what actually happened
-(`user_temporary` / `user_reject`) rather than leaving the CLI to infer it.
-
-Three things follow, and each is a decision rather than a detail:
-
-- **The hook must not ask a second time.** Once a surface exists, a prompt is
-  genuinely raised, so `PermissionRequest` *does* fire in print mode -- 112ms
-  after the control request, in the same call. Answering both would ask the
-  reader twice for one call and let the two answers disagree, a rule denying
-  at the hook while the control channel had already allowed. The control
-  request is the one with the turn behind it, so `HookServer` treats
-  `PermissionRequest` as a no-op for any session that declared its own
-  surface.
-- **Nothing here expires.** The hook hold has curl's deadline behind it and
-  must be released before it; a control request has only the turn, and an
-  interactive Claude leaves its own dialog up indefinitely too. Answering late
-  is correct. Timing out would resume a turn with a decision nobody made --
-  which is also why the pending list above has to survive the window.
-- **The same rules answer it.** Session-scoped allows and stored permission
-  rules are consulted through one function shared with the hook boundary, so a
-  rule cannot mean two different things depending on which transport asked.
-
-### When the card is the question
-
-The flag also makes Claude offer the tools whose approval card *is* their
-user-interaction surface. Those arrive with `requires_user_interaction: true`,
-and the name means it literally: the answer wanted is not "may this run" but
-**which option** or **is this plan right**, neither of which an approve/deny
-bar can express.
-
-The protocol has a channel for handing such a card to a host --
-`request_user_dialog`, whose kinds include `permission_ask_user_question` and
-`permission_exit_plan_mode_v2` -- and **it is not wired to a stream-json host
-in Claude Code 2.1.260.** The dialog transport is constructed only for the
-REPL bridge, the path a session published to claude.ai uses. Verified by
-declaring every relevant kind in an `initialize` control request (which is
-accepted, and answers with the session's commands) and watching `can_use_tool`
-arrive instead, every time. Allowing the call is not the answer either: the
-tool then runs with no answer channel and returns "The user did not answer the
-questions", throwing the user's choice away.
-
-What makes the cards buildable anyway is that **`can_use_tool` already carries
-the whole card** -- the questions with their options and descriptions, or the
-plan as its own markdown. So `main/adapters/interactive-tools.ts` reads the
-card out of the tool input, and `renderer/approval-card.ts` draws it where the
-bar goes, between the transcript and the composer. Each answer goes back on
-the wire that exists:
-
-| Card | Answer | On the wire |
-|---|---|---|
-| `ExitPlanMode` | Approve plan | `allow` -- the tool result reads "User has approved your plan. You can now start coding" and the session leaves plan mode |
-| `ExitPlanMode` | Keep planning | `deny` carrying the typed feedback; the session stays in plan mode and revises |
-| `AskUserQuestion` | Send answer | `deny` carrying the choices, stated as answers |
-| `AskUserQuestion` | Skip | `deny` saying the question was dismissed |
-
-**A plan is a native fit**; a question is not, and the deny channel is used
-because it is the only one that carries a message back. That is not a lie
-about what happened -- the tool call genuinely did not run -- and the message
-says what the user chose rather than reporting a refusal, so the agent reads
-it as an answer. Verified end to end in the app: a two-question card, one
-single-select and one multi-select, came back as "Indentation: Spaces /
-Frameworks: React, Svelte" and the reply was "Got your answers". A plan
-declined with "Also mention a Licence section" was re-presented revised, then
-approved, and the session wrote the file.
-
-Three decisions worth keeping:
-
-- **`multiSelect` is the agent's own field**, so it picks the control rather
-  than a heuristic: radios where one answer replaces another, checkboxes where
-  several apply. Every question also takes free text, because a set of options
-  the user disagrees with must not be a dead end -- the CLI's own card offers
-  the same way out, and the tool's result format carries free text beside the
-  choices.
-- **A card skips the permission rules and the session-scoped allows.** A rule
-  is a policy about whether a call is safe to run; it has no opinion on which
-  option a person would pick or whether a plan is right, and a stale `allow`
-  silently approving every plan is precisely the answer-nobody-gave this
-  surface exists to prevent. For the same reason a card never offers "Always
-  allow", and the session's activity line reads "waiting on your answer" or
-  "review the plan" rather than "approve X?".
-- **`ApprovalAnswer.decision` has a third word, `answer`**, so the vocabulary
-  keeps a card's outcome apart from a refusal even though they share a wire.
-  It never writes a rule, and the activity line afterwards says "answered".
-
-Anything else marked `requires_user_interaction` has a card whose shape Sertum
-does not know, so it keeps the honest refusal naming that limitation. The
-plan is rendered by `appendMessageText`, the transcript's own renderer, under
-the same promise: nothing is assembled as an HTML string.
-
-### The permission mode is a setting, and it is set beside the composer
-
-How much of a session you are asked about at all is decided before any of the
-above: the permission mode. `set_permission_mode` is a stable control request
-the *host* sends, and the CLI answers with the mode now in effect — so what is
-recorded is what happened, never what was asked for. Verified against Claude
-Code 2.1.260:
-
-| Sent | Result |
-|---|---|
-| `plan`, `acceptEdits`, `dontAsk`, `auto`, `default` | accepted, echoed back |
-| `manual` | accepted, normalises to `default` — the CLI flag's name for one mode, the protocol's for the other |
-| `bypassPermissions` | refused: "the session was not launched with --dangerously-skip-permissions" |
-| anything else | refused, naming the valid modes |
-
-Behaviour was checked rather than assumed, by setting a mode and then asking
-for a file: `acceptEdits` wrote it with no ask, `default` raised one, and
-`plan` produced a plan and an `ExitPlanMode` card instead of a write.
-
-- **The current mode is read, never assumed.** `system/init` carries
-  `permissionMode`, which is the user's own `defaultMode` setting unless
-  something changed it, and every accepted change echoes the resulting mode.
-  `SessionSnapshot.permissionMode` is null until the agent has said, and null
-  is deliberately not drawn as "Manual" — that would put a word on screen the
-  agent never used. The mode arrives with the session's first turn.
-- **The control lives beside the composer**, because the mode decides how much
-  of the session you are asked about and the asking happens there — which is
-  also where Claude Code keeps its own. It is a chip showing the current mode;
-  clicking it opens the catalogue in `renderer/permission-mode.ts`, which is
-  the single list every surface reads. The sidebar row menu offers the same
-  picker for reaching it without bringing the pane forward.
-- **`permission-mode` is a declared capability**, answered `ok` by Claude and
-  declined with a reason by Codex, Grok and shell. The agent-level answer is
-  not the whole story, though: only a conversation session has a channel to
-  say it on, so a PTY-backed Claude session gets the chip disabled saying the
-  mode is set there with Shift+Tab — which is a truer answer than hiding it,
-  since "where is this set?" is exactly the question that session raises.
-  `bypassPermissions` is listed the same way, disabled carrying the reason,
-  rather than as a row that reports an error when pressed.
-
-Setting the mode at spawn is deliberately not offered in C1: the control works
-the moment a session exists, so a second place to choose it would be a second
-thing to keep in step. `MenuItem` gained `note` and `checked` for this, and
-the row menu's disabled items moved their reasons from the right-aligned
-accel slot — sized for a chord — onto that second line.
+Each agent's catalogue and switch, what each was verified against, and why
+Grok's `/model` on its own prompt is not the synthesized-keystroke move
+`turn-interrupt` refuses: [docs/models.md](docs/models.md).
 
 ## Modals answer, they do not vanish
 
@@ -2123,233 +1129,45 @@ headlessly.
 
 ## Windows notes
 
-Development so far has mostly happened on macOS. Running on Windows 11
-surfaced a handful of differences, some already handled in code and some
-fixed along the way:
+Development has mostly happened on macOS, and Windows 11 differs in ways
+that have cost this project real time. The load-bearing ones:
 
-- **Run Forge packaging under Node 20 LTS, not Node 26.** Verified with Node
-  26.7.0 and Forge 7.11.2 / Electron Packager 18.4.4: `npm run make` reaches
-  Electron ZIP extraction, then the process exits with code 0 before producing
-  a packaged directory or refreshing any maker artifact. The same checkout
-  invoked with the installed Node 20.20.2 and npm 10.8.2 completes packaging
-  and the Squirrel maker normally. This does not require changing the global
-  nvm selection; prepend the Node 20 directory to PATH for the build process
-  and invoke that version's npm CLI directly.
-- **Forge's rebuild step wants a full native toolchain it doesn't need.**
-  `node-pty` ships its own prebuilt N-API binaries per platform/arch
-  (`node_modules/node-pty/prebuilds/win32-x64/…`), and N-API is ABI-stable
-  across Node/Electron — no rebuild is actually required. Left alone, Forge's
-  `rebuildConfig` doesn't know that and falls through to `node-gyp rebuild`,
-  which wants MSVC Build Tools. Fixed by `ignoreModules: ['node-pty']` in
-  `forge.config.ts`.
-- **npm 11's `allowScripts` blocks install scripts by default.** `node-pty`
-  (fetches its prebuild), `esbuild`, and `electron-winstaller` (the Squirrel
-  installer maker, Windows-only) all need their `postinstall`/`install`
-  scripts to run. Without an `allowScripts` block in `package.json`, `npm
-  install` silently skips them and `node-pty` ends up with no native binary
-  at all. Electron itself needs no entry: from 42 on it has no install script
-  to allow, and its binary arrives another way -- see "Electron fetches its own
-  binary on first use" under Running. npm 10.x (macOS here runs 10.9.8) has no
-  `allowScripts` at all and simply runs every install script.
-- **Codex sessions failed to start — `resolveCodexBinary()` had no Windows
-  branch.** Its candidate list was entirely POSIX paths (`~/.codex/…`,
-  `/opt/homebrew/…`, `/usr/local/…`), so on win32 it always fell through to
-  a bare `'codex'` and let PATH decide. That's the right call on macOS/Linux,
-  but wrong on Windows for two independent reasons, both hit here:
-  - `codex` is installed by npm as a `codex.cmd` shim (confirmed via `where
-    codex`), never as `codex.exe`. `node-pty`'s Windows backend calls
-    `CreateProcess` directly, which resolves a bare name by trying
-    `<name>.exe` only — it doesn't walk `PATHEXT` the way a shell does. A
-    session pane spawning `codex` failed with `Cannot create process, error
-    code: 2` (`ERROR_FILE_NOT_FOUND`), reproduced directly with
-    `npx electron scripts/smoke-pty.js codex`.
-  - Separately, the app's own Codex app-server (`spawn(this.binary, …)` in
-    `codex-app-server.ts`) uses plain `child_process.spawn`, and Node has
-    refused to spawn `.cmd`/`.bat` files without `shell: true` since the
-    CVE-2024-27980 hardening — it throws `EINVAL` *synchronously*, not via
-    the `'error'` event the code already handles gracefully.
-  - Fixed by adding a win32 branch to `resolveCodexBinary()` that walks
-    `PATH` × `PATHEXT` itself (mirroring what a shell would do, since neither
-    `CreateProcess` nor `child_process.spawn` will), and by setting `shell:
-    true` on the app-server spawn when the resolved binary is a `.cmd`/
-    `.bat`. Verified end-to-end: a real codex session now spawns, connects
-    to the app server, and reaches `status: "working"`.
-- **`ClaudeAdapter.resolveBinary()` on win32 hardcoded the literal string
-  `'claude.exe'`, with no existence check at all.** The installed `claude` is
-  a genuine `claude.exe`, not an npm shim, so `CreateProcess`'s built-in
-  "append `.exe` to a bare name" does find it when it exists — but
-  `resolveBinary()` never actually checked, unlike the real PATH × PATHEXT
-  search Codex had. A session spawned `'claude.exe'` regardless of whether
-  that resolved to anything, so a broken or absent install failed exactly
-  like the Codex case above, and just as silently. Fixed by giving
-  `ClaudeAdapter.resolveBinary()` the same candidate-list-then-PATH search as
-  Codex, factored into a shared `src/main/adapters/binary-resolve.ts` both
-  adapters now call.
-- **Every session-creation failure was swallowed as an unhandled renderer
-  rejection, on every platform, for every agent** — so any spawn failure,
-  including the `claude.exe` bug above, looked identical to "click the button,
-  nothing happens." `new-session-dialog.ts` now performs session creation
-  itself and reports a failure inline instead of closing and letting the
-  error vanish. Settings > Agents & permissions (Detect / Browse... / a manual per-agent
-  path override) and status-bar "Claude Code not found" / "Codex not found" /
-  "Grok not found" readouts make a missing binary diagnosable rather than
-  mysterious.
-- **Grok installs outside PATH entirely.** `where grok` finds nothing on a
-  default install: the CLI lives at `~/.grok/bin/grok.exe` and the installer
-  does not add it to PATH, so the PATH × PATHEXT search every other agent
-  relies on has nothing to find. `GrokAdapter.resolveBinary()` therefore
-  checks that location first and keeps the PATH walk as the fallback, which is
-  the same shape as the Claude and Codex resolvers with the candidate list
-  carrying the weight. Verified on Windows 11: a session spawns from that
-  location with no PATH entry for the command present at all.
-- **`npm start` in dev mode shows Electron's own icon, not Sertum's.**
-  `npm start` runs the bare `electron.exe`/`Electron.app` binary, which
-  carries Electron's generic icon; a packaged build is its own icon-bearing
-  executable (`packagerConfig.icon`, applied by resedit at package time) and
-  needs no override. On macOS this was already patched for dev via
-  `dev-app-name.js`, but nothing did the equivalent for the title bar and
-  taskbar on Windows. Fixed by passing an explicit `icon:` to `BrowserWindow`
-  whenever `MAIN_WINDOW_VITE_DEV_SERVER_URL` is set (i.e., only in dev) --
-  which turns out to fix the title bar and *not* the taskbar, see below.
-- **The taskbar reads an id, not the window's icon.** The `icon:` override
-  above is genuinely applied -- verified by asking the live window for it
-  (`WM_GETICON`), which answers Sertum's mark in dev -- and the title bar draws
-  it. The taskbar button ignored it and went on showing Electron's atom,
-  because Windows resolves that button's icon through the window's Application
-  User Model ID, and with no explicit id the shell derives one from the host
-  executable, which in dev is `electron.exe`. `app.setAppUserModelId` in
-  `main.ts` claims an id of our own and the button falls back to the window
-  icon; verified by capturing the real taskbar before and after. The dev id
-  includes the main-process pid so Windows cannot reuse an `electron.exe`
-  icon cached for an older dev run; packaged identity remains stable.
+- **Package under Node 20 LTS, not Node 26.** Electron Packager 18.4.4 exits
+  0 partway through Electron archive extraction, producing no packaged
+  directory and no maker artifact.
+- **Binary resolution needs a real PATH × PATHEXT search**, in the shared
+  `src/main/adapters/binary-resolve.ts`: `node-pty`'s `CreateProcess` only
+  ever appends `.exe`, `child_process.spawn` refuses `.cmd`/`.bat` without
+  `shell: true` and throws `EINVAL` *synchronously*, and Grok is not on PATH
+  at all. A bare command name is never safe here.
+- **Run the dev app and the daemon at the desktop user's normal privilege
+  level.** An elevation mismatch breaks the desktop's own hotkeys while
+  Sertum is focused, and an elevated launcher can pass elevation through a
+  `Shell.Application` launch, so verify the resulting tokens.
+- **A Squirrel install/update callback must not enter the normal `ready`
+  handler**, or it races the shortcut helper's asynchronous exit and starts a
+  detached broker; the handler returns early for callbacks and for losing
+  single-instance launches.
+- **`npm install` needs an `allowScripts` block** under npm 11, or `node-pty`
+  ends up with no native binary at all.
 
-  Two details worth keeping. A packaged build needs none of this: its window
-  sets no icon at all (`WM_GETICON` answers 0) and both surfaces read the
-  executable's own resource, verified against `out/Sertum-win32-x64`. And the
-  id stays dev-only rather than being claimed everywhere, because Windows
-  matches a toast notification to the Start Menu shortcut bearing the sender's
-  id -- Squirrel installs one carrying `com.squirrel.Sertum.Sertum`, so
-  overriding the id in a packaged build would trade a taskbar icon that is
-  already correct for C20's notifications quietly not arriving.
-
-  Note that the taskbar is invisible to `Graphics.CopyFromScreen`, which
-  returns whatever window sits under it; `PrintWindow(hwnd, hdc, 2)` on
-  `Shell_TrayWnd` captures it for real. Two screenshots that showed no taskbar
-  at all read as a capture failure rather than as the wrong API.
-- **The Windows icon has its own tighter vector master.** The 88px transparent
-  margin in `assets/icon.png` is intentional for macOS, but made the same mark
-  visibly undersized in the Windows taskbar and reduced its 38px segments to
-  roughly one pixel. `assets/icon-windows.svg` uses a 40px safe area and 54px
-  square-ended segments; `scripts/make-ico.js` renders every ICO entry from
-  that vector so the 16–32px variants keep defined edges and visible gaps.
-  Those embedded PNGs must be PNG32 at 8-bit channel depth. ImageMagick's
-  Q16 default produces valid-looking 16-bit PNG entries that Electron Packager
-  accepts, but Squirrel's install-time execution-stub resource step terminates
-  while copying them and leaves the setup log at `Rigging execution stub`.
-- **The install screen was electron-winstaller's placeholder, not ours.**
-  `MakerSquirrel` was configured with `setupIcon` only, and
-  `electron-winstaller` resolves `options.loadingGif` or else falls back to
-  its own bundled `resources/install-spinner.gif` -- a 268x167 mint-green
-  rectangle with two stray marks in one corner, which is what Squirrel showed
-  for the whole install. Fixed with `loadingGif: 'assets/install-spinner.gif'`,
-  generated by `scripts/make-loading-gif.js` from the same vector as the icon:
-  the mark's ring is six segments with one amber, so stepping the amber one
-  around animates it with no new artwork to drift from the icon. It keeps the
-  placeholder's exact dimensions because Squirrel sizes its window to this
-  image. Note that `Setup.exe` contains no raw `GIF89a` header at all -- the
-  payload is compressed -- so a byte search of the installer cannot confirm
-  which image is embedded; run the installer to check that. Verified by
-  running a real `Sertum-1.0.0 Setup.exe`: the install screen shows our
-  spinner, not the placeholder.
-- **`node-pty`'s ConPTY `kill()` can throw a benign but scary-looking
-  uncaught exception.** On the non-DLL ConPTY path, `kill()` forks a helper
-  (`conpty_console_list_agent.js`) to enumerate and force-kill the shell's
-  descendant processes, working around orphaned children (upstream cites
-  microsoft/vscode#26807). That helper calls `AttachConsole` on the just-killed
-  process's console and can lose the race, throwing `Error: AttachConsole
-  failed` with a full stack trace to stderr *after* the PTY has already been
-  killed successfully. Harmless — it's a one-shot child process, not the app
-  — but there's no macOS equivalent (the POSIX backend is a plain
-  `forkpty`), so don't mistake it for a real failure when it shows up in the
-  logs.
-- **The login-shell environment probe is a deliberate no-op on Windows.**
-  `hydrateLoginEnv()` exists because a macOS GUI app launched from the Dock
-  inherits launchd's near-empty PATH, not the user's shell profile — fixed by
-  asking `$SHELL -lic env` once at startup. `process.platform === 'win32'`
-  short-circuits that entirely and always returns `false`, which is correct:
-  Windows doesn't have the launchd problem, since Explorer-launched processes
-  already inherit the full user/system PATH from the registry. The startup
-  log line — `using the inherited environment; login shell did not answer` —
-  reads like a failure on Windows but is actually "as designed, never
-  attempted."
-- **The Windows process scan listed one Claude session three times.** The
-  POSIX pass reads `args=` and applies a per-agent `reject` rule, but
-  `scanWindows()` selected only `ProcessId,Name` and pushed the
-  `app-server` exclusion into the WMI filter, so nothing else could be ruled
-  out. Claude's helpers wear the session's own binary name -- verified on
-  Windows 11, one background session is `claude.exe daemon run --origin
-  transient` (the daemon), `claude.exe --bg-pty-host \\.\pipe\cc-daemon-...`
-  (the PTY host) and `claude.exe --session-id ... --resume ...` (the session
-  Claude's roster already reports) -- so the import list offered all three,
-  two of them with an unknown folder. Fixed by selecting `CommandLine` on
-  Windows and applying the same `AGENT_COMMANDS` reject rules both platforms
-  share, with `^(daemon|--bg-pty-host)(\s|$)` added for Claude. The live scan
-  drops from five rows to two: the real session and one interactive Claude in
-  another terminal.
-- **A monitor row's folder stays unknown on Windows.** `cwdForPid` shells out
-  to `lsof` and returns `null` off POSIX; a Windows process's working
-  directory lives in its PEB, which WMI does not expose. The row still lists,
-  summarises and raises its window, so this is a missing detail rather than a
-  broken row.
-- **Closing the window hides it to the tray on every platform.** The Electron
-  process remains the notification and tray client, while `sertumd` continues
-  to own the hook server, adapters and sessions. Only the explicit “Quit
-  Sertum completely…” path stops the daemon and its owned sessions.
-- **The `.cmd` shim also displaces the codex app server's pid, which used to
-  orphan it on every quit.** The same `shell: true` that makes a `codex.cmd`
-  spawn legal puts `cmd.exe` between us and the server: `child.kill()`
-  terminates the shim while the server carries on holding its ephemeral port,
-  and the pid recorded for the next launch's reaper is the shim's — a pid that
-  died with the shim, so the reaper looked for it, found nothing and dropped
-  the record. One orphan per *normal* quit, not just per crash, each holding a
-  port until reboot. Fixed on both ends: the real pid is resolved from the port
-  it is listening on (`Get-NetTCPConnection`, falling back to `netstat -ano`)
-  and recorded instead of the shim's, and shutdown runs `taskkill /T /F` —
-  before killing the child, since the tree is only walkable while the shim is
-  alive. Neither path runs off Windows, where the process we spawn is the
-  server. Untested on Windows so far.
-- `dev-app-name.js` (the Dock name/icon branding hack) already no-ops on
-  `process.platform !== 'darwin'`, `titleBarStyle` already falls back to
-  `'default'` off Darwin, and `curl`-based hooks and the PTY smoke test
-  already worked as documented above with no changes needed.
-
-### Windows installer callback startup
-
-Squirrel install/update callbacks must not enter the normal `ready` handler.
-The shortcut helper quits asynchronously, so `ready` can race that exit and
-start a detached broker even though `electron-squirrel-startup` returned true.
-On Windows the installer then remained on its animation after shortcuts were
-created. Verified recovery: the callback-started broker had no sessions;
-gracefully stopping it immediately let Squirrel finish and launch the app.
-The `ready` handler now returns for Squirrel callbacks and losing single-instance
-launches, before connecting to or spawning a broker. Rebuilt-installer verification
-is still required for this guard.
-
-### Windows development launch privileges
-
-Run the development app and broker at the desktop user's normal privilege
-level. During Windows testing, Print Screen reached ShareX on the desktop but
-failed with Sertum focused while Sertum and sertumd were elevated and ShareX
-was not. Relaunching both with a limited interactive token removes that
-privilege mismatch; the user verified Print Screen works with Sertum focused
-after that relaunch. An elevated
-launcher can pass elevation through a `Shell.Application` launch too, so verify
-the resulting process tokens rather than assuming that route de-elevates them.
+Packaging and rebuild config, icons and the installer image, ConPTY's benign
+`kill()` throw, the process scan's reject rules, the codex app-server pid,
+and what is deliberately a no-op on this platform:
+[docs/windows.md](docs/windows.md).
 
 ## Layout
 
 ```
 SertumDesigns.pen             Design source of truth — wireframes, storyboards
+docs/                         The evidence behind the rules stated in AGENTS.md
+  conversation.md             Transcript to conversation; markdown; images
+  sessions.md                 Stream sessions, owned Codex threads, resume
+  approvals.md                Rules, the B5 bar, cards, permission modes
+  models.md                   Per-agent model catalogues and switching
+  terminal.md                 Keys, clipboard, WebGL loss, helper-process death
+  windows.md                  Packaging, binary resolution, icons, installer
+  git.md                      Commit from the review, pull requests via gh
 src/
   main.ts                     Electron main: window, menu, UI IPC, daemon proxies
   sertumd.ts                  The session broker: socket server, lifecycle, log
@@ -2360,37 +1178,38 @@ src/
   main/workspace.ts           Folder validation, git/worktree detection
   main/hook-server.ts         Plane 2 ingress — loopback HTTP, per-session URLs
   main/settings.ts            Display/agent-path preferences, JSON in userData
-  main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk
+  main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk  [docs/terminal.md]
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
-  main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)
-  main/pull-request.ts        Pull requests through the GitHub CLI (C16)
+  main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)  [docs/git.md]
+  main/pull-request.ts        Pull requests through the GitHub CLI (C16)  [docs/git.md]
   main/notifications.ts       System notifications from adapter events (C20, E5)
-  main/permission-rules.ts    Stored allow/deny/ask rules for tool calls (E2)
+  main/permission-rules.ts    Stored allow/deny/ask rules for tool calls (E2)  [docs/approvals.md]
   main/keybindings.ts         Command registry behind the menu accelerators (E6)
-  main/local-image.ts         Reads an image a message points at, inside the session folder
+  main/local-image.ts         Reads an image a message points at, inside the session folder  [docs/conversation.md]
   main/login-env.ts           macOS login-shell environment probe (no-op on Windows)
   main/adapters/agent-adapter.ts   Per-agent capabilities: declared answers, resolveBinary, renameRemote
-  main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search
+  main/adapters/binary-resolve.ts Shared existence-checked PATH × PATHEXT search  [docs/windows.md]
   main/adapters/claude.ts     Hook settings builder + event to status mapping
   main/adapters/codex.ts      Codex thread status/summary mapping
   main/adapters/codex-app-server.ts  Codex's private app-server: spawn, JSON-RPC, reap
-  main/adapters/grok.ts       Grok event to status mapping, session-dir lookup
+  main/adapters/grok.ts       Grok event to status mapping, session-dir lookup, model catalogue
   main/adapters/grok-event-log.ts  Plane 2 ingress for Grok: tails events.jsonl
   main/adapters/discovery.ts  Agent-agnostic discoverer registry
   main/adapters/process-scan.ts  Universal agent-process scanner
   main/adapters/session-meta.ts  Model/effort/context read from a live transcript
   main/adapters/transcript.ts    Per-agent transcript summaries
-  main/adapters/conversation.ts  Transcript parsed into conversation items (chat view)
-  main/adapters/markdown-format.ts  Is a message markdown, and is the markup the answer?
-  main/adapters/interactive-tools.ts  Cards read from a tool's own input, and how each answer gets back
-  main/adapters/claude-chat.ts   Headless Claude over stream-json (conversation sessions)
+  main/adapters/conversation.ts  Transcript parsed into conversation items (chat view)  [docs/conversation.md]
+  main/adapters/markdown-format.ts  Is a message markdown, and is the markup the answer?  [docs/conversation.md]
+  main/adapters/interactive-tools.ts  Cards read from a tool's own input, and how each answer gets back  [docs/approvals.md]
+  main/adapters/claude-chat.ts   Headless Claude over stream-json (conversation sessions)  [docs/sessions.md]
+  main/adapters/codex-chat.ts    Owned Codex threads on the private app server  [docs/sessions.md]
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
   shared/types.ts             Contracts shared across processes
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
-  renderer/terminal-pane.ts   One xterm bound to one PTY
-  renderer/chat-pane.ts       A session as a conversation; composer uses its declared transport
-  renderer/message-text.ts    Message text to DOM: markdown or source, never an HTML string
+  renderer/terminal-pane.ts   One xterm bound to one PTY  [docs/terminal.md]
+  renderer/chat-pane.ts       A session as a conversation; composer uses its declared transport  [docs/conversation.md]
+  renderer/message-text.ts    Message text to DOM: markdown or source, never an HTML string  [docs/conversation.md]
   renderer/pane-grid.ts       Split-pane geometry, gutters and readable-size limits
   renderer/layout-picker.ts   Single/Columns/Rows/Grid picker and split actions
   renderer/agent-icon.ts      Shared agent identity marks
@@ -2403,18 +1222,20 @@ src/
   renderer/worktree-dialog.ts     Worktree manager — wireframe C9
   renderer/new-session-dialog.ts  Wireframe C1
   renderer/adopt-dialog.ts        Wireframe C18
-  renderer/resume-dialog.ts       Resume a past conversation by agent + folder
+  renderer/resume-dialog.ts       Resume a past conversation by agent + folder  [docs/sessions.md]
   renderer/diff-review-dialog.ts  Changes review — wireframe C11
   renderer/commit-dialog.ts       Commit & push sheet — wireframe C15
   renderer/pull-request-dialog.ts Open pull request — wireframe C16
-  renderer/approval-bar.ts        Tool-call approval bar, above the composer — wireframe B5
-  renderer/approval-card.ts       Question and plan cards, when allow/deny is not the question
-  renderer/permission-mode.ts     The mode catalogue and its picker (plan, auto, accept edits…)
+  renderer/approval-bar.ts        Tool-call approval bar, above the composer — wireframe B5  [docs/approvals.md]
+  renderer/approval-card.ts       Question and plan cards, when allow/deny is not the question  [docs/approvals.md]
+  renderer/permission-mode.ts     The mode catalogue and its picker (plan, auto, accept edits…)  [docs/approvals.md]
+  renderer/model-picker.ts        The models an agent offers this session, and the switch  [docs/models.md]
 scripts/
   ensure-electron.js          Fetch the Electron binary if absent; Electron 42+ has no postinstall
   smoke-pty.js                Headless PTY test
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
   smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall
+  smoke-model-switch.ts       model-select: read each agent's catalogue, switch, confirm the turn ran on it
   drive.js                    CDP driver for headless verification
 ```
