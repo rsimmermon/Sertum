@@ -135,6 +135,12 @@ What's built and verified so far:
       Declared as `structured-conversation`; Claude and Codex provide owned
       structured hosts. Grok and shell decline and retain PTYs (visible only
       for Shell). See "Conversation sessions" below.
+- [x] **Resuming a previous session** — a Resume dialog lists past
+      conversations for a chosen folder (Claude's own transcript directory,
+      Codex's `thread/list`) and starts a brand-new process bound to the
+      picked one's id, continuing it rather than beginning blank. Declared as
+      `session-resume`; Grok and shell decline. See "Resuming a previous
+      session" below.
 - [x] **Claude-native background hosting** — an optional, agent-specific path
       predating `sertumd`: an Agents setting starts Claude under its own daemon
       (`--bg`) and Sertum attaches as a client. Declared as `background-host`;
@@ -808,7 +814,8 @@ and applied the instant `turn/completed` lands. A later ask while one is
 already queued simply overwrites it -- only the mode you actually land on
 when the turn ends is meaningful, the same as retyping over an unsent draft.
 `PermissionModeResult` carries a `queued` flag for exactly this reply,
-distinct from both an applied change and a refusal; the composer note under
+distinct from both an applied change and a refusal. The daemon must not publish
+that queued mode as effective session metadata; the composer note under
 the mode chip is the only place a queued change is visible until
 `mode-applied` lands and the chip repaints from the snapshot like any other
 mode change. A failure applying the queued mode reaches the session as an
@@ -825,6 +832,130 @@ permission grants remain schema/fixture tested; a live grant has not been
 verified yet. `scripts/smoke-codex-fabric.ts` verifies the public daemon handlers
 for creation, send, pending approvals, denial, status and exact transcript
 resolution under Electron’s Node runtime.
+
+### Resuming a previous session
+
+`session-resume` starts a brand-new process bound to a past conversation's
+own id, so the agent continues exactly where it left off instead of
+beginning blank. It is declared like every other capability -- Claude and
+Codex answer `ok` with `requires: 'structured-conversation'`, since there is
+no PTY state to resume into, only a transcript; Grok and shell decline, the
+former because its CLI has no way to resume a session by id at all.
+
+Both mechanisms were verified live against the installed CLIs rather than
+assumed from `--help` text:
+
+- **Claude**: `claude --resume <id>` in place of `--session-id <id>` on the
+  same `--print --input-format stream-json --output-format stream-json`
+  invocation `createConversationSession` already builds. Verified against
+  Claude Code 2.1.263 end to end: a first turn taught a session a secret
+  value under a fresh `--session-id`; a wholly separate process, given only
+  `--resume <that id>`, answered a follow-up turn with the secret correctly
+  and `system/init` echoed the same session id back. The transcript file
+  grew from 12 lines to 19 across the two processes -- one continuous file,
+  not two -- which is also why the conversation view needs no changes at
+  all to show a resumed session's earlier turns: `transcriptFor` already
+  matches by exact session id.
+- **Codex**: `thread/resume` needs nothing but a `threadId` -- verified
+  against Codex CLI 0.153.4 by starting a thread on one app-server process,
+  killing that process's entire tree (not just the client connection), and
+  resuming the same id from a brand-new server that had never seen it: the
+  resumed thread answered a follow-up turn with full context from before
+  that process existed. `thread/list` with a `cwd` filter finds such threads
+  purely from what is on disk, with no live process or pid involved, which
+  is what makes it usable here where the same call was rejected for live
+  discovery (see "Discovery is agent-agnostic by construction" above) --
+  that rejection was specifically about attributing a *pid* to a `notLoaded`
+  thread, a problem resuming never has because it does not need one.
+  `CodexThread` gained `parentThreadId` so `resumableThread` can exclude
+  AgentControl sub-agent threads the same way `isUserThread` already excludes
+  the throwaway title-generation thread.
+
+Listing past sessions is therefore two genuinely different reads, one per
+agent, both landing on the shared `ResumableSession` shape: Codex's comes
+from its own roster (`CodexChatHost.listResumable`, wrapping `thread/list`);
+Claude has no roster API, so `listResumableClaudeSessions` enumerates
+`~/.claude/projects/<cwd-hash>/*.jsonl` directly -- the same directory
+`findClaudeTranscript` already reads, scoped to one folder for the same
+reason every session-creation surface in this app asks for a folder first.
+A session already live in Sertum is filtered out of the list before it
+reaches the dialog: resuming it a second time would race the copy already
+running for the same id, which is exactly what Codex's own "already has an
+active writer" refusal was verified to say when that race was tried
+deliberately.
+
+The resume dialog (`renderer/resume-dialog.ts`) mirrors C18's adopt dialog's
+list-of-rows shape but reads past conversations instead of live processes,
+and mirrors C1's own convention of asking for a working folder first with
+the same folder field, Browse button and recents. Picking a row performs the
+resume itself and reports a failure inline, the same convention C1 uses for
+a failed spawn, rather than closing and losing the choice.
+
+### A resumed Claude process needs a moment before its first turn
+
+Sending a message the instant a `--resume`d process spawns is not safe, and
+this was found and fixed by driving the real CLI rather than trusting that
+`--resume` behaves like `--session-id` with older history attached. Verified
+against Claude Code 2.1.263: a message written to stdin immediately after
+spawn came back `"No response requested."` — a real reply, not an error, so
+nothing in the transport looked broken — while the identical message held
+back for `RESUME_SETTLE_MS` (2000ms) answered correctly and recalled the
+earlier turn.
+
+Two mechanisms that look like the obvious fix were tried and verified wrong
+before this one, and both are worth naming so they are not tried again:
+
+- **Gating the first send on `system/init`, unconditionally.** This
+  deadlocked a *fresh* session outright: driving a real spawn with the send
+  withheld showed the process staying completely silent, because `system/init`
+  is emitted as part of *beginning* a turn ("Init opens every turn") and a
+  turn cannot begin without input already sent. Withholding input to wait for
+  a signal that only input produces is a real deadlock, not a race that
+  usually resolves.
+- **Gating the first send on `system/init`, scoped to only a resumed
+  process.** This does not deadlock, but it does not work either: driving a
+  real `--resume` spawn with the send withheld showed the same silence for
+  60+ seconds, proving `init` needs a turn to open for a resumed process too
+  -- there is no independent "history finished loading" event to wait on.
+
+What actually discriminates the working case from the broken one is real
+wall-clock time since spawn, not any observable event, which is why
+`ClaudeChatHost.awaitingResumeSettle` is a plain timer: `spawn` starts it
+only when `resuming` is passed, `send` queues into it while it is pending,
+and its callback flushes the queue in order once it fires. An ordinary fresh
+spawn never sets it at all, so the fix changes nothing about the path that
+already worked.
+
+This uncovered a second, independent bug already present before resume
+existed: `SessionStart`'s hook payload carries a `source` field --
+`"startup"`, `"resume"`, `"clear"`, `"compact"` -- verified with a raw hook
+capture, and `mapClaudeHook` was mapping every `SessionStart` to
+`{status: 'idle', activity: 'ready'}` regardless of which. That is correct
+for `"startup"`, where nothing has happened yet, but a resumed session's
+`SessionStart:resume` hook can land *after* `chat/send`'s own optimistic
+`{status: 'working', activity: 'thinking'}` -- verified by capturing the
+exact interleaving -- silently overwriting a turn that has genuinely begun
+with a stale "ready". `mapClaudeHook` now reports nothing (`{}`) for every
+`source` but `"startup"`, letting the turn's own lifecycle stay the only
+authority on whether one is running, the same rule every other event in that
+function already follows.
+
+A third, unrelated finding from the same live testing: Claude's own
+`~/.claude/projects/` directory name replaces `.` in the cwd exactly like
+`/`, `\` and `:` -- one dash per character, never collapsed -- which
+`claudeProjectDirName` now matches. Missing this made a dotted working
+folder (a `.temp` scratch directory, in the case that surfaced it) silently
+show no past Claude sessions at all, since `listResumableClaudeSessions` has
+nothing but that directory name to go on.
+
+Codex needed no equivalent settle delay -- verified by resuming a thread and
+calling `turn/start` in the same tick, which answered correctly -- but
+`thread/list` itself has a brief indexing lag after a thread is created, so
+a session resumed within about a second of being created may not appear in
+`session/resumable` yet. This does not matter in practice: the dialog lists
+sessions that have already been sitting closed, not ones from the last
+second, and `scripts/smoke-resume.ts` polls past the lag rather than
+assuming it away.
 
 ## Claude-native background hosting
 
@@ -2146,6 +2277,18 @@ fixed along the way:
   `'default'` off Darwin, and `curl`-based hooks and the PTY smoke test
   already worked as documented above with no changes needed.
 
+### Windows installer callback startup
+
+Squirrel install/update callbacks must not enter the normal `ready` handler.
+The shortcut helper quits asynchronously, so `ready` can race that exit and
+start a detached broker even though `electron-squirrel-startup` returned true.
+On Windows the installer then remained on its animation after shortcuts were
+created. Verified recovery: the callback-started broker had no sessions;
+gracefully stopping it immediately let Squirrel finish and launch the app.
+The `ready` handler now returns for Squirrel callbacks and losing single-instance
+launches, before connecting to or spawning a broker. Rebuilt-installer verification
+is still required for this guard.
+
 ### Windows development launch privileges
 
 Run the development app and broker at the desktop user's normal privilege
@@ -2214,6 +2357,7 @@ src/
   renderer/worktree-dialog.ts     Worktree manager — wireframe C9
   renderer/new-session-dialog.ts  Wireframe C1
   renderer/adopt-dialog.ts        Wireframe C18
+  renderer/resume-dialog.ts       Resume a past conversation by agent + folder
   renderer/diff-review-dialog.ts  Changes review — wireframe C11
   renderer/commit-dialog.ts       Commit & push sheet — wireframe C15
   renderer/pull-request-dialog.ts Open pull request — wireframe C16
@@ -2224,5 +2368,6 @@ scripts/
   smoke-pty.js                Headless PTY test
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
+  smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall
   drive.js                    CDP driver for headless verification
 ```

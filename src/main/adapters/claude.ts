@@ -96,8 +96,18 @@ export function mapClaudeHook(
   const tool = str(payload.tool_name);
 
   switch (event) {
+    // `source` distinguishes a genuine fresh start ("startup") from
+    // "resume", "clear" and "compact" -- verified against Claude Code
+    // 2.1.263 that `--resume` fires this with `source: "resume"`. Only a
+    // real startup means nothing is happening yet: a resumed session's own
+    // adapter deliberately queues its first turn until `system/init`
+    // arrives, and this hook can land after that turn is already sent,
+    // overwriting a genuine "thinking" with a stale "ready" for a turn that
+    // has already begun.
     case 'SessionStart':
-      return { status: 'idle', activity: 'ready' };
+      return payload.source === 'startup'
+        ? { status: 'idle', activity: 'ready' }
+        : {};
 
     case 'UserPromptSubmit':
       return { status: 'working', activity: 'thinking' };

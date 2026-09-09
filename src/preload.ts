@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  AgentKind,
   ApprovalAnswer,
   DiffCommitRequest,
   PendingApproval,
   PermissionRule,
   ManagedAgent,
   MenuState,
+  ResumableSession,
   SertumApi,
   PtyDataEvent,
   PtyExitEvent,
@@ -113,6 +115,10 @@ const api: SertumApi = {
   discoverSessions: () => ipcRenderer.invoke('discovery:list'),
   attachSession: (d) => ipcRenderer.invoke('discovery:attach', d),
   monitorSession: (d) => ipcRenderer.invoke('discovery:monitor', d),
+  listResumableSessions: (agent: AgentKind, cwd: string) =>
+    ipcRenderer.invoke('session:resumable', { agent, cwd }),
+  resumeSession: (r: ResumableSession, label?: string) =>
+    ipcRenderer.invoke('session:resume', { r, label }),
   focusExternal: (pid: number) => ipcRenderer.invoke('discovery:focus', pid),
   openAutomationSettings: () =>
     ipcRenderer.invoke('shell:automation-settings'),

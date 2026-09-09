@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentKind } from '../../shared/types';
+import type { AgentKind, ResumableSession } from '../../shared/types';
 import { findGrokSessionDir, findGrokSessionDirForCwd } from './grok';
 
 /** Only the tail is read: transcripts reach megabytes. */
@@ -32,7 +32,11 @@ export function summarizeSession(
   agent: AgentKind,
   opts: { sessionId?: string | null; cwd?: string | null },
 ): TranscriptSummary {
-  const file = findTranscript(agent, opts.sessionId ?? null, opts.cwd ?? null);
+  return summarizeFile(agent, findTranscript(agent, opts.sessionId ?? null, opts.cwd ?? null));
+}
+
+/** The read the whole file above wraps: locate first, then read. */
+function summarizeFile(agent: AgentKind, file: string | null): TranscriptSummary {
   if (!file) return EMPTY;
 
   const tail = readTail(file);
@@ -174,6 +178,21 @@ function findGrokTranscript(
   return isFile(file) ? file : null;
 }
 
+/**
+ * The directory name Claude derives from a cwd for `~/.claude/projects/`.
+ *
+ * Verified against Claude Code 2.1.263 with a real dotted path: `.temp` in
+ * the cwd came back as `--temp`, proving `.` is replaced exactly like `/`,
+ * `\` and `:` are -- one dash per character, never collapsed. Missing the
+ * dot here is not cosmetic: it is the only thing `listResumableClaudeSessions`
+ * has to go on, so a project path with a dot in it -- a dotfile, a `.temp`
+ * scratch folder, a versioned directory name -- silently showed no past
+ * sessions at all before this matched Claude's own encoding exactly.
+ */
+function claudeProjectDirName(cwd: string): string {
+  return cwd.replace(/[/\\:.]/g, '-');
+}
+
 function findClaudeTranscript(
   sessionId: string | null,
   cwd: string | null,
@@ -185,7 +204,7 @@ function findClaudeTranscript(
       os.homedir(),
       '.claude',
       'projects',
-      cwd.replace(/[/\\:]/g, '-'),
+      claudeProjectDirName(cwd),
     );
     const newest = safeReaddir(dir)
       .filter((f) => f.endsWith('.jsonl'))
@@ -202,7 +221,7 @@ function findClaudeTranscript(
   }
   const root = path.join(os.homedir(), '.claude', 'projects');
   if (cwd) {
-    const guess = path.join(root, cwd.replace(/[/\\:]/g, '-'), `${sessionId}.jsonl`);
+    const guess = path.join(root, claudeProjectDirName(cwd), `${sessionId}.jsonl`);
     if (isFile(guess)) return guess;
   }
   for (const dir of safeReaddir(root)) {
@@ -381,6 +400,40 @@ export function findTranscriptForSession(
   cwd: string | null,
 ): string | null {
   return findTranscript(agent, sessionId, cwd);
+}
+
+/**
+ * Past Claude sessions in this folder that `claude --resume <id>` can
+ * continue -- one entry per transcript file, read the same way
+ * `summarizeSession` reads any other. There is no roster API for this the
+ * way Codex has `thread/list`; the directory Claude already writes to is the
+ * only source, and enumerating it is the same class of read as everything
+ * else in this file.
+ */
+export function listResumableClaudeSessions(cwd: string): ResumableSession[] {
+  const dir = path.join(os.homedir(), '.claude', 'projects', claudeProjectDirName(cwd));
+  return safeReaddirEnt(dir)
+    .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
+    .map((e): ResumableSession | null => {
+      const file = path.join(dir, e.name);
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(file).mtimeMs;
+      } catch {
+        return null; // Vanished between listing and stat.
+      }
+      const summary = summarizeFile('claude', file);
+      return {
+        agent: 'claude',
+        externalId: e.name.slice(0, -'.jsonl'.length),
+        cwd,
+        preview: summary.lastAssistant ?? summary.lastUser,
+        updatedAt: summary.updatedAt ?? mtimeMs,
+        name: null,
+      };
+    })
+    .filter((r): r is ResumableSession => r !== null)
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
 export function findTranscriptForCwd(

@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { ApprovalAnswer, PendingApproval, PermissionMode, PermissionModeResult } from '../../shared/types';
+import type { ApprovalAnswer, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession } from '../../shared/types';
 import { CodexAppServer, type CodexNotification, type CodexServerRequest } from './codex-app-server';
-import { mapCodexStatus, type CodexThreadStatus } from './codex';
+import { mapCodexStatus, resumableThread, type CodexThread, type CodexThreadStatus } from './codex';
 
 type ObjectValue = Record<string, unknown>;
 const object = (v: unknown): ObjectValue => v && typeof v === 'object' && !Array.isArray(v) ? v as ObjectValue : {};
@@ -50,7 +50,7 @@ export class CodexChatHost extends EventEmitter {
 
   has(id: string): boolean { return this.sessions.has(id); }
 
-  async start(id: string, cwd: string): Promise<{ threadId: string; model: string; path: string; mode: PermissionMode | null }> {
+  async start(id: string, cwd: string): Promise<{ threadId: string; model: string; path: string; cwd: string; mode: PermissionMode | null }> {
     if (!this.server.connected) throw new Error('Codex app server is unavailable.');
     const result = object(await this.server.request('thread/start', {
       cwd, approvalPolicy: 'untrusted', sandbox: 'workspace-write',
@@ -62,7 +62,57 @@ export class CodexChatHost extends EventEmitter {
     const session: Hosted = { id, threadId, turnId: null, busy: false, closing: false, items: new Map() };
     this.sessions.set(id, session);
     this.threads.set(threadId, session);
-    return { threadId, model: string(result.model), path: string(thread.path), mode: policyMode(result.approvalPolicy) };
+    return { threadId, model: string(result.model), path: string(thread.path), cwd, mode: policyMode(result.approvalPolicy) };
+  }
+
+  /**
+   * Loads a past thread from disk into this app server and binds it to a new
+   * Sertum session, exactly as `start` binds a brand-new one.
+   *
+   * Verified against Codex CLI 0.153.4 by killing the app server that created
+   * a thread -- the whole process tree, not just the client connection -- and
+   * resuming it from a brand-new one that never saw it: the resumed thread
+   * answered a follow-up turn with full context from before that process
+   * existed. `thread/resume` needs nothing but the id; the cwd it reports back
+   * is the thread's own, never overridden here.
+   */
+  async resume(id: string, threadId: string): Promise<{ threadId: string; model: string; path: string; cwd: string; mode: PermissionMode | null }> {
+    if (!this.server.connected) throw new Error('Codex app server is unavailable.');
+    const result = object(await this.server.request('thread/resume', { threadId }));
+    const thread = object(result.thread);
+    const resumedId = string(thread.id) || threadId;
+    if (!resumedId || !this.server.connected) throw new Error('Codex did not return a live thread.');
+    const session: Hosted = { id, threadId: resumedId, turnId: null, busy: false, closing: false, items: new Map() };
+    this.sessions.set(id, session);
+    this.threads.set(resumedId, session);
+    return {
+      threadId: resumedId,
+      model: string(result.model),
+      path: string(thread.path),
+      cwd: string(result.cwd),
+      mode: policyMode(result.approvalPolicy),
+    };
+  }
+
+  /**
+   * Past threads for this folder, read from the app server's own roster
+   * rather than a live process -- `thread/list` answers from disk, so a
+   * thread whose process exited long ago still appears. See `resume` above
+   * for how that was verified.
+   */
+  async listResumable(cwd: string): Promise<ResumableSession[]> {
+    if (!this.server.connected) return [];
+    let result: ObjectValue;
+    try {
+      result = object(await this.server.request('thread/list', { cwd }));
+    } catch {
+      return [];
+    }
+    const rows = Array.isArray(result.data) ? (result.data as CodexThread[]) : [];
+    return rows
+      .map(resumableThread)
+      .filter((r): r is ResumableSession => r !== null)
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   }
 
   async send(id: string, text: string): Promise<boolean> {

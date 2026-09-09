@@ -6,6 +6,9 @@ import type {
   SessionStatus,
 } from '../../shared/types';
 
+/** See `Hosted.awaitingResumeSettle`. */
+const RESUME_SETTLE_MS = 2000;
+
 /**
  * Hosts headless Claude chat processes over its structured stream transport.
  *
@@ -112,6 +115,26 @@ interface Hosted {
   /** Requests *we* sent, waiting on the CLI's answer. */
   replies: Map<string, (r: ControlReply) => void>;
   nextRequest: number;
+  /**
+   * A `--resume`d process still settling in, so the first turn sent to it
+   * queues here instead of writing immediately. Cleared by a timer, not an
+   * event: there is no stream record for "history finished loading" to wait
+   * on, and `system/init` is not it -- verified by the deadlock that
+   * resulted from gating on `init` instead, where a resumed process given no
+   * input first stayed completely silent for 60+ seconds, proving `init`
+   * itself needs a turn to open ("Init opens every turn," see below) rather
+   * than announcing readiness on its own. Undefined (not merely false) for
+   * an ordinary fresh spawn, which must never queue at all -- the same
+   * chicken-and-egg deadlock applies to it even harder, since it has no
+   * history to fall back on either.
+   *
+   * `RESUME_SETTLE_MS` of real wall-clock time is what was actually verified
+   * against Claude Code 2.1.263 to work: a message written immediately after
+   * `--resume` spawn came back "No response requested." instead of an
+   * answer, while the identical message held for this long answered
+   * correctly and recalled the earlier turn.
+   */
+  awaitingResumeSettle?: { queued: string[]; timer: NodeJS.Timeout };
 }
 
 /** The CLI's answer to one request of ours. */
@@ -137,6 +160,8 @@ export class ClaudeChatHost extends EventEmitter {
       args: string[];
       cwd: string;
       env: Record<string, string>;
+      /** True when `args` carries `--resume`. See `Hosted.awaitingResumeSettle`. */
+      resuming?: boolean;
     },
   ): number | null {
     let child: ChildProcess;
@@ -163,6 +188,12 @@ export class ClaudeChatHost extends EventEmitter {
       replies: new Map(),
       nextRequest: 1,
     };
+    if (opts.resuming) {
+      entry.awaitingResumeSettle = {
+        queued: [],
+        timer: setTimeout(() => this.releaseResumeSettle(id), RESUME_SETTLE_MS),
+      };
+    }
     this.hosted.set(id, entry);
 
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -181,11 +212,13 @@ export class ClaudeChatHost extends EventEmitter {
     child.on('error', (err) => {
       console.warn(`[claude-chat ${id.slice(0, 8)}] spawn error:`, err.message);
       entry.alive = false;
+      if (entry.awaitingResumeSettle) clearTimeout(entry.awaitingResumeSettle.timer);
       this.emit('exit', { id, exitCode: -1 } satisfies ChatStreamEvents['exit']);
       this.hosted.delete(id);
     });
     child.on('exit', (code) => {
       entry.alive = false;
+      if (entry.awaitingResumeSettle) clearTimeout(entry.awaitingResumeSettle.timer);
       // Anything still waiting on this process will never be answered, so it
       // is told rather than left to its deadline.
       for (const settle of [...entry.replies.values()]) {
@@ -202,23 +235,46 @@ export class ClaudeChatHost extends EventEmitter {
     return child.pid;
   }
 
-  /** One user message down the wire. The turn begins when Claude reads it. */
+  /**
+   * One user message down the wire. The turn begins when Claude reads it --
+   * except for a `--resume`d process still settling in, which queues the
+   * text instead. See `Hosted.awaitingResumeSettle`.
+   */
   send(id: string, text: string): boolean {
     const entry = this.hosted.get(id);
     if (!entry?.alive || !entry.child.stdin?.writable) return false;
+    if (entry.awaitingResumeSettle) {
+      entry.awaitingResumeSettle.queued.push(text);
+    } else if (!this.writeUserMessage(entry, text)) {
+      return false;
+    }
+    // The stream stays silent until the model starts answering (or until the
+    // settle timer releases a queued turn), so the send itself is the moment
+    // the session stops being idle.
+    this.update(id, { status: 'working', activity: 'thinking' });
+    return true;
+  }
+
+  private writeUserMessage(entry: Hosted, text: string): boolean {
     const message = {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text }] },
     };
     try {
-      entry.child.stdin.write(`${JSON.stringify(message)}\n`);
+      entry.child.stdin!.write(`${JSON.stringify(message)}\n`);
     } catch {
       return false;
     }
-    // The stream stays silent until the model starts answering, so the send
-    // itself is the moment the session stops being idle.
-    this.update(id, { status: 'working', activity: 'thinking' });
     return true;
+  }
+
+  /** Flushes whatever queued while a resumed process was settling in. */
+  private releaseResumeSettle(id: string): void {
+    const entry = this.hosted.get(id);
+    if (!entry?.awaitingResumeSettle) return;
+    const { queued } = entry.awaitingResumeSettle;
+    entry.awaitingResumeSettle = undefined;
+    for (const text of queued) this.writeUserMessage(entry, text);
   }
 
   /**

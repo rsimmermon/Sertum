@@ -94,7 +94,16 @@ export type AgentCapability =
    * adopted native daemon decline. General window-close persistence does not
    * depend on this capability: `sertumd` owns every ordinary session.
    */
-  | 'background-host';
+  | 'background-host'
+  /**
+   * Start a brand-new process bound to a past conversation's own id, so the
+   * agent continues exactly where it left off instead of beginning blank.
+   *
+   * Only meaningful for a structured-conversation session — there is no PTY
+   * state to resume into, only the agent's own transcript — so every adapter
+   * answering `ok` also sets `requires: 'structured-conversation'`.
+   */
+  | 'session-resume';
 
 /**
  * How the agent decides whether a tool call may run.
@@ -319,6 +328,29 @@ export interface DiscoveredSession {
   /** One-line description read from the session's own transcript. */
   summary: string | null;
   lastActivityAt: number | null;
+}
+
+/**
+ * A past conversation this app is not running, found by reading the agent's
+ * own record — Claude's transcript directory, Codex's `thread/list` — rather
+ * than the process table. This is what the resume dialog lists; picking one
+ * starts a brand-new process bound to its id, the `session-resume`
+ * capability's one job.
+ *
+ * Unlike `DiscoveredSession`, there is no live process here at all: no pid,
+ * no status, nothing to adopt. Just an id an agent can be asked to continue.
+ */
+export interface ResumableSession {
+  agent: AgentKind;
+  /** The agent's own session/thread id, passed back to resume it. */
+  externalId: string;
+  cwd: string;
+  /** One-line description of the conversation, from the agent's own record. */
+  preview: string | null;
+  /** When the agent last wrote to this session, epoch ms, when known. */
+  updatedAt: number | null;
+  /** The agent's own name for the session, when it tracks one (Codex). */
+  name: string | null;
 }
 
 /** Outcome of asking the OS to raise the window owning a session. */
@@ -1155,6 +1187,19 @@ export interface SertumApi {
   attachSession(d: DiscoveredSession): Promise<SessionSnapshot>;
   /** Track a session we cannot render, as a live status row. */
   monitorSession(d: DiscoveredSession): Promise<SessionSnapshot>;
+  /**
+   * Past sessions this agent can resume in this folder, newest first. Reads
+   * the agent's own record — Claude's transcript directory, Codex's
+   * `thread/list` — never the process table, so a session whose process
+   * exited long ago still appears. Empty for an agent that declined
+   * `session-resume`.
+   */
+  listResumableSessions(agent: AgentKind, cwd: string): Promise<ResumableSession[]>;
+  /**
+   * Starts a brand-new structured-conversation session bound to a past
+   * conversation's own id, continuing it rather than beginning blank.
+   */
+  resumeSession(r: ResumableSession, label?: string): Promise<SessionSnapshot>;
   /** Raise the OS window that owns a session we cannot render. */
   focusExternal(pid: number): Promise<FocusOutcome>;
   /** Opens Privacy & Security › Automation, where our grant lives. */

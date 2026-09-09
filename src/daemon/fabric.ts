@@ -46,6 +46,7 @@ import {
 import {
   findTranscriptForCwd,
   findTranscriptForSession,
+  listResumableClaudeSessions,
 } from '../main/adapters/transcript';
 import { createAgentAdapters } from '../main/adapters/agent-adapter';
 import { approvalCardFor } from '../main/adapters/interactive-tools';
@@ -69,6 +70,7 @@ import {
   type PermissionModeResult,
   type PermissionRule,
   type PtySize,
+  type ResumableSession,
   type SessionSnapshot,
   type SessionSpec,
   type SessionStatus,
@@ -427,13 +429,18 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     }
   });
 
-  async function createCodexConversationSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot> {
+  async function createCodexConversationSession(
+    spec: Partial<SessionSpec>,
+    resumeThreadId?: string,
+  ): Promise<SessionSnapshot> {
     const id = randomUUID();
-    const cwd = spec.cwd ?? process.cwd();
-    const started = await codexChat.start(id, cwd);
+    const started = resumeThreadId
+      ? await codexChat.resume(id, resumeThreadId)
+      : await codexChat.start(id, spec.cwd ?? process.cwd());
     threadToSession.set(started.threadId, id);
     ptys.registerStream({
-      id, label: spec.label ?? 'Codex', agent: 'codex', cwd,
+      id, label: spec.label ?? 'Codex', agent: 'codex',
+      cwd: started.cwd || spec.cwd || process.cwd(),
       command: resolvedCommand('codex') ?? 'codex', args: [],
       pid: codex.serverPid!, externalId: started.threadId,
       controls: {
@@ -448,9 +455,10 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
 
   function createConversationSession(
     spec: Partial<SessionSpec>,
+    resumeId?: string,
   ): SessionSnapshot {
     const id = randomUUID();
-    const externalId = randomUUID();
+    const externalId = resumeId ?? randomUUID();
     const cwd = spec.cwd ?? process.cwd();
     const command = resolvedCommand('claude', spec.command);
     if (!command) throw new Error('Claude Code binary not found');
@@ -462,8 +470,10 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       'stream-json',
       '--include-partial-messages',
       '--verbose',
-      '--session-id',
-      externalId,
+      // `--resume` reuses the id it is given rather than minting one --
+      // verified to append to the exact same transcript file across a fresh
+      // process, which is why a resumed session's id is never `--session-id`.
+      ...(resumeId ? ['--resume', resumeId] : ['--session-id', externalId]),
       // Declares an approval surface. Without it a headless session cannot
       // ask at all: anything that would prompt is refused with "no approval
       // surface in this session; permission request denied automatically",
@@ -485,13 +495,14 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       command,
       args,
       cwd,
+      resuming: Boolean(resumeId),
       env: { ...agentSafeEnv(), SERTUM_SESSION_ID: id },
     });
     if (pid === null) {
       throw new Error(`Could not start ${command} for a conversation session`);
     }
 
-    const snapshot = ptys.registerStream({
+    ptys.registerStream({
       id,
       label: spec.label ?? 'conversation',
       agent: 'claude',
@@ -505,12 +516,24 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         terminate: (graceMs) => claudeChat.terminate(id, graceMs),
       },
     });
+    // registerStream's default ('working' / 'starting…') is right for a
+    // session about to run an initial turn, but nothing here sends one:
+    // `system/init` only arrives once a turn opens ("Init opens every turn" --
+    // see ClaudeChatHost), which for a fresh or resumed conversation session
+    // means the process sits waiting for the reader's first message. Left at
+    // the default, the pane read as permanently working -- a stop button
+    // where the composer's send button belongs, and a waiting bubble reading
+    // "starting…" that no event was ever going to clear -- exactly the
+    // crying-wolf failure the two planes exist to prevent, and indistinguishable
+    // from a genuinely hung process. Settling to idle here matches what
+    // `createCodexConversationSession` already does for the same reason.
+    ptys.applyUpdate(id, { status: 'idle', activity: 'ready' });
     // Its own control channel answers permission questions, so the
     // `PermissionRequest` hook must not raise a second bar for the same call.
     hooks.setHostAnsweredPermissions(id, true);
     const model = readConfiguredModel('claude');
     if (model) ptys.applyMeta(id, { model });
-    return snapshot;
+    return ptys.get(id)!;
   }
 
   // --------------------------------------------------- background sessions
@@ -943,6 +966,45 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         status: d.status,
       }),
 
+    /**
+     * Past sessions this agent can resume in this folder — read from the
+     * agent's own record, never the process table, so one whose process
+     * exited long ago still appears. A session already live here is filtered
+     * out: resuming it a second time would race the one already running for
+     * the same id, which Codex's own "already has an active writer" refusal
+     * confirms is not a state worth offering.
+     */
+    'session/resumable': async (p: { agent: AgentKind; cwd: string }): Promise<ResumableSession[]> => {
+      const answer = agentAdapters.get(p.agent)?.capabilities['session-resume'];
+      if (!answer?.ok) return [];
+      const found =
+        p.agent === 'codex' ? await codexChat.listResumable(p.cwd)
+        : p.agent === 'claude' ? listResumableClaudeSessions(p.cwd)
+        : [];
+      const live = new Set(
+        ptys.list()
+          .filter((s) => s.origin === 'owned' && s.exitCode === null && s.externalId)
+          .map((s) => s.externalId as string),
+      );
+      return found.filter((r) => !live.has(r.externalId));
+    },
+    /**
+     * Starts a brand-new structured-conversation session bound to a past
+     * conversation's own id. `spec.cwd` is deliberately the resumable
+     * session's own folder, never asked for again here -- the picker already
+     * showed it.
+     */
+    'session/resume': (p: { r: ResumableSession; label?: string }): Promise<SessionSnapshot> | SessionSnapshot => {
+      const answer = agentAdapters.get(p.r.agent)?.capabilities['session-resume'];
+      if (!answer?.ok) {
+        throw new Error(answer && !answer.ok ? answer.reason : `${p.r.agent} cannot resume a past session`);
+      }
+      const spec: Partial<SessionSpec> = { label: p.label, cwd: p.r.cwd };
+      return p.r.agent === 'codex'
+        ? createCodexConversationSession(spec, p.r.externalId)
+        : createConversationSession(spec, p.r.externalId);
+    },
+
     'agent/capabilities': () =>
       Object.fromEntries(
         [...agentAdapters].map(([agent, adapter]) => [
@@ -1018,7 +1080,8 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       if (!answer.ok) return answer;
       if (!answer.modes?.includes(p.mode)) return { ok: false, reason: 'This agent does not support that mode.' };
       const result = await structuredHostFor(p.id).setPermissionMode(p.id, p.mode);
-      if (result.ok) ptys.applyMeta(p.id, { permissionMode: result.mode });
+      // Queued Codex changes are not effective until mode-applied arrives.
+      if (result.ok && !result.queued) ptys.applyMeta(p.id, { permissionMode: result.mode });
       return result;
     },
 

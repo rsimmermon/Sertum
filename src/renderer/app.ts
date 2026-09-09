@@ -4,6 +4,7 @@ import { ChatPane } from './chat-pane';
 import { ApprovalBar } from './approval-bar';
 import { openNewSessionDialog } from './new-session-dialog';
 import { openAdoptDialog } from './adopt-dialog';
+import { openResumeDialog } from './resume-dialog';
 import { openSettingsDialog } from './settings-dialog';
 import { openConfirmDialog } from './confirm-dialog';
 import { agentName, effortChip, modelChip } from './chips';
@@ -307,6 +308,7 @@ export class App {
     menu.on('new-session', () => void this.promptNewSession());
     menu.on('settings', () => void this.promptSettings());
     menu.on('import-sessions', () => void this.promptAdopt());
+    menu.on('resume-session', () => void this.promptResume());
     menu.on('close-tab', () => {
       if (this.activeId) void this.closeTab(this.activeId);
     });
@@ -451,6 +453,28 @@ export class App {
       this.sessions.set(snapshot.id, snapshot);
       this.activeId = snapshot.id;
     }
+    this.render();
+  }
+
+  /**
+   * Resumes a past conversation as a brand-new structured-conversation
+   * session. Always `stream` transport -- resuming is exactly what that
+   * transport is for -- so this wires in the same way `promptNewSession`
+   * does for a `stream` result, with no terminal pane to create.
+   */
+  async promptResume(): Promise<void> {
+    const startCwd =
+      this.lastCwd ??
+      (this.activeId ? this.sessions.get(this.activeId)?.cwd : undefined) ??
+      (await api.defaultCwd());
+    const snapshot = await openResumeDialog({
+      startCwd,
+      capabilities: this.capabilities,
+    });
+    if (!snapshot) return;
+    this.lastCwd = snapshot.cwd;
+    this.sessions.set(snapshot.id, snapshot);
+    this.activeId = snapshot.id;
     this.render();
   }
 
@@ -1614,6 +1638,11 @@ export class App {
         label: 'Import running sessions…',
         run: () => void this.promptAdopt(),
       },
+      {
+        glyph: '↺',
+        label: 'Resume a previous session…',
+        run: () => void this.promptResume(),
+      },
       { glyph: '⑂', label: 'New session from PR #…' },
       {
         glyph: '⌥',
@@ -2312,6 +2341,7 @@ export class App {
     row.append(
       button('New session…', 'primary', () => void this.promptNewSession()),
       button('Import running sessions…', '', () => void this.promptAdopt()),
+      button('Resume a previous session…', '', () => void this.promptResume()),
     );
     wrap.append(h, p, row);
     return wrap;

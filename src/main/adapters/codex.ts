@@ -1,4 +1,4 @@
-import type { SessionStatus } from '../../shared/types';
+import type { ResumableSession, SessionStatus } from '../../shared/types';
 import type { StatusUpdate } from './claude';
 
 /** The `status` object carried by thread/started and thread/status/changed. */
@@ -16,7 +16,10 @@ export interface CodexThread {
   name?: string | null;
   preview?: string;
   status?: CodexThreadStatus;
+  /** Unix seconds, as `thread/list` reports it -- not epoch ms. */
   updatedAt?: number;
+  /** Set for an AgentControl sub-agent thread, never a user session. */
+  parentThreadId?: string | null;
 }
 
 /**
@@ -81,4 +84,22 @@ export function threadSummary(thread: CodexThread): string | null {
   if (name) return name.slice(0, 120);
   const preview = (thread.preview ?? '').trim().replace(/\s+/g, ' ');
   return preview ? preview.slice(0, 120) : null;
+}
+
+/**
+ * A `thread/list` row as a past session the resume dialog can show and act
+ * on -- the same class of source as everywhere else Codex's own record is
+ * read, never a live pid. Sub-agent and title-generation threads are
+ * filtered out exactly like `isUserThread` already excludes them elsewhere.
+ */
+export function resumableThread(thread: CodexThread): ResumableSession | null {
+  if (!isUserThread(thread) || thread.parentThreadId || !thread.cwd) return null;
+  return {
+    agent: 'codex',
+    externalId: thread.id,
+    cwd: thread.cwd,
+    preview: threadSummary(thread),
+    updatedAt: typeof thread.updatedAt === 'number' ? thread.updatedAt * 1000 : null,
+    name: typeof thread.name === 'string' && thread.name.trim() ? thread.name.trim() : null,
+  };
 }

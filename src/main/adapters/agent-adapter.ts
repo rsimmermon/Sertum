@@ -180,6 +180,10 @@ class CodexAdapter implements AgentAdapter {
       reason:
         'Codex’s app-server daemon is Unix-only in this release, and Sertum has not adopted it.',
     },
+    // thread/resume loads a thread from disk by id alone, verified against
+    // Codex CLI 0.153.4 from an app server that never saw it: turn/start
+    // afterward answered with full context from before that process existed.
+    'session-resume': { ok: true, requires: 'structured-conversation' },
   };
 
   constructor(private server: CodexAppServer) {}
@@ -304,6 +308,11 @@ class ClaudeAdapter extends InertAgentAdapter {
       // claude --bg is daemon-hosted; the attach client's death was verified
       // leaving the session running, which is the whole property.
       'background-host': { ok: true },
+      // --resume <id> reuses the original session id rather than minting one
+      // -- verified against Claude Code 2.1.263 to append to the exact same
+      // transcript file and answer a follow-up turn with full prior context,
+      // even from a brand-new process.
+      'session-resume': { ok: true, requires: 'structured-conversation' },
     });
   }
 
@@ -425,6 +434,10 @@ class GrokAdapter extends InertAgentAdapter {
         ok: false,
         reason: 'Grok has no daemon to host a session outside its terminal.',
       },
+      'session-resume': {
+        ok: false,
+        reason: 'Grok has no way to resume a past session by id.',
+      },
     });
   }
 
@@ -502,6 +515,10 @@ export function createAgentAdapters(deps: {
         'background-host': {
           ok: false,
           reason: 'A shell dies with its terminal; there is no daemon to hold it.',
+        },
+        'session-resume': {
+          ok: false,
+          reason: 'A shell has no prior agent conversation to resume.',
         },
       }),
     ],

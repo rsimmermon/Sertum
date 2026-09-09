@@ -40,11 +40,13 @@ import { readClipboardPaste } from './main/clipboard-paste';
 import { readLocalImage } from './main/local-image';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
+  AgentKind,
   DiffCommitRequest,
   PermissionRule,
   ManagedAgent,
   MenuState,
   DiscoveredSession,
+  ResumableSession,
   SessionSnapshot,
   Settings,
   PermissionMode,
@@ -675,6 +677,19 @@ ipcMain.handle('session:remove', async (_e, id: string) => {
   if (gone) sessionCache.delete(id);
   return gone;
 });
+ipcMain.handle(
+  'session:resumable',
+  (_e, p: { agent: AgentKind; cwd: string }) =>
+    daemon.request<ResumableSession[]>('session/resumable', p),
+);
+ipcMain.handle(
+  'session:resume',
+  async (_e, p: { r: ResumableSession; label?: string }) => {
+    const snapshot = await daemon.request<SessionSnapshot>('session/resume', p);
+    sessionCache.set(snapshot.id, snapshot);
+    return snapshot;
+  },
+);
 ipcMain.handle('workspace:default-cwd', () => defaultCwd());
 ipcMain.handle('settings:get', () => getSettings());
 ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
@@ -765,6 +780,9 @@ ipcMain.handle('pty:replay', (_e, id: string) =>
 // left to reclaim them.
 ipcMain.handle('daemon:stop', () => daemon.request('daemon/stop'));
 app.on('ready', async () => {
+  // Squirrel callbacks only maintain shortcuts. Their asynchronous quit can
+  // race ready; starting a detached broker here keeps installation alive.
+  if (started || !hasSingleInstanceLock) return;
   app.setAboutPanelOptions({
     applicationName: 'Sertum',
     applicationVersion: app.getVersion(),
@@ -924,6 +942,10 @@ function buildMenu() {
         {
           label: 'Import Running Sessions…',
           click: send('menu:import-sessions'),
+        },
+        {
+          label: 'Resume a Previous Session…',
+          click: send('menu:resume-session'),
         },
         // Worktrees outlive the sessions that used them, so the manager has
         // to be reachable with nothing open -- the row menu alone would hide
