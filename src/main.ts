@@ -944,21 +944,7 @@ function buildMenu() {
       id: 'file-menu',
       label: 'File',
       submenu: [
-        {
-          label: 'New Session…',
-          accelerator: accel('new-session'),
-          click: send('menu:new-session'),
-        },
-        { type: 'separator' },
         { label: 'Add Repository…', enabled: false },
-        {
-          label: 'Import Running Sessions…',
-          click: send('menu:import-sessions'),
-        },
-        {
-          label: 'Resume a Previous Session…',
-          click: send('menu:resume-session'),
-        },
         // Worktrees outlive the sessions that used them, so the manager has
         // to be reachable with nothing open -- the row menu alone would hide
         // it behind the very session you just closed.
@@ -999,6 +985,25 @@ function buildMenu() {
       id: 'session-menu',
       label: 'Session',
       submenu: [
+        // The three ways a session gets into the window, kept together: start
+        // one, adopt a process another terminal owns, or start a new process
+        // bound to a past conversation's id. None of them acts on the selected
+        // row, so none carries an id in applyMenuState and all three stay live
+        // with nothing open.
+        {
+          label: 'New Session…',
+          accelerator: accel('new-session'),
+          click: send('menu:new-session'),
+        },
+        {
+          label: 'Import Running Sessions…',
+          click: send('menu:import-sessions'),
+        },
+        {
+          label: 'Resume a Previous Session…',
+          click: send('menu:resume-session'),
+        },
+        { type: 'separator' },
         // No accelerator: D2 draws this as Enter, but that is Enter on a
         // focused sidebar row, and a menu accelerator would swallow every
         // Enter in the app -- including keystrokes meant for the terminal.
