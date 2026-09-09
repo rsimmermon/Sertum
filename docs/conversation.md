@@ -110,6 +110,121 @@ What stage 1 deliberately does not do: no synthetic "pending" messages (a
 sent message is acknowledged under the composer until the agent records it),
 and no structured input channel — that is stage 2, below.
 
+## A poll carries a version, not the conversation
+
+The once-a-second poll used to fetch the whole snapshot every time, and
+that is what locked the GUI up. Measured, not estimated:
+
+| Transcript | items | snapshot | per pane at 1 Hz |
+|---|---|---|---|
+| Claude, 31MB on disk | 400 | 0.38 MB | 0.4 MB/s |
+| Claude, 8MB on disk | 379 | 0.29 MB | 0.3 MB/s |
+| Codex, 93MB on disk | 60 | **9.32 MB** | **9.3 MB/s** |
+
+The Codex figure is the one that matters, and it is 99.7% `image` items —
+9.29MB of base64 across 60 items, against 0.03MB of text. `ITEM_CAP` bounds
+how many items a snapshot carries and `TOOL_CAP` bounds a tool's detail, but
+neither bounds an image, so a session with pasted screenshots produces a
+snapshot two orders of magnitude larger than a chatty one.
+
+Every open pane was being sent all of that every second, whether or not a
+byte had changed, and the GUI's **main** process parsed it on the main
+thread inside the socket's `data` handler. One core saturated, the event
+loop starved, the window stopped pumping messages — Windows reported it Not
+Responding and flagged it under `RADAR_PRE_LEAK_64` — and pending requests
+ran out the 30s `REQUEST_TIMEOUT_MS` until the pipe dropped and reconnected
+into the same flood. A captured stack of the spinning thread was
+`onStreamRead → Readable.push → addChunk → maybeReadMore`, and the daemon,
+idle with no client attached, grew ~40 MB/s the moment one connected.
+
+So `conversation/read` takes `{ id, known }`. `known` is the `version` the
+pane already holds — the transcript's `size:mtime`, the same pair the parse
+cache already keys on, named once by `versionOf` so a poll's "unchanged" and
+a cache hit cannot disagree about what identity is. When it still matches,
+the answer is `{ unchanged: true }`: **18 bytes instead of 9.32MB, a
+543,117× reduction on an idle conversation.** A transcript only changes when
+the agent writes, so that is the overwhelmingly common answer.
+
+Two details are load-bearing:
+
+- **The pane remembers the version only once the snapshot is on screen**,
+  beside `renderedKey` rather than where the answer arrives. Recording it on
+  arrival would have the next poll answer "unchanged" for a conversation the
+  pane never drew — and since a poll already defers repainting while the
+  reader holds a selection, a selection held across a turn would strand them
+  on stale text until the agent happened to write again.
+- **`noConversation` answers carry a null version** and are always sent.
+  They are empty, so there is nothing to avoid re-sending, and gating them
+  would mean inventing an identity for a file that is not there.
+
+This changed the wire shape, so `DAEMON_PROTOCOL` is 4. A protocol 3 daemon
+would read `{ id, known }` as an id, find no session, and answer every poll
+"Session not found." — which is why the handshake refuses rather than tries.
+
+The GUI's frame decoder was the other half of the collapse and is fixed with
+it. `DaemonClient` held its partial frame in an **instance** field and
+rebuilt it with `buf.slice()` per frame, which re-copies the whole remainder
+every time — O(n²) across a burst of megabyte frames, on the main thread.
+Worse, an instance field outlives the socket that filled it: half a frame
+left by a dropped connection was still there when the next socket arrived and
+was glued onto the front of the new stream. The buffer is now a per-connection
+list of `Buffer` chunks, walked once and joined only at a frame boundary; a
+newline byte cannot fall inside a multi-byte UTF-8 sequence, so cutting on one
+before decoding is safe. Verified against the real class with a fake daemon
+chunking at hostile boundaries: a 9MB frame, a multi-byte character split
+across a chunk cut, a frame immediately after the big one, and a blank line
+between frames all survive.
+
+## Typing while the agent is busy: the queue and the recall walk
+
+A turn in progress used to make the composer a dead end — `chat/send` refused
+the message and the note said to finish or stop the turn and try again — so a
+thought you had while reading had to be held in your head. A message typed
+then is now queued instead, and goes in at the next moment the session can
+take one.
+
+- **Receivable is read, not guessed.** `working` and `needs-input` both
+  defer; a session waiting on an approval is as unable to take a prompt as
+  one mid-answer. It comes from `SessionSnapshot.status`, so this is the
+  adapter's own word and not an inference from output going quiet.
+- **One message per turn boundary.** Delivering starts a new turn, and the
+  pane's snapshot does not say so until the daemon's next event — so draining
+  the whole queue on one boundary would fire every message into a session
+  that stopped being receivable after the first. The rest follow on the
+  boundaries after it.
+- **The flush is driven by the session event, not by the render.** Panes are
+  only updated while they are on screen, so `app.ts` also hands the update
+  straight to the pane; without that, a message queued before switching tabs
+  would sit there until someone looked at it again.
+- **The stop sign has two jobs.** A press stops a running turn through the
+  declared `turn-interrupt` capability, then hands one message back: the last
+  one still queued, which genuinely un-queues it, or past that a step further
+  back through what the pane has sent, which is copied rather than removed
+  since it is in the transcript and cannot be unsaid. Pressing again takes
+  the one before that.
+- **The button had to stop following the composer to make that reachable.**
+  The rule was "text in the composer means Send", and a recall fills the
+  composer — so the second press was unreachable, and after the first press
+  the turn is over so `turnActive` is false too. The stop is therefore
+  offered whenever there is anything to hand back, and a `walking` flag holds
+  it there while a walk is in progress. One real keystroke ends the walk;
+  assigning `value` in code raises no `input` event, so a recall does not end
+  its own.
+- **Nothing typed is overwritten.** The button is only a stop with an empty
+  composer or mid-walk, so a recall never has anything of the reader's to
+  lose. The sent list is capped at 50, and a session that exits with messages
+  still queued says how many never went in — they are unreachable once the
+  composer is disabled, so the count is the last honest thing the pane can
+  offer.
+
+The queue is per pane, in the renderer. It does not survive the window
+closing, which is the honest limit of putting it there and the same one pane
+occupancy already has; moving it into the session fabric would make it
+survive, at the cost of a protocol change and a snapshot field.
+
+Status: typechecked and reviewed, and the app runs clean with it, but the
+queue and the walk have **not** yet been exercised against a live agent turn.
+
 ## Markdown, and when the markup is the answer
 
 Stage 1 showed every message as literal characters, on the principle that

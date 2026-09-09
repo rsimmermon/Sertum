@@ -16,8 +16,16 @@ import path from 'node:path';
  * socket, never with a best-effort conversation.
  */
 
-/** Bumped on any incompatible change to methods, params or events. */
-export const DAEMON_PROTOCOL = 3;
+/**
+ * Bumped on any incompatible change to methods, params or events.
+ *
+ * Protocol 4 takes `conversation/read` from a bare session id to
+ * `{ id, known }` and lets it answer `{ unchanged: true }`. A protocol 3
+ * daemon would read the object as an id, find no session, and answer every
+ * poll "Session not found." -- which is exactly why the handshake refuses
+ * rather than trying.
+ */
+export const DAEMON_PROTOCOL = 4;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }

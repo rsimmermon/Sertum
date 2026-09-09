@@ -426,7 +426,34 @@ export interface ConversationSnapshot {
   truncated: boolean;
   /** Why there is nothing to show, when `items` is empty. */
   reason: string | null;
+  /**
+   * What this snapshot was read from, as `size:mtime` of the transcript.
+   *
+   * A poll hands back the version it already holds and is told "unchanged"
+   * rather than being sent the conversation again. Null when there is no
+   * file behind the snapshot, which is every `noConversation` answer -- those
+   * are empty, so re-sending one costs nothing worth avoiding.
+   */
+  version: string | null;
 }
+
+/** Word that the transcript has not moved since the version the poll named. */
+export interface ConversationUnchanged {
+  unchanged: true;
+}
+
+/**
+ * What a conversation poll gets back.
+ *
+ * A chat pane polls once a second for as long as it is open, and a snapshot
+ * is not small: a Codex session with pasted images measured 9.3 MB, of which
+ * 99.7% was base64 image data, and every pane was being sent all of it every
+ * second whether or not a byte had changed. Parsing that on the GUI's main
+ * thread saturated a core, starved the event loop and left the window
+ * unresponsive until the pipe timed out. The transcript only changes when the
+ * agent writes, so the overwhelmingly common answer is that nothing has.
+ */
+export type ConversationRead = ConversationSnapshot | ConversationUnchanged;
 
 export interface PtyDataEvent {
   id: string;
@@ -1306,8 +1333,12 @@ export interface SertumApi {
    * disk. Works for owned and monitored sessions alike, because the
    * transcript is on disk whoever owns the process. Polled by the chat view;
    * an empty answer carries the reason.
+   *
+   * `known` is the `version` of the snapshot the caller already holds. When
+   * it still matches, the answer is `{ unchanged: true }` and the megabytes
+   * stay where they are.
    */
-  readConversation(id: string): Promise<ConversationSnapshot>;
+  readConversation(id: string, known?: string | null): Promise<ConversationRead>;
   /**
    * Send a message into a `stream` session over the agent's structured chat
    * protocol. Resolves false when the session cannot take one — wrong

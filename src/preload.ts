@@ -120,7 +120,8 @@ const api: SertumApi = {
   defaultCwd: () => ipcRenderer.invoke('workspace:default-cwd'),
   inspectDirectory: (dir: string) =>
     ipcRenderer.invoke('workspace:inspect', dir),
-  readConversation: (id: string) => ipcRenderer.invoke('conversation:read', id),
+  readConversation: (id: string, known?: string | null) =>
+    ipcRenderer.invoke('conversation:read', id, known),
   sendChatMessage: (id: string, text: string) =>
     ipcRenderer.invoke('chat:send', { id, text }),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),

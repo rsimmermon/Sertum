@@ -726,8 +726,8 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
 ipcMain.handle('chat:send', (_e, p: { id: string; text: string }) =>
   daemon.request('chat/send', p),
 );
-ipcMain.handle('conversation:read', (_e, id: string) =>
-  daemon.request('conversation/read', id),
+ipcMain.handle('conversation:read', (_e, id: string, known?: string | null) =>
+  daemon.request('conversation/read', { id, known }),
 );
 
 ipcMain.handle('discovery:list', () => daemon.request('discovery/list'));ipcMain.handle('discovery:focus', (_e, pid: number) =>

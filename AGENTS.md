@@ -420,7 +420,7 @@ remains a terminal. What it reads is each agent's transcript on disk, the
 same class of source as a hook payload, so this does not touch the
 two-planes rule.
 
-Four rules constrain any change here:
+Five rules constrain any change here:
 
 - **Nothing is ever assembled as an HTML string.** Every node is created and
   every leaf filled through `textContent` or a text node, so a transcript
@@ -435,10 +435,32 @@ Four rules constrain any change here:
   keeps the labelled link it already had.
 - **The composer writes the body and then a CR 150ms later**, never as one
   burst — Claude's and Codex's TUIs both silently fail to submit otherwise.
+- **A poll asks whether the transcript moved; it does not fetch it again.**
+  `conversation/read` takes the `version` the pane holds and answers
+  `{ unchanged: true }` when it still matches. Sending the snapshot every
+  second regardless is what locked the GUI up: a Codex conversation with
+  pasted images measures 9.32MB, 99.7% of it base64, and parsing that on the
+  main thread once a second per pane saturated a core and starved the event
+  loop until the window stopped responding. The pane records the version only
+  once it has drawn the snapshot, never when it arrives.
 
 The waiting bubble is on because an adapter reported a turn in progress,
 never because output went quiet, and the stop button calls the declared
 `turn-interrupt` capability rather than writing Ctrl+C into a PTY.
+
+A message typed while the agent cannot take one is **queued rather than
+refused**, and goes in by itself at the next moment the session is
+receivable — the same bargain the model, thinking and permission chips
+already make. Receivable is read from the truth plane (`working` and
+`needs-input` both defer), never from whether output went quiet, and one
+message goes in per turn boundary because the pane's own snapshot cannot yet
+know that delivering started a new turn. The stop sign hands them back: a
+press stops the turn and returns the last queued message to the composer,
+the next press the one before it, and past the queue the walk continues into
+what the pane has already sent — copied, since a sent message is in the
+transcript and cannot be unsaid. Nothing typed is ever overwritten, because
+the button is only a stop with an empty composer or mid-walk. The queue lives
+in the pane, so it does not survive the window closing.
 
 Verified record shapes, the classifier's two signals, the markdown parser's
 constructs, image bounds, selection and polling:
@@ -517,7 +539,10 @@ first frame each side sends is `hello` with a protocol number
 GUI can show, never a best-effort conversation. Protocol 2 adds native question
 answers and server-limited approval scopes; an old daemon must be stopped and
 restarted before the new GUI can connect, so an old client cannot submit an
-empty answer to a question whose ids it does not understand.
+empty answer to a question whose ids it does not understand. Protocol 4 takes
+`conversation/read` from a bare session id to `{ id, known }` so a poll can be
+answered `{ unchanged: true }`; a protocol 3 daemon would read that object as
+an id and answer every poll "Session not found."
 
 **Terminals come back.** The daemon keeps a per-session ring of recent raw
 output (512KB). A reopened GUI asks `pty/replay` when it first builds a

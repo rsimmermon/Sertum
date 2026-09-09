@@ -287,6 +287,12 @@ export class App {
 
     api.onSessionUpdated((s) => {
       this.sessions.set(s.id, s);
+      // A chat pane off screen still owns a queue, and the turn boundary it
+      // is waiting for is this event -- panes are only updated while they are
+      // rendered, so without this a message queued before switching tabs
+      // would sit there until someone looked at it again. Panes on screen are
+      // updated again by the render below, which is idempotent.
+      this.chatPanes.get(s.id)?.update(s);
       this.render();
     });
 

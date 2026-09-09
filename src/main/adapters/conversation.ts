@@ -52,7 +52,23 @@ const conversationCache = new Map<
 >();
 
 export function noConversation(reason: string): ConversationSnapshot {
-  return { items: [], path: null, updatedAt: null, truncated: false, reason };
+  return {
+    items: [],
+    path: null,
+    updatedAt: null,
+    truncated: false,
+    reason,
+    version: null,
+  };
+}
+
+/**
+ * What a snapshot was read from, in the two numbers that decide whether it
+ * has moved. The same pair the cache above keys on, named once so a poll's
+ * "unchanged" and the cache's hit can never disagree about what identity is.
+ */
+function versionOf(size: number, mtime: number): string {
+  return `${size}:${mtime}`;
 }
 
 export function readConversation(
@@ -81,6 +97,15 @@ export function readConversation(
   if (!tail) {
     return noConversation('The transcript could not be read.');
   }
+  // Sized once, here, rather than again beside the cache write: the snapshot's
+  // version and the cache's key have to be the same two numbers, and two
+  // stats of a file an agent is actively appending to need not agree.
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return noConversation('The transcript could not be read.');
+  }
 
   let items: ChatItem[];
   switch (agent) {
@@ -107,16 +132,9 @@ export function readConversation(
     reason: items.length
       ? null
       : 'Nothing conversational in the transcript yet.',
+    version: versionOf(size, tail.mtime),
   };
-  try {
-    conversationCache.set(cacheKey, {
-      size: fs.statSync(file).size,
-      mtime: tail.mtime,
-      snapshot,
-    });
-  } catch {
-    // It changed or vanished after the read; the next poll will retry.
-  }
+  conversationCache.set(cacheKey, { size, mtime: tail.mtime, snapshot });
   return snapshot;
 }
 

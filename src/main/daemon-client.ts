@@ -34,7 +34,6 @@ interface Pending {
 
 export class DaemonClient extends EventEmitter {
   private socket: net.Socket | null = null;
-  private buf = '';
   private greeted = false;
   private nextId = 1;
   private pending = new Map<number, Pending>();
@@ -131,12 +130,38 @@ export class DaemonClient extends EventEmitter {
         );
       });
 
-      socket.on('data', (chunk) => {
-        this.buf += chunk.toString('utf8');
-        let at: number;
-        while ((at = this.buf.indexOf('\n')) >= 0) {
-          const line = this.buf.slice(0, at).trim();
-          this.buf = this.buf.slice(at + 1);
+      /**
+       * The partial frame at the end of the last chunk, held as bytes.
+       *
+       * It belongs to this connection and dies with it. As an instance field
+       * it outlived the socket that produced it, so a frame cut in half by a
+       * dropped connection was still sitting there when the next socket
+       * arrived and got glued onto the front of the new stream -- producing
+       * one unparseable line and, worse, silently swallowing the real frame
+       * behind it.
+       */
+      let partial: Buffer[] = [];
+
+      /**
+       * Frames are newline-delimited, and a frame is not small: a single
+       * conversation read measured 9.3 MB. The previous decoder appended to
+       * a string and re-sliced it per frame, which re-copies the whole
+       * remainder every time -- O(n^2) across a burst, on the main thread.
+       * This walks each chunk once and joins only at a frame boundary. A
+       * newline byte cannot occur inside a multi-byte UTF-8 sequence, so
+       * cutting on one before decoding is safe.
+       */
+      socket.on('data', (chunk: Buffer) => {
+        let from = 0;
+        for (;;) {
+          const at = chunk.indexOf(0x0a, from);
+          if (at === -1) break;
+          const piece = chunk.subarray(from, at);
+          const line = (partial.length ? Buffer.concat([...partial, piece]) : piece)
+            .toString('utf8')
+            .trim();
+          partial = [];
+          from = at + 1;
           if (!line) continue;
           let frame: DaemonFrame;
           try {
@@ -159,6 +184,7 @@ export class DaemonClient extends EventEmitter {
           }
           this.dispatch(frame);
         }
+        if (from < chunk.length) partial.push(chunk.subarray(from));
       });
     });
   }

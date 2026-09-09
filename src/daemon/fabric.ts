@@ -69,6 +69,7 @@ import {
   type AgentModelList,
   type ApprovalAnswer,
   type BinaryDetection,
+  type ConversationRead,
   type DiscoveredSession,
   type ManagedAgent,
   type EffortChangeResult,
@@ -993,8 +994,14 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       if (!session || session.exitCode !== null || session.origin !== 'owned' || !hasStructuredTransport(session) || !message) return false;
       return structuredHostFor(p.id).send(p.id, message);
     },
-    'conversation/read': (id: string) => {
-      const session = ptys.get(id);
+    /**
+     * A chat pane's poll. `known` is the version the pane already holds, and
+     * when the transcript has not moved since, the answer is that one word
+     * rather than the conversation over again -- see `ConversationRead` for
+     * what re-sending it every second cost.
+     */
+    'conversation/read': (p: { id: string; known?: string | null }): ConversationRead => {
+      const session = ptys.get(p.id);
       if (!session) return noConversation('Session not found.');
       const answer =
         agentAdapters.get(session.agent)?.capabilities['conversation-view'];
@@ -1005,7 +1012,11 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
           'No transcript yet — the conversation appears once the agent records its first turn.',
         );
       }
-      return readConversation(session.agent, transcript);
+      const snapshot = readConversation(session.agent, transcript);
+      if (p.known && snapshot.version && p.known === snapshot.version) {
+        return { unchanged: true };
+      }
+      return snapshot;
     },
 
     'discovery/list': () => discoverSessions(ptys.ownedPids(), resolvedCommand),
