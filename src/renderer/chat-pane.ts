@@ -467,28 +467,38 @@ export class ChatPane {
    * screen reader as well as a tooltip.
    *
    * The stop sign gained a second job with the queue, and two things follow.
-   * It is offered when there is anything to hand back even with no turn to
-   * stop, because after the first click the turn is over and the walk would
-   * otherwise be unreachable. And it survives its own recall filling the
-   * composer -- `walking` holds it there -- since text arriving from a walk
-   * is not the "you just typed this" signal the rule above is about. One
-   * real keystroke ends the walk and the button is a send again.
+   * It is offered while messages are still queued even with no turn to stop,
+   * because after the first press the turn is over and taking the rest back
+   * would otherwise be unreachable. And it survives its own recall filling
+   * the composer -- `walking` holds it there -- since text arriving from a
+   * walk is not the "you just typed this" signal the rule above is about.
+   * One real keystroke ends the walk and the button is a send again.
+   *
+   * What does *not* bring it up is sent history. A pane that has ever sent a
+   * message can always walk back into what it sent, but nothing about that
+   * is pending: counting it as something to hand back left a red stop square
+   * sitting on every idle session, offering to stop a turn that had already
+   * finished -- the pane disagreeing with the status dot beside it, which is
+   * the one thing this app is built not to do. The walk into sent messages
+   * is reached by continuing a stop or a take-back, never by the sign
+   * appearing on its own.
    */
   private paintAction(): void {
     const s = this.session;
     const writable = this.canWrite(s);
     const hasText = this.input.value.trim().length > 0;
     const turnActive = s.status === 'working' || s.status === 'needs-input';
-    const recallable = this.queue.length > 0 || this.sentWalk < this.sent.length;
+    // Pending is a turn to stop or messages that never went in. Sent history
+    // is neither, so it is walkable but never puts the sign on screen.
+    const pending = turnActive || this.queue.length > 0;
+    const moreSent = this.sentWalk < this.sent.length;
 
-    this.mode =
-      writable && (this.walking || (!hasText && (turnActive || recallable)))
-        ? 'stop'
-        : 'send';
-    // Stopping needs a turn and the capability; recall needs neither, so a
-    // declined `turn-interrupt` still leaves the walk usable.
+    this.mode = writable && (this.walking || (!hasText && pending)) ? 'stop' : 'send';
+    // Stopping needs a turn and the capability; taking back needs neither, so
+    // a declined `turn-interrupt` still leaves the walk usable.
     const canStop =
-      writable && ((turnActive && this.interruptCapability.ok) || recallable);
+      writable &&
+      ((turnActive && this.interruptCapability.ok) || this.queue.length > 0 || moreSent);
 
     let reason: string;
     if (this.mode === 'stop') {
@@ -498,10 +508,12 @@ export class ChatPane {
         reason = waiting
           ? `Stop ${s.agent}’s turn and take back the last of ${waiting} queued`
           : `Stop ${s.agent}’s current turn`;
-      } else if (recallable) {
-        reason = waiting
-          ? `Take back the last of ${waiting} queued`
-          : 'Bring back the message before this one';
+      } else if (waiting) {
+        reason = `Take back the last of ${waiting} queued`;
+      } else if (moreSent) {
+        reason = 'Bring back the message before this one';
+      } else if (this.walking) {
+        reason = 'That is the oldest message this pane sent.';
       } else {
         reason = this.interruptCapability.ok
           ? `Stop ${s.agent}’s current turn`

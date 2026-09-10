@@ -205,11 +205,22 @@ take one.
 - **The button had to stop following the composer to make that reachable.**
   The rule was "text in the composer means Send", and a recall fills the
   composer — so the second press was unreachable, and after the first press
-  the turn is over so `turnActive` is false too. The stop is therefore
-  offered whenever there is anything to hand back, and a `walking` flag holds
-  it there while a walk is in progress. One real keystroke ends the walk;
-  assigning `value` in code raises no `input` event, so a recall does not end
-  its own.
+  the turn is over so `turnActive` is false too. A `walking` flag therefore
+  holds the sign there while a walk is in progress. One real keystroke ends
+  the walk; assigning `value` in code raises no `input` event, so a recall
+  does not end its own.
+- **What brings the sign up is what is pending, which sent history is not.**
+  Offering it "whenever there is anything to hand back" was the first cut,
+  and `sent` is never empty after the first message: an idle Codex session
+  whose last line read *turn finished* sat there showing a red stop square,
+  inviting the reader to stop a turn that had ended minutes earlier — the
+  pane contradicting the status dot beside it, which is the crying-wolf
+  failure the two planes exist to prevent. The sign is up only while a turn
+  is running or messages are queued (or mid-walk). Reaching the sent history
+  is a *continuation*: the press that stops the turn or takes back the last
+  queued message keeps `walking` true, and the next press steps into what
+  was sent. With nothing pending and nothing typed, the button is a disabled
+  Send, which is what an idle composer actually offers.
 - **Nothing typed is overwritten.** The button is only a stop with an empty
   composer or mid-walk, so a recall never has anything of the reader's to
   lose. The sent list is capped at 50, and a session that exits with messages

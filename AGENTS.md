@@ -459,8 +459,12 @@ press stops the turn and returns the last queued message to the composer,
 the next press the one before it, and past the queue the walk continues into
 what the pane has already sent — copied, since a sent message is in the
 transcript and cannot be unsaid. Nothing typed is ever overwritten, because
-the button is only a stop with an empty composer or mid-walk. The queue lives
-in the pane, so it does not survive the window closing.
+the button is only a stop with an empty composer or mid-walk. It is on screen
+only while something is pending — a turn running, or messages queued — never
+merely because the pane has sent something before: a red square offering to
+stop a finished turn is the pane contradicting the dot beside it. The walk
+into sent messages is reached by continuing that press. The queue lives in
+the pane, so it does not survive the window closing.
 
 Verified record shapes, the classifier's two signals, the markdown parser's
 constructs, image bounds, selection and polling:
