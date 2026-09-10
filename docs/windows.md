@@ -144,6 +144,39 @@ The `ready` handler now returns for Squirrel callbacks and losing single-instanc
 launches, before connecting to or spawning a broker. Rebuilt-installer verification
 is still required for this guard.
 
+Three launches to keep apart, because they arrive as three different argv
+shapes at the same executable:
+
+| Launch | argv | What Sertum does |
+|---|---|---|
+| Install/update callback | `--squirrel-install`, `--squirrel-updated`, `--squirrel-uninstall`, `--squirrel-obsolete` | `electron-squirrel-startup` maintains shortcuts and quits; `ready` returns immediately |
+| Post-install launch | `--squirrel-firstrun` | one information box — "Sertum was installed successfully." — then quit, with no daemon, tray or window |
+| Ordinary launch | neither | the normal path |
+
+`electron-squirrel-startup`'s `started` does **not** cover `--squirrel-firstrun`
+— read its `index.js`: it tests `process.argv[1]` against install, updated,
+uninstall and obsolete, and returns false for anything else. That is why the
+first-run check is separate. The flag itself is real rather than folklore:
+`electron-winstaller`'s `vendor/Squirrel.exe`, the binary it copies in as
+`Update.exe`, carries the literal `--squirrel-firstrun` beside
+`--squirrel-install` and the rest. Scanning that file for it needs both UTF-16
+alignments — .NET's `#US` heap is UTF-16LE, and a string starting at an odd
+byte offset is invisible to a whole-buffer `toString('utf16le')`, which is
+exactly where this one sits.
+
+The information box cannot be raised at the argv check the way `showErrorBox`
+can: `dialog.showMessageBoxSync` requires `ready`, so the first-run branch
+sits at the top of the `ready` handler, after the callback and
+single-instance guards and before anything is started.
+
+The losing single-instance launch quits with no dialog at all. The instance
+holding the lock answers `second-instance` with `showMainWindow`, which
+creates a window if the tray was the only surface left, so a relaunch is the
+supported way to reopen a closed window and the box that used to appear
+first announced a conflict that did not exist. Reported from a packaged
+Windows build: close the window, leave the daemon running, launch Sertum,
+dismiss "Sertum is already running", and the window opens.
+
 ## Windows development launch privileges
 
 Run the development app and broker at the desktop user's normal privilege

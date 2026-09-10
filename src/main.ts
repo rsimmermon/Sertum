@@ -84,26 +84,29 @@ if (process.platform === 'win32' && MAIN_WINDOW_VITE_DEV_SERVER_URL) {
 
 if (started) app.quit();
 
+// Squirrel runs the freshly installed app itself, passing --squirrel-firstrun
+// (the install/update callbacks that `started` covers are a different set of
+// flags and have already quit above). Installing is not the same act as
+// starting work, and this app's start-up joins or spawns a daemon that then
+// outlives its window -- a background process nobody asked for yet. This run
+// therefore reports the install and exits; the shortcuts Squirrel just wrote
+// are how Sertum gets launched.
+const squirrelFirstRun =
+  process.platform === 'win32' && process.argv.includes('--squirrel-firstrun');
+
 // A tray companion must have one owner. Launching Sertum while it is already
 // hidden in the tray raises that instance instead of creating a second icon
 // and a second notification client for the same daemon.
-const hasSingleInstanceLock = started || app.requestSingleInstanceLock();
+const hasSingleInstanceLock =
+  started || squirrelFirstRun || app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
-  // The losing instance never reaches 'ready' -- app.quit() called this
-  // early aborts startup outright, so it spawns no window and no daemon of
-  // its own. Silently exiting there would still leave the person who just
-  // double-clicked Sertum with no idea anything happened at all, which for
-  // a tool whose whole point is consolidating every session into one place
-  // reads as broken rather than as "already running". showErrorBox blocks
-  // until dismissed and works before the app is ready, which is exactly
-  // this moment.
-  dialog.showErrorBox(
-    'Sertum is already running',
-    'Only one copy of Sertum can run at a time -- its whole purpose is to ' +
-      'bring every agent session into one window and one background ' +
-      'process, not to split them across several. Look for the existing ' +
-      'window, or find Sertum in the system tray.',
-  );
+  // Quit silently. The copy holding the lock answers 'second-instance' by
+  // showing its window -- creating one if the last was closed and only the
+  // tray remained -- so the window appearing *is* the sign that the launch
+  // was heard. An error box here made relaunching from the taskbar, which is
+  // the ordinary way to bring a closed window back, read as a failure that
+  // then worked anyway. It never reaches 'ready': app.quit() called this
+  // early aborts startup, so this instance spawns no window and no daemon.
   app.quit();
 }
 
@@ -795,6 +798,24 @@ app.on('ready', async () => {
   // Squirrel callbacks only maintain shortcuts. Their asynchronous quit can
   // race ready; starting a detached broker here keeps installation alive.
   if (started || !hasSingleInstanceLock) return;
+  if (squirrelFirstRun) {
+    // Say the install worked, then go. Nothing above this line has started a
+    // daemon, a tray or a window, and nothing below it runs. The message box
+    // needs 'ready' -- unlike showErrorBox, which is why this waits here
+    // rather than answering at the argv check.
+    dialog.showMessageBoxSync({
+      type: 'info',
+      title: 'Sertum',
+      message: 'Sertum was installed successfully.',
+      detail:
+        'Launch it from the Start menu or the desktop shortcut when you are '
+        + 'ready. Sertum keeps a background process for your agent sessions '
+        + 'once it starts, so it does not start itself here.',
+      buttons: ['OK'],
+    });
+    app.quit();
+    return;
+  }
   app.setAboutPanelOptions({
     applicationName: 'Sertum',
     applicationVersion: app.getVersion(),

@@ -597,17 +597,26 @@ window.
 
 It holds Electron's single-instance lock, so launching Sertum again reveals
 the existing window instead of creating a duplicate tray and notification
-client. The losing launch never reaches `ready` -- `app.quit()` called this
-early aborts startup outright, before a window or a daemon of its own exists
--- so silently exiting would leave someone who just double-clicked Sertum
-with no sign anything happened, which for a tool whose whole point is
-consolidating every session into one place reads as broken rather than as
-"already running". It shows `dialog.showErrorBox` (which blocks until
-dismissed and works before the app is ready, exactly the moment this is)
-naming that only one copy runs at a time, before quitting. `sertumd` needs no
-equivalent: it has no window to show one in, and its listen-race loss is
-already the correct silent outcome for a headless process -- logged to
-`sertumd.log`, never surfaced live.
+client. **The losing launch quits silently, because the launch was not
+refused -- it was answered.** `second-instance` calls `showMainWindow`, which
+creates a window when the last one was closed and only the tray remained, so
+relaunching from the taskbar or Start menu is the ordinary way to bring the
+window back and the window appearing is the sign that the launch was heard.
+An error box there described that success as a failure: dismiss "only one
+copy can run at a time", and the window opens anyway. The losing instance
+still never reaches `ready` -- `app.quit()` called that early aborts startup
+outright, before a window or a daemon of its own exists. `sertumd` matches:
+its listen-race loss is the correct silent outcome for a headless process --
+logged to `sertumd.log`, never surfaced live.
+
+**Installing is not starting.** Squirrel launches the app it just installed
+with `--squirrel-firstrun` (a different flag set from the install/update
+callbacks `electron-squirrel-startup` answers). Sertum's start-up joins or
+spawns a daemon that then outlives its window, so an installer that runs the
+app leaves a background process behind for someone who only meant to install.
+That run therefore shows one information box saying the install succeeded and
+exits, before any daemon, tray or window exists. The box waits for `ready`,
+since `showMessageBoxSync` -- unlike `showErrorBox` -- needs it.
 
 **What is deliberately not solved yet.** Session restore in the *renderer*
 sense (which panes held what) is unchanged — the daemon restores existence
