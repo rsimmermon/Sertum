@@ -616,6 +616,47 @@ textarea.field:focus { outline: none; border-color: var(--accent); }
   display: flex; align-items: center; gap: 8px; margin-top: 16px;
 }
 
+/* ---------- session info / process monitor ---------- */
+.session-info-dialog { width: min(760px, calc(100vw - 48px)); gap: 8px; }
+.session-info-body { display: flex; flex-direction: column; gap: 10px; min-height: 120px; }
+.session-info-summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 10px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.session-info-activity { color: var(--ink-2); min-width: 0; }
+.session-info-meta, .session-info-id, .session-info-time {
+  color: var(--muted); font: 11px var(--font-mono);
+}
+.session-info-section {
+  display: flex; flex-direction: column; gap: 5px; min-width: 0;
+  padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 6px;
+}
+.session-info-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.session-info-heading h4 { margin: 0; font-size: 12px; letter-spacing: 0.2px; }
+.session-info-count {
+  min-width: 18px; padding: 1px 5px; border-radius: 9px; text-align: center;
+  background: var(--surface-2); color: var(--muted); font: 11px var(--font-mono);
+}
+.session-info-list { display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow-y: auto; }
+.session-info-row {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  padding: 5px 0; border-top: 1px solid var(--line-soft); font-size: 12px;
+}
+.session-info-row:first-child { border-top: 0; }
+.session-info-name, .session-info-command { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-info-command { flex: 1; font: 11px var(--font-mono); color: var(--ink-2); }
+.session-info-empty { color: var(--muted); font-size: 12px; padding: 3px 0; }
+.session-info-status {
+  flex: none; padding: 2px 5px; border-radius: 3px; text-transform: uppercase;
+  font: 10px var(--font-mono); letter-spacing: 0.3px; background: var(--surface-2); color: var(--muted);
+}
+.session-info-status.working { background: var(--run-soft); color: var(--run); }
+.session-info-status.needs-input { background: var(--warn-soft); color: var(--warn); }
+.session-info-status.attention { background: var(--err-soft); color: var(--err); }
+.session-info-status.done { background: var(--surface-2); color: var(--ink-2); }
+.session-feed .session-info-time { flex: none; }
+
 /* activity line under each sidebar session name */
 .sb-stack { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .sb-stack .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -17,6 +17,7 @@ import type {
   PtyExitEvent,
   PtySize,
   SessionSnapshot,
+  SessionDiagnostics,
   SessionSpec,
   PermissionMode,
 } from './shared/types';
@@ -32,6 +33,8 @@ const api: SertumApi = {
   createSession: (spec: Partial<SessionSpec>) =>
     ipcRenderer.invoke('session:create', spec),
   listSessions: () => ipcRenderer.invoke('session:list'),
+  sessionDiagnostics: (id: string): Promise<SessionDiagnostics> =>
+    ipcRenderer.invoke('session:diagnostics', id),
   copyText: (text: string) => ipcRenderer.invoke('clipboard:write', text),
   copySelection: () => ipcRenderer.invoke('clipboard:copy-selection'),
   pasteSelection: () => ipcRenderer.invoke('clipboard:paste-selection'),

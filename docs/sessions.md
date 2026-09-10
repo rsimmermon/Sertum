@@ -111,6 +111,15 @@ mode change. A failure applying the queued mode reaches the session as an
 activity string rather than silently vanishing, the same pattern turn-steer
 and turn-interrupt failures already follow.
 
+A newly created thread is a special idle case: it has no rollout for
+`thread/resume` to load, so Codex answers `no rollout found for thread id`.
+The first policy choice is held until the first `turn/start`, where it is sent
+as that request's `approvalPolicy` override. The host waits for
+`thread/settings/updated` before publishing the mode, and a failed policy
+change on that empty thread never marks the conversation exited. This keeps
+the empty welcome pane live while still recording the policy Codex actually
+accepted.
+
 Verified on Windows with Codex CLI 0.153.1: a real file approval stayed held,
 denial prevented the write, duplicate replies were refused, a policy change
 was echoed, multiple turns completed, and a native question was answered by id and
@@ -139,6 +148,25 @@ with its *first* turn's stale reply. Fixed on both sides: `send` emits the
 optimistic status (the real notification supersedes it the instant it
 lands, same as the interrupt path's optimistic label), and `waitIdle` now
 sleeps before its first check.
+
+## Session info is a diagnostic view, not a second status plane
+
+The pane's Info action opens a read-only inspector for a session that appears
+quiet or whose turn needs more context. It shows three bounded views together:
+
+- the recent status/activity transitions retained from adapter events;
+- the process tree rooted at the session's recorded pid, when the OS can read
+  it; and
+- agent-owned child threads that the protocol exposes, currently Codex
+  `thread/started` records with a `parentThreadId` and their later status
+  changes.
+
+The process tree is deliberately evidence beside the truth plane, never a
+replacement for it. A child process can be idle or unrelated to the current
+turn, and a shared Codex app-server pid can host several threads. The status
+dot and waiting bubble therefore continue to come only from adapter events;
+the inspector is where process presence and otherwise short-lived structured
+feedback become visible without pretending either one proves progress.
 
 ## A session that cannot start must not end every other one
 

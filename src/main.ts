@@ -658,6 +658,9 @@ ipcMain.handle('shell:automation-settings', () =>
 ipcMain.handle('session:kill', (_e, id: string) =>
   daemon.request('session/kill', id),
 );
+ipcMain.handle('session:diagnostics', (_e, id: string) =>
+  daemon.request('session/diagnostics', id),
+);
 ipcMain.handle('session:steer', (_e, p: { id: string; text: string }) =>
   daemon.request('session/steer', p),
 );

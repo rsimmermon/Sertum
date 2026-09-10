@@ -8,6 +8,7 @@ import type {
   PermissionMode,
   PtySize,
   SessionSnapshot,
+  SessionActivityEvent,
   SessionSpec,
   SessionStatus,
 } from '../shared/types';
@@ -66,6 +67,24 @@ const DEFAULT_ROWS = 32;
  */
 export class PtyManager extends EventEmitter {
   private sessions = new Map<string, Session>();
+  /** Recent plane-2 transitions, kept for the session inspector. */
+  private activity = new Map<string, SessionActivityEvent[]>();
+
+  private rememberActivity(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const event: SessionActivityEvent = {
+      at: Date.now(),
+      status: session.snapshot.status,
+      activity: session.snapshot.activity,
+    };
+    const history = this.activity.get(id) ?? [];
+    const last = history[history.length - 1];
+    if (last && last.status === event.status && last.activity === event.activity) return;
+    history.push(event);
+    if (history.length > 80) history.splice(0, history.length - 80);
+    this.activity.set(id, history);
+  }
 
   constructor(private decorate: SpawnDecorator = () => ({})) {
     super();
@@ -162,6 +181,7 @@ export class PtyManager extends EventEmitter {
         session.snapshot.toolsPaused = false;
         session.snapshot.activity =
           exitCode === 0 ? 'exited cleanly' : `exited with code ${exitCode}`;
+        this.rememberActivity(id);
         this.emit('session-updated', { ...session.snapshot });
       }
       this.emit('exit', { id, exitCode, signal });
@@ -268,6 +288,7 @@ export class PtyManager extends EventEmitter {
       // The adapter owns status from here; just clear the placeholder.
       if (session.snapshot.activity === 'starting…') {
         session.snapshot.activity = null;
+        this.rememberActivity(id);
         this.emit('session-updated', { ...session.snapshot });
       }
       return;
@@ -275,6 +296,7 @@ export class PtyManager extends EventEmitter {
 
     session.snapshot.status = 'idle';
     session.snapshot.activity = null;
+    this.rememberActivity(id);
     this.emit('session-updated', { ...session.snapshot });
   }
 
@@ -333,6 +355,7 @@ export class PtyManager extends EventEmitter {
       scrollback: [],
       scrollbackBytes: 0,
     });
+    this.rememberActivity(input.id);
     this.emit('session-updated', { ...snapshot });
     return { ...snapshot };
   }
@@ -350,6 +373,7 @@ export class PtyManager extends EventEmitter {
     session.snapshot.toolsPaused = false;
     session.snapshot.activity =
       exitCode === 0 ? 'exited cleanly' : `exited with code ${exitCode}`;
+    this.rememberActivity(id);
     this.emit('session-updated', { ...session.snapshot });
     this.emit('exit', { id, exitCode });
   }
@@ -406,6 +430,7 @@ export class PtyManager extends EventEmitter {
       scrollback: [],
       scrollbackBytes: 0,
     });
+    this.rememberActivity(snapshot.id);
     this.emit('session-updated', { ...snapshot });
     return { ...snapshot };
   }
@@ -434,6 +459,7 @@ export class PtyManager extends EventEmitter {
         if (snap.status !== 'done') {
           snap.status = 'done';
           snap.activity = 'no longer running';
+          this.rememberActivity(snap.id);
           this.emit('session-updated', { ...snap });
         }
         continue;
@@ -447,6 +473,7 @@ export class PtyManager extends EventEmitter {
               ? 'idle in the background'
               : 'idle in another terminal';
         snap.lastEventAt = Date.now();
+        this.rememberActivity(snap.id);
         this.emit('session-updated', { ...snap });
       }
     }
@@ -481,6 +508,7 @@ export class PtyManager extends EventEmitter {
     if (update.status) session.snapshot.status = update.status;
     if (update.activity) session.snapshot.activity = update.activity;
     session.snapshot.lastEventAt = Date.now();
+    this.rememberActivity(id);
     const next = { ...session.snapshot };
     this.emit('session-updated', next);
     return next;
@@ -495,6 +523,7 @@ export class PtyManager extends EventEmitter {
     session.snapshot.activity = paused
       ? 'tool use paused'
       : 'tool use resumed';
+    this.rememberActivity(id);
     this.emit('session-updated', { ...session.snapshot });
     return true;
   }
@@ -611,11 +640,13 @@ export class PtyManager extends EventEmitter {
       if (session) {
         session.snapshot.status = 'attention';
         session.snapshot.activity = 'will not exit — still running';
+        this.rememberActivity(id);
         this.emit('session-updated', { ...session.snapshot });
       }
       return false;
     }
     this.sessions.delete(id);
+    this.activity.delete(id);
     return true;
   }
 
@@ -647,9 +678,14 @@ export class PtyManager extends EventEmitter {
     return s ? { ...s.snapshot } : undefined;
   }
 
+  recentActivity(id: string): SessionActivityEvent[] {
+    return [...(this.activity.get(id) ?? [])];
+  }
+
   disposeAll(): void {
     for (const id of this.sessions.keys()) this.kill(id);
     this.sessions.clear();
+    this.activity.clear();
   }
 }
 

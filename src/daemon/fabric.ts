@@ -54,6 +54,7 @@ import {
   type AgentSessionRef,
 } from '../main/adapters/agent-adapter';
 import { approvalCardFor } from '../main/adapters/interactive-tools';
+import { inspectProcessTree } from '../main/process-tree';
 import {
   addRule,
   evaluate,
@@ -81,6 +82,7 @@ import {
   type PtySize,
   type ResumableSession,
   type SessionSnapshot,
+  type SessionDiagnostics,
   type SessionSpec,
   type SessionStatus,
 } from '../shared/types';
@@ -919,6 +921,17 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
 
     'session/create': (spec: Partial<SessionSpec>) => createSession(spec),
     'session/list': () => ptys.list(),
+    'session/diagnostics': async (id: string): Promise<SessionDiagnostics> => {
+      const session = ptys.get(id);
+      if (!session) throw new Error('That session is gone.');
+      return {
+        sessionId: id,
+        capturedAt: Date.now(),
+        processes: await inspectProcessTree(session.pid),
+        subSessions: session.agent === 'codex' ? codexChat.subSessions(id) : [],
+        recentActivity: ptys.recentActivity(id),
+      };
+    },
     'session/kill': (id: string) => ptys.kill(id),
     'session/remove': (id: string) => ptys.remove(id),
     'session/rename': (p: { id: string; label: string }) => {

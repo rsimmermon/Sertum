@@ -11,8 +11,11 @@ async function main() {
   class Server extends EventEmitter {
     connected = true;
     next = 0;
-    async request(method: string) {
+    calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    async request(method: string, params: Record<string, unknown> = {}) {
+      this.calls.push({ method, params });
       if (method === 'thread/start') return { thread: { id: `thread-${++this.next}` }, approvalPolicy: 'untrusted' };
+      if (method === 'thread/resume') return { approvalPolicy: params.approvalPolicy };
       return {};
     }
   }
@@ -20,6 +23,31 @@ async function main() {
   const host = new CodexChatHost(server as unknown as CodexAppServer);
   const a = await host.start('a', 'C:/a');
   const b = await host.start('b', 'C:/b');
+  server.emit('notification', {
+    method: 'thread/started',
+    params: {
+      thread: {
+        id: 'child-a', parentThreadId: a.threadId, name: 'researcher',
+        status: { type: 'active' },
+      },
+    },
+  });
+  assert.equal(host.subSessions('a').length, 1, 'Codex child threads should be inspectable');
+  server.emit('notification', {
+    method: 'thread/status/changed',
+    params: { threadId: 'child-a', status: { type: 'idle' } },
+  });
+  assert.equal(host.subSessions('a')[0]?.status, 'idle');
+  const firstMode = await host.setPermissionMode('a', 'codex-on-request');
+  assert.deepEqual(firstMode, { ok: true, mode: 'codex-on-request', queued: true, beforeFirstTurn: true });
+  assert(host.has('a'), 'Changing a fresh thread policy must not end the session');
+  assert(await host.send('a', 'first turn'));
+  const firstTurn = server.calls.findLast(c => c.method === 'turn/start');
+  assert.equal(firstTurn?.params.approvalPolicy, 'on-request');
+  server.emit('notification', {
+    method: 'thread/settings/updated',
+    params: { threadId: a.threadId, threadSettings: { approvalPolicy: 'on-request' } },
+  });
   let reply: unknown;
   const ask = (method: string, params: Record<string, unknown>) => {
     reply = undefined;

@@ -16,6 +16,7 @@ import {
 import { openWorktreeDialog } from './worktree-dialog';
 import { openDiffReviewDialog } from './diff-review-dialog';
 import { openTextPrompt } from './text-prompt-dialog';
+import { openSessionInfoDialog } from './session-info-dialog';
 import {
   buildPaneGrid,
   SESSION_DND_TYPE,
@@ -202,6 +203,7 @@ export class App {
     sidebarNewAgent: qs('#sidebar-new-agent') as HTMLButtonElement,
     openSettings: qs('#open-settings'),
     paneStop: qs('#pane-stop') as HTMLButtonElement,
+    paneInfo: qs('#pane-info') as HTMLButtonElement,
     sidebarList: qs('#sidebar-list'),
     sidebarCount: qs('#sidebar-count'),
     sidebarHead: qs('#sidebar-head'),
@@ -262,6 +264,10 @@ export class App {
     this.el.openSettings.onclick = () => void this.promptSettings();
     this.el.paneStop.onclick = () => {
       if (this.activeId) void api.killSession(this.activeId);
+    };
+    this.el.paneInfo.onclick = () => {
+      const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+      if (active) openSessionInfoDialog(active);
     };
     this.el.layoutButton.onclick = () => this.openLayoutMenu(this.el.layoutButton);
 
@@ -1603,7 +1609,7 @@ export class App {
         // nothing is drawn from the request. A refusal or a queued change has
         // nowhere else to land from here, so it goes to the session's own pane.
         if (!result.ok) this.chatPanes.get(s.id)?.reportModeRefusal(result.reason);
-        else if (result.queued) this.chatPanes.get(s.id)?.reportModeQueued(result.mode);
+        else if (result.queued) this.chatPanes.get(s.id)?.reportModeQueued(result.mode, result.beforeFirstTurn === true);
       });
     });
   }
@@ -2354,6 +2360,10 @@ export class App {
     // and the row menu do. Enabled only while there is a process to end, so
     // the button reports whether it can act rather than failing silently.
     const running = Boolean(active && active.pid !== null);
+    this.el.paneInfo.disabled = !active;
+    this.el.paneInfo.title = active
+      ? `Inspect ${active.label}: sub-sessions, processes and recent feedback`
+      : 'Select a session to inspect it';
     this.el.paneStop.disabled = !running;
     this.el.paneStop.title = running
       ? `Stop ${active?.label ?? 'session'} — ends the process, keeps the tab`

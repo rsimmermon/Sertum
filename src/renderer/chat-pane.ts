@@ -677,7 +677,7 @@ export class ChatPane {
       return;
     }
     if (result.queued) {
-      this.reportModeQueued(result.mode);
+      this.reportModeQueued(result.mode, result.beforeFirstTurn === true);
       return;
     }
     // The snapshot arrives on its own through `session:updated`; nothing is
@@ -698,8 +698,10 @@ export class ChatPane {
    * since that is still what is actually in effect, so this note is the only
    * place the pending change is visible in the meantime.
    */
-  reportModeQueued(mode: PermissionMode): void {
-    this.say(`Will switch to ${permissionModeLabel(mode)} once the current turn finishes.`);
+  reportModeQueued(mode: PermissionMode, beforeFirstTurn = false): void {
+    this.say(beforeFirstTurn
+      ? `Will use ${permissionModeLabel(mode)} on the first turn.`
+      : `Will switch to ${permissionModeLabel(mode)} once the current turn finishes.`);
   }
 
   private paintWaiting(s: SessionSnapshot): void {

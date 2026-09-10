@@ -358,18 +358,52 @@ export interface SessionSnapshot extends SessionSpec {
   permissionMode: PermissionMode | null;
 }
 
+/** One structured status/activity transition retained for session inspection. */
+export interface SessionActivityEvent {
+  at: number;
+  status: SessionStatus;
+  activity: string | null;
+}
+
+/** A process in the diagnostic tree rooted at the session's recorded pid. */
+export interface SessionProcessInfo {
+  pid: number;
+  parentPid: number | null;
+  command: string;
+}
+
+/** An agent-owned child thread/sub-session, when its protocol exposes one. */
+export interface SessionSubsessionInfo {
+  id: string;
+  label: string;
+  status: SessionStatus;
+  activity: string | null;
+  startedAt: number | null;
+  lastEventAt: number | null;
+}
+
+/** Read-only detail behind the pane's Info action. */
+export interface SessionDiagnostics {
+  sessionId: string;
+  capturedAt: number;
+  processes: SessionProcessInfo[];
+  subSessions: SessionSubsessionInfo[];
+  recentActivity: SessionActivityEvent[];
+}
+
 /**
  * What came of asking an agent to change its permission mode.
  *
- * `queued` marks the one case that is neither: the agent has a turn in
- * flight and cannot take the change until it is idle, so the request is
- * held rather than refused. `mode` there is what was *asked for*, not yet
- * what is in effect -- the snapshot's own `permissionMode` still reads the
- * old one until the queued change actually applies.
+ * `queued` marks the case that is neither applied nor refused: the agent
+ * cannot take the change yet, so the request is held. `mode` there is what
+ * was *asked for*, not yet what is in effect -- the snapshot's own
+ * `permissionMode` still reads the old one until the queued change actually
+ * applies. `beforeFirstTurn` distinguishes a new Codex thread, where the
+ * override waits for its first turn rather than an active turn to finish.
  */
 export type PermissionModeResult =
   | { ok: true; mode: PermissionMode; queued?: false }
-  | { ok: true; mode: PermissionMode; queued: true }
+  | { ok: true; mode: PermissionMode; queued: true; beforeFirstTurn?: boolean }
   | { ok: false; reason: string };
 
 /**
@@ -1152,6 +1186,7 @@ export type ClipboardPaste =
 export interface SertumApi {
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
   listSessions(): Promise<SessionSnapshot[]>;
+  sessionDiagnostics(id: string): Promise<SessionDiagnostics>;
   killSession(id: string): Promise<void>;
   /** Add structured guidance to a turn without automating terminal input. */
   steerSession(id: string, text: string): Promise<boolean>;

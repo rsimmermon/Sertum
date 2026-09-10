@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { AgentEffort, AgentEffortList, AgentModel, AgentModelList, ApprovalAnswer, EffortChangeResult, ModelChangeResult, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession } from '../../shared/types';
+import type { AgentEffort, AgentEffortList, AgentModel, AgentModelList, ApprovalAnswer, EffortChangeResult, ModelChangeResult, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession, SessionSubsessionInfo, SessionStatus } from '../../shared/types';
 import { CodexAppServer, type CodexNotification, type CodexServerRequest } from './codex-app-server';
 import { mapCodexStatus, resumableThread, type CodexThread, type CodexThreadStatus } from './codex';
 
@@ -11,6 +11,8 @@ const string = (v: unknown): string => typeof v === 'string' ? v : '';
 interface Hosted {
   id: string;
   threadId: string;
+  /** `thread/start` has no persisted rollout until its first turn. */
+  hasRollout: boolean;
   turnId: string | null;
   busy: boolean;
   closing: boolean;
@@ -23,6 +25,8 @@ interface Hosted {
    * mode you actually land on when the turn ends is meaningful.
    */
   pendingMode?: PermissionMode | null;
+  /** A first-turn policy override waiting for Codex's settings notification. */
+  modeInFlight?: PermissionMode | null;
   /**
    * The model this session has been switched to, passed on every
    * `turn/start` from then on.
@@ -53,10 +57,15 @@ interface Held {
   decisions: unknown[];
 }
 
+interface ChildThread extends SessionSubsessionInfo {
+  parentThreadId: string;
+}
+
 /** Owns app-server threads, never terminal pixels. All wire shapes stay here. */
 export class CodexChatHost extends EventEmitter {
   private sessions = new Map<string, Hosted>();
   private threads = new Map<string, Hosted>();
+  private childThreads = new Map<string, ChildThread>();
   private asks = new Map<string, Held>();
 
   constructor(private server: CodexAppServer) {
@@ -72,6 +81,15 @@ export class CodexChatHost extends EventEmitter {
 
   has(id: string): boolean { return this.sessions.has(id); }
 
+  /** Agent-owned sub-sessions reported by Codex's thread lifecycle. */
+  subSessions(id: string): SessionSubsessionInfo[] {
+    const root = this.sessions.get(id);
+    if (!root) return [];
+    return [...this.childThreads.values()]
+      .filter((child) => child.parentThreadId === root.threadId)
+      .map(({ parentThreadId: _parent, ...child }) => ({ ...child }));
+  }
+
   async start(id: string, cwd: string): Promise<{ threadId: string; model: string; path: string; cwd: string; mode: PermissionMode | null }> {
     if (!this.server.connected) throw new Error('Codex app server is unavailable.');
     const result = object(await this.server.request('thread/start', {
@@ -81,7 +99,10 @@ export class CodexChatHost extends EventEmitter {
     const thread = object(result.thread);
     const threadId = string(thread.id);
     if (!threadId || !this.server.connected) throw new Error('Codex did not return a live thread.');
-    const session: Hosted = { id, threadId, turnId: null, busy: false, closing: false, items: new Map() };
+    const session: Hosted = {
+      id, threadId, hasRollout: false, turnId: null, busy: false, closing: false,
+      items: new Map(),
+    };
     this.sessions.set(id, session);
     this.threads.set(threadId, session);
     return { threadId, model: string(result.model), path: string(thread.path), cwd, mode: policyMode(result.approvalPolicy) };
@@ -104,7 +125,10 @@ export class CodexChatHost extends EventEmitter {
     const thread = object(result.thread);
     const resumedId = string(thread.id) || threadId;
     if (!resumedId || !this.server.connected) throw new Error('Codex did not return a live thread.');
-    const session: Hosted = { id, threadId: resumedId, turnId: null, busy: false, closing: false, items: new Map() };
+    const session: Hosted = {
+      id, threadId: resumedId, hasRollout: true, turnId: null, busy: false,
+      closing: false, items: new Map(),
+    };
     this.sessions.set(id, session);
     this.threads.set(resumedId, session);
     return {
@@ -141,6 +165,12 @@ export class CodexChatHost extends EventEmitter {
     const s = this.sessions.get(id);
     if (!s || s.closing || s.busy || !text.trim()) return false;
     s.busy = true;
+    const firstTurnMode = !s.hasRollout && s.pendingMode ? s.pendingMode : null;
+    const firstTurnPolicy = firstTurnMode ? modePolicy(firstTurnMode) : null;
+    if (firstTurnMode) {
+      s.pendingMode = null;
+      s.modeInFlight = firstTurnMode;
+    }
     // Optimistic, like Claude's own send() -- `turn/started` and
     // `thread/status/changed` are separate async notifications that can
     // land a beat after this request's own response, verified up to ~90ms
@@ -155,12 +185,18 @@ export class CodexChatHost extends EventEmitter {
       await this.server.request('turn/start', {
         threadId: s.threadId,
         input: [{ type: 'text', text }],
+        ...(firstTurnPolicy ? { approvalPolicy: firstTurnPolicy } : {}),
         ...(s.model ? { model: s.model } : {}),
         ...(s.effort ? { effort: s.effort } : {}),
       });
+      s.hasRollout = true;
       return this.sessions.get(id) === s;
     } catch (error) {
       if (this.sessions.get(id) === s) {
+        if (firstTurnMode) {
+          s.pendingMode = firstTurnMode;
+          s.modeInFlight = null;
+        }
         s.busy = false;
         this.emit('update', { id, status: 'attention', activity: String(error) });
       }
@@ -174,6 +210,8 @@ export class CodexChatHost extends EventEmitter {
    * one queues the request instead of refusing it outright: `pendingMode` is
    * applied the moment `turn/completed` lands, and a later call here simply
    * overwrites it, so only the last mode asked for while busy ever matters.
+   * A brand-new thread has no rollout for `thread/resume` to load, so its
+   * first change is held for `turn/start`'s `approvalPolicy` override.
    */
   async setPermissionMode(id: string, mode: PermissionMode): Promise<PermissionModeResult> {
     const s = this.sessions.get(id);
@@ -182,6 +220,10 @@ export class CodexChatHost extends EventEmitter {
     if (s.busy) {
       s.pendingMode = mode;
       return { ok: true, mode, queued: true };
+    }
+    if (!s.hasRollout) {
+      s.pendingMode = mode;
+      return { ok: true, mode, queued: true, beforeFirstTurn: true };
     }
     return this.applyPermissionMode(s, mode);
   }
@@ -201,6 +243,9 @@ export class CodexChatHost extends EventEmitter {
       if (this.sessions.get(s.id) !== s || !actual) return { ok: false, reason: 'Codex did not report the updated policy.' };
       return { ok: true, mode: actual };
     } catch (error) {
+      // The thread was unsubscribed before this rebind. If resume fails, the
+      // host no longer owns a live thread, so report that lifecycle change;
+      // an empty thread never reaches this path because it uses turn/start.
       this.finish(s, -1);
       return { ok: false, reason: String(error) };
     } finally { s.busy = false; s.reconfiguring = false; }
@@ -386,6 +431,9 @@ export class CodexChatHost extends EventEmitter {
     if (this.sessions.get(s.id) !== s) return;
     this.sessions.delete(s.id);
     this.threads.delete(s.threadId);
+    for (const [threadId, child] of this.childThreads) {
+      if (child.parentThreadId === s.threadId) this.childThreads.delete(threadId);
+    }
     this.clearAsks(s);
     this.emit('exit', { id: s.id, exitCode });
   }
@@ -399,8 +447,13 @@ export class CodexChatHost extends EventEmitter {
   }
 
   private notification({ method, params }: CodexNotification): void {
-    const s = this.threads.get(string(params.threadId));
-    if (!s) return;
+    const thread = object(params.thread);
+    const threadId = string(params.threadId) || string(thread.id);
+    const s = this.threads.get(threadId);
+    if (!s) {
+      this.childNotification(method, params, threadId, thread);
+      return;
+    }
     if (method === 'thread/closed') {
       if (!s.reconfiguring) this.finish(s, 0);
       return;
@@ -421,13 +474,27 @@ export class CodexChatHost extends EventEmitter {
       // it was busy becomes applicable. Runs after the idle/attention update
       // above, so a failure here overwrites "turn finished" with why the
       // mode did not take, rather than the other way around.
-      if (s.pendingMode) {
+      if (s.modeInFlight) {
+        const mode = s.modeInFlight;
+        s.modeInFlight = null;
+        void this.applyPermissionMode(s, mode).then((result) => {
+          if (result.ok) this.emit('mode-applied', { id: s.id, mode: result.mode });
+          else this.emit('update', { id: s.id, activity: `Could not switch permission mode — ${result.reason}` });
+        });
+      } else if (s.pendingMode) {
         const mode = s.pendingMode;
         s.pendingMode = null;
         void this.applyPermissionMode(s, mode).then((result) => {
           if (result.ok) this.emit('mode-applied', { id: s.id, mode: result.mode });
           else this.emit('update', { id: s.id, activity: `Could not switch permission mode — ${result.reason}` });
         });
+      }
+    } else if (method === 'thread/settings/updated') {
+      const settings = object(params.threadSettings);
+      const actual = policyMode(settings.approvalPolicy);
+      if (actual && s.modeInFlight) {
+        s.modeInFlight = null;
+        this.emit('mode-applied', { id: s.id, mode: actual });
       }
     } else if (method === 'item/started') {
       const item = object(params.item);
@@ -454,6 +521,41 @@ export class CodexChatHost extends EventEmitter {
     } else if (method === 'thread/status/changed') {
       this.emit('update', { id: s.id, ...mapCodexStatus(params.status as CodexThreadStatus) });
     }
+  }
+
+  private childNotification(
+    method: string,
+    params: Record<string, unknown>,
+    threadId: string,
+    thread: ObjectValue,
+  ): void {
+    if (method === 'thread/started') {
+      const parentThreadId = string(thread.parentThreadId);
+      if (!threadId || !parentThreadId || !this.threads.has(parentThreadId)) return;
+      const initial = mapCodexStatus(thread.status as CodexThreadStatus | undefined);
+      this.childThreads.set(threadId, {
+        id: threadId,
+        parentThreadId,
+        label: string(thread.name) || string(thread.preview) || 'sub-session',
+        status: initial.status ?? 'working',
+        activity: initial.activity ?? 'started',
+        startedAt: typeof thread.createdAt === 'number' ? thread.createdAt * 1000 : Date.now(),
+        lastEventAt: Date.now(),
+      });
+      return;
+    }
+
+    const child = this.childThreads.get(threadId);
+    if (!child) return;
+    if (method === 'thread/closed') {
+      this.childThreads.delete(threadId);
+      return;
+    }
+    if (method !== 'thread/status/changed') return;
+    const update = mapCodexStatus(params.status as CodexThreadStatus | undefined);
+    if (update.status) child.status = update.status as SessionStatus;
+    if (update.activity) child.activity = update.activity;
+    child.lastEventAt = Date.now();
   }
 
   private request(wire: CodexServerRequest): void {
