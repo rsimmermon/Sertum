@@ -1730,6 +1730,24 @@ select.field {
   background: var(--accent-soft); border-radius: 10px 10px 3px 10px;
   padding: 8px 12px;
 }
+.chat-queued-messages {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  width: 100%;
+}
+.chat-queued-message .chat-bubble {
+  position: relative; padding-right: 32px; border: 1px dashed var(--accent);
+}
+.chat-queued-remove {
+  position: absolute; top: 3px; right: 5px;
+  width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 50%;
+  color: var(--ink-2); background: transparent;
+  cursor: pointer; font: 16px/18px var(--font-ui);
+}
+.chat-queued-remove:hover { color: var(--err); background: var(--err-soft); }
+.chat-queued-remove:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
 .chat-assistant { align-self: flex-start; width: 100%; }
 .chat-math-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
 .chat-math-display .katex-display { margin: 0; text-align: left; }

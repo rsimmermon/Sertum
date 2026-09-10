@@ -175,7 +175,7 @@ chunking at hostile boundaries: a 9MB frame, a multi-byte character split
 across a chunk cut, a frame immediately after the big one, and a blank line
 between frames all survive.
 
-## Typing while the agent is busy: the queue and the recall walk
+## Typing while the agent is busy: the queue
 
 A turn in progress used to make the composer a dead end — `chat/send` refused
 the message and the note said to finish or stop the turn and try again — so a
@@ -196,37 +196,14 @@ take one.
   only updated while they are on screen, so `app.ts` also hands the update
   straight to the pane; without that, a message queued before switching tabs
   would sit there until someone looked at it again.
-- **The stop sign has two jobs.** A press stops a running turn through the
-  declared `turn-interrupt` capability, then hands one message back: the last
-  one still queued, which genuinely un-queues it, or past that a step further
-  back through what the pane has sent, which is copied rather than removed
-  since it is in the transcript and cannot be unsaid. Pressing again takes
-  the one before that.
-- **The button had to stop following the composer to make that reachable.**
-  The rule was "text in the composer means Send", and a recall fills the
-  composer — so the second press was unreachable, and after the first press
-  the turn is over so `turnActive` is false too. A `walking` flag therefore
-  holds the sign there while a walk is in progress. One real keystroke ends
-  the walk; assigning `value` in code raises no `input` event, so a recall
-  does not end its own.
-- **What brings the sign up is what is pending, which sent history is not.**
-  Offering it "whenever there is anything to hand back" was the first cut,
-  and `sent` is never empty after the first message: an idle Codex session
-  whose last line read *turn finished* sat there showing a red stop square,
-  inviting the reader to stop a turn that had ended minutes earlier — the
-  pane contradicting the status dot beside it, which is the crying-wolf
-  failure the two planes exist to prevent. The sign is up only while a turn
-  is running or messages are queued (or mid-walk). Reaching the sent history
-  is a *continuation*: the press that stops the turn or takes back the last
-  queued message keeps `walking` true, and the next press steps into what
-  was sent. With nothing pending and nothing typed, the button is a disabled
-  Send, which is what an idle composer actually offers.
-- **Nothing typed is overwritten.** The button is only a stop with an empty
-  composer or mid-walk, so a recall never has anything of the reader's to
-  lose. The sent list is capped at 50, and a session that exits with messages
-  still queued says how many never went in — they are unreachable once the
-  composer is disabled, so the count is the last honest thing the pane can
-  offer.
+- **The stop sign has one job.** A press stops a running turn through the
+  declared `turn-interrupt` capability. Queued messages are not recalled or
+  rewritten by stop; they remain queued for the next turn boundary.
+- **Queued messages are visible and individually removable.** Each queued
+  message is rendered below the transcript as a user-style bubble with an ×
+  control in its corner. Clicking that control removes only that entry from
+  the renderer-owned queue. The queue can therefore be edited without
+  changing the stop action or disturbing the order of the other messages.
 
 The queue is per pane, in the renderer. It does not survive the window
 closing, which is the honest limit of putting it there and the same one pane
@@ -234,7 +211,7 @@ occupancy already has; moving it into the session fabric would make it
 survive, at the cost of a protocol change and a snapshot field.
 
 Status: typechecked and reviewed, and the app runs clean with it, but the
-queue and the walk have **not** yet been exercised against a live agent turn.
+queue has **not** yet been exercised against a live agent turn.
 
 ## Markdown, and when the markup is the answer
 

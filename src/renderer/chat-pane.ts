@@ -57,8 +57,10 @@ const POLL_MS = 1000;
  */
 const NOTE_FADE_MS = 6000;
 
-/** How far back the stop button's recall walk can reach into sent messages. */
-const SENT_RECALL_CAP = 50;
+interface QueuedMessage {
+  id: number;
+  text: string;
+}
 
 export class ChatPane {
   readonly element: HTMLDivElement;
@@ -117,13 +119,10 @@ export class ChatPane {
    * window closing. That is the honest limit of putting it here, and it is
    * the same one pane occupancy already has.
    */
-  private queue: string[] = [];
-  /** Messages this pane has sent, oldest last — the tail of the recall walk. */
-  private sent: string[] = [];
-  /** How many steps back into `sent` the current walk has taken. */
-  private sentWalk = 0;
-  /** True while stepping back through recall, so the button stays the stop. */
-  private walking = false;
+  private queue: QueuedMessage[] = [];
+  private nextQueueId = 0;
+  /** The visible, removable queued-message group in the conversation. */
+  private queuedMessages: HTMLDivElement;
   /** Guards `flush` against re-entry while a delivery is in flight. */
   private flushing = false;
   private session: SessionSnapshot;
@@ -222,16 +221,12 @@ export class ChatPane {
     sign.className = 'chat-stop-sign';
     this.action.append(sign, sendArrow());
     this.action.onclick = () => {
-      if (this.mode === 'stop') void this.stopOrRecall();
+      if (this.mode === 'stop') void this.stop();
       else this.submit();
     };
     // The mode follows the composer, so it flips on the first keystroke and
-    // back on the last backspace. A real keystroke also ends a recall walk:
-    // the text is being edited now, so the next click should send it rather
-    // than replace it with something older. Assigning `value` in code raises
-    // no `input` event, so a recall does not end its own walk.
+    // back on the last backspace.
     this.input.addEventListener('input', () => {
-      this.walking = false;
       this.paintAction();
     });
 
@@ -320,6 +315,9 @@ export class ChatPane {
     this.waitingLabel = document.createElement('span');
     this.waitingLabel.className = 'chat-waiting-label';
     this.waiting.append(dots, this.waitingLabel);
+
+    this.queuedMessages = document.createElement('div');
+    this.queuedMessages.className = 'chat-queued-messages';
 
     this.element.append(this.note, this.scroll, this.approvals.element, composer);
     this.applySession(session);
@@ -418,8 +416,9 @@ export class ChatPane {
    * The note under the composer cannot hold it: `refresh` hushes the note
    * whenever the transcript moves, and a working agent moves it constantly,
    * so a "queued" line put there would be gone within the second. The
-   * placeholder is the durable surface, and the composer is empty exactly
-   * when there is a queue to describe -- queueing clears what you typed.
+   * placeholder is a compact status summary, while the queued messages
+   * themselves stay visible in the conversation. Queueing clears what you
+   * typed so the composer is ready for another message.
    */
   private paintPlaceholder(): void {
     const s = this.session;
@@ -427,7 +426,7 @@ export class ChatPane {
     const plural = waiting === 1 ? '' : 's';
     if (this.canWrite(s)) {
       this.input.placeholder = waiting
-        ? `${waiting} message${plural} queued — going in as ${s.agent} is ready. Stop takes the last one back.`
+        ? `${waiting} message${plural} queued — click × on a message to remove it.`
         : `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
       this.input.title = '';
     } else if (s.origin === 'monitored') {
@@ -466,59 +465,25 @@ export class ChatPane {
    * would hide it. Being a sign rather than a word, the reason has to reach a
    * screen reader as well as a tooltip.
    *
-   * The stop sign gained a second job with the queue, and two things follow.
-   * It is offered while messages are still queued even with no turn to stop,
-   * because after the first press the turn is over and taking the rest back
-   * would otherwise be unreachable. And it survives its own recall filling
-   * the composer -- `walking` holds it there -- since text arriving from a
-   * walk is not the "you just typed this" signal the rule above is about.
-   * One real keystroke ends the walk and the button is a send again.
-   *
-   * What does *not* bring it up is sent history. A pane that has ever sent a
-   * message can always walk back into what it sent, but nothing about that
-   * is pending: counting it as something to hand back left a red stop square
-   * sitting on every idle session, offering to stop a turn that had already
-   * finished -- the pane disagreeing with the status dot beside it, which is
-   * the one thing this app is built not to do. The walk into sent messages
-   * is reached by continuing a stop or a take-back, never by the sign
-   * appearing on its own.
+   * Queued messages have their own dismiss controls in the conversation, so
+   * the stop sign has one job: stop the active turn. A queue does not make the
+   * sign appear on an idle session, and stopping a turn does not rewrite or
+   * recall text the reader has already sent.
    */
   private paintAction(): void {
     const s = this.session;
     const writable = this.canWrite(s);
     const hasText = this.input.value.trim().length > 0;
     const turnActive = s.status === 'working' || s.status === 'needs-input';
-    // Pending is a turn to stop or messages that never went in. Sent history
-    // is neither, so it is walkable but never puts the sign on screen.
-    const pending = turnActive || this.queue.length > 0;
-    const moreSent = this.sentWalk < this.sent.length;
-
-    this.mode = writable && (this.walking || (!hasText && pending)) ? 'stop' : 'send';
-    // Stopping needs a turn and the capability; taking back needs neither, so
-    // a declined `turn-interrupt` still leaves the walk usable.
-    const canStop =
-      writable &&
-      ((turnActive && this.interruptCapability.ok) || this.queue.length > 0 || moreSent);
+    this.mode = writable && !hasText && turnActive ? 'stop' : 'send';
+    const canStop = writable && turnActive && this.interruptCapability.ok;
 
     let reason: string;
     if (this.mode === 'stop') {
       this.action.disabled = !canStop;
-      const waiting = this.queue.length;
-      if (turnActive && this.interruptCapability.ok) {
-        reason = waiting
-          ? `Stop ${s.agent}’s turn and take back the last of ${waiting} queued`
-          : `Stop ${s.agent}’s current turn`;
-      } else if (waiting) {
-        reason = `Take back the last of ${waiting} queued`;
-      } else if (moreSent) {
-        reason = 'Bring back the message before this one';
-      } else if (this.walking) {
-        reason = 'That is the oldest message this pane sent.';
-      } else {
-        reason = this.interruptCapability.ok
-          ? `Stop ${s.agent}’s current turn`
-          : this.interruptCapability.reason;
-      }
+      reason = this.interruptCapability.ok
+        ? `Stop ${s.agent}’s current turn`
+        : this.interruptCapability.reason;
     } else {
       this.action.disabled = !writable || !hasText;
       reason = !writable
@@ -531,8 +496,6 @@ export class ChatPane {
     this.action.classList.toggle('is-send', this.mode === 'send');
     this.action.title = reason;
     this.action.setAttribute('aria-label', reason);
-    // Every path that changes the queue repaints the button, so this is the
-    // one place the placeholder's queue count needs to be kept honest from.
     this.paintPlaceholder();
   }
 
@@ -762,82 +725,27 @@ export class ChatPane {
     return api.interruptTurn(this.session.id);
   }
 
-  /**
-   * What the stop sign does, which is two things in one press.
-   *
-   * A running turn is stopped first — the urgent half, still through the
-   * declared `turn-interrupt` capability and never as terminal bytes. Then
-   * one message comes back into the composer: the last one still queued if
-   * there is one, otherwise a step further back through what this pane has
-   * already sent. Pressing it again takes the one before that. A stopped
-   * turn usually means the thing you asked for needs rewording, and the
-   * wording is the part worth keeping.
-   */
-  private async stopOrRecall(): Promise<void> {
+  /** Stop the active turn through the declared capability. */
+  private async stop(): Promise<void> {
     if (this.action.disabled || this.mode !== 'stop') return;
-    const s = this.session;
-    const turnActive = s.status === 'working' || s.status === 'needs-input';
-
-    let stopped: boolean | null = null;
-    if (turnActive && this.interruptCapability.ok) stopped = await this.interrupt();
-
-    const back = this.recall();
-    const stopNote =
-      stopped === null
-        ? null
-        : stopped
+    try {
+      this.say(
+        await this.interrupt()
           ? 'Stopped.'
-          : 'The agent no longer had an active turn to stop.';
-    const parts = [stopNote, back].filter((p): p is string => p !== null);
-    if (parts.length) this.say(parts.join(' '));
+          : 'The agent no longer had an active turn to stop.',
+      );
+    } finally {
+      this.paintAction();
+    }
+  }
+
+  /** Remove one message without disturbing the rest of the queue. */
+  private removeQueued(index: number): void {
+    if (index < 0 || index >= this.queue.length) return;
+    this.queue.splice(index, 1);
+    this.paintQueuedMessages();
+    this.say('Removed queued message.');
     this.paintAction();
-  }
-
-  /**
-   * Hand one message back to the composer, newest first.
-   *
-   * Anything still queued comes back first, and comes back *out* of the
-   * queue — it was never sent, so taking it back is the whole of it. Past
-   * that the walk steps through what this pane has already sent, which is
-   * copied rather than removed: it is in the transcript and cannot be
-   * unsaid. Nothing typed is ever overwritten, because the button is only a
-   * stop with an empty composer or mid-walk.
-   */
-  private recall(): string | null {
-    let text: string | undefined;
-    let fromQueue = false;
-    if (this.queue.length) {
-      text = this.queue.pop();
-      fromQueue = true;
-    } else if (this.sentWalk < this.sent.length) {
-      this.sentWalk += 1;
-      text = this.sent[this.sent.length - this.sentWalk];
-    }
-    if (text === undefined) return null;
-
-    this.input.value = text;
-    this.walking = true;
-    // Deciding what to say next is followed by saying it, so the caret goes
-    // back where the typing happens — the same courtesy the chips do.
-    this.input.focus();
-    this.input.setSelectionRange(text.length, text.length);
-
-    if (fromQueue) {
-      return this.queue.length
-        ? `Taken back out of the queue — ${this.queue.length} still waiting.`
-        : 'Taken back out of the queue.';
-    }
-    return this.sentWalk < this.sent.length
-      ? 'Brought back — press stop again for the one before it.'
-      : 'Brought back — that is the oldest message this pane sent.';
-  }
-
-  /** The persistent line under the composer while messages are waiting. */
-  private queuedNote(): string {
-    const n = this.queue.length;
-    return n === 1
-      ? `Queued — it goes in when ${this.session.agent} is ready.`
-      : `Queued — ${n} waiting, they go in as ${this.session.agent} is ready.`;
   }
 
   /**
@@ -862,16 +770,14 @@ export class ChatPane {
   private async submit(): Promise<void> {
     const text = this.input.value.replace(/\s+$/, '');
     if (!text || this.input.disabled || this.submitting) return;
-    // Sending is a fresh thought, so the next walk starts from the newest
-    // again rather than wherever the last one had got to.
-    this.walking = false;
-    this.sentWalk = 0;
-
     // A turn in progress does not refuse the message any more; it defers it.
     if (!this.receivable()) {
-      this.queue.push(text);
+      this.queue.push({ id: ++this.nextQueueId, text });
       this.input.value = '';
-      this.say(this.queuedNote());
+      this.paintQueuedMessages(true);
+      this.say(this.queue.length === 1
+        ? `Queued — it goes in when ${this.session.agent} is ready.`
+        : `Queued — ${this.queue.length} waiting, they go in as ${this.session.agent} is ready.`);
       this.paintAction();
       return;
     }
@@ -885,8 +791,7 @@ export class ChatPane {
 
   /**
    * Put one message into the session by whichever route its transport has,
-   * and record it for the recall walk. Resolves false when it did not go, in
-   * which case the caller keeps it.
+   * Resolves false when it did not go, in which case the caller keeps it.
    */
   private async deliver(text: string): Promise<boolean> {
     const id = this.session.id;
@@ -911,11 +816,6 @@ export class ChatPane {
       setTimeout(() => api.write(id, '\r'), 150);
       this.say('Sent to the terminal — it appears here once the agent records it.');
     }
-    this.sent.push(text);
-    // Bounded like every other accumulating list here: the walk is for the
-    // last few things you asked, and a day-long session should not hold every
-    // message it ever sent alive for it.
-    if (this.sent.length > SENT_RECALL_CAP) this.sent.shift();
     return true;
   }
 
@@ -934,8 +834,10 @@ export class ChatPane {
     this.flushing = true;
     try {
       const next = this.queue[0];
-      if (next !== undefined && await this.deliver(next)) {
-        this.queue.shift();
+      if (next !== undefined && await this.deliver(next.text)) {
+        const delivered = this.queue.findIndex((entry) => entry.id === next.id);
+        if (delivered >= 0) this.queue.splice(delivered, 1);
+        this.paintQueuedMessages();
         if (this.queue.length) {
           this.say(`Sent — ${this.queue.length} still queued.`, NOTE_FADE_MS);
         }
@@ -944,6 +846,17 @@ export class ChatPane {
       this.flushing = false;
       this.paintAction();
     }
+  }
+
+  /** Keep queued messages visible even when no transcript update occurs. */
+  private paintQueuedMessages(scrollToTail = false): void {
+    const nearBottom = this.isNearBottom();
+    this.queuedMessages.replaceChildren(
+      ...this.queue.map((entry, index) =>
+        renderQueuedMessage(entry.text, index, () => this.removeQueued(index)),
+      ),
+    );
+    if (scrollToTail || nearBottom) this.scrollToTail();
   }
 
   private async refresh(): Promise<void> {
@@ -999,7 +912,7 @@ export class ChatPane {
       this.note.hidden = true;
       // The welcome card is centred by `margin: auto`, so the waiting bubble
       // rides along beneath it rather than being dropped for a first turn.
-      this.scroll.replaceChildren(renderWelcome(this.session), this.waiting);
+      this.scroll.replaceChildren(renderWelcome(this.session), this.queuedMessages, this.waiting);
       return;
     }
     this.note.textContent = snapshot.truncated
@@ -1012,7 +925,7 @@ export class ChatPane {
     );
     // The bubble is one long-lived element rather than one per repaint, so
     // its animation does not restart every time the transcript poll lands.
-    this.scroll.replaceChildren(...nodes, this.waiting);
+    this.scroll.replaceChildren(...nodes, this.queuedMessages, this.waiting);
     if (nearBottom) this.scrollToTail();
     else this.scroll.scrollTop = wasAt;
   }
@@ -1198,6 +1111,35 @@ function renderMessage(
   paint();
 
   wrap.append(bar, bubble);
+  return wrap;
+}
+
+/** A queued user message, kept separate from the transcript until delivery. */
+function renderQueuedMessage(
+  text: string,
+  index: number,
+  remove: () => void,
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-item chat-user chat-queued-message';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.textContent = text;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-queued-remove';
+  button.textContent = '×';
+  button.title = 'Remove queued message';
+  button.setAttribute('aria-label', `Remove queued message ${index + 1}`);
+  button.onclick = (event) => {
+    event.stopPropagation();
+    remove();
+  };
+
+  bubble.append(button);
+  wrap.append(bubble);
   return wrap;
 }
 
