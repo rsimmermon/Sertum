@@ -466,10 +466,14 @@ export function openNewSessionDialog(
         create.toggleAttribute('disabled', false);
         cancel.toggleAttribute('disabled', false);
         create.textContent = CREATE_LABEL;
+        // Settings > Agents holds a path per *managed* agent, so pointing a
+        // failed Shell at it sends the reader looking for a control that is
+        // not there -- which is what happened when node-pty's own helper lost
+        // its executable bit and Shell was the only session that could fail.
         setCreateNote(
           'error',
-          `Could not start ${agentLabel(agent)}: ${errorMessage(err)}. ` +
-            'Check its location in Settings → Agents.',
+          `Could not start ${agentLabel(agent)}: ${errorMessage(err)}.` +
+            (agent === 'shell' ? '' : ' Check its location in Settings → Agents.'),
         );
         return;
       }

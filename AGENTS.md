@@ -20,7 +20,7 @@ about to change, before you change it.
 | [docs/sessions.md](docs/sessions.md) | Stream sessions, owned Codex threads, resume, Claude `--bg` hosting |
 | [docs/approvals.md](docs/approvals.md) | Permission rules, the B5 bar, question and plan cards, permission modes |
 | [docs/models.md](docs/models.md) | Model and thinking-level catalogues, switching mid-session |
-| [docs/terminal.md](docs/terminal.md) | Key handling, clipboard, WebGL context loss, helper-process death |
+| [docs/terminal.md](docs/terminal.md) | Key handling, clipboard, WebGL context loss, helper-process death, node-pty's macOS spawn helper |
 | [docs/windows.md](docs/windows.md) | Packaging, binary resolution, icons, installer, platform no-ops |
 | [docs/git.md](docs/git.md) | Commit from the review, pull requests through `gh` |
 
@@ -734,8 +734,9 @@ Two invariants for anything touching a live pane:
   unresponsive window rather than leaving either invisible.
 
 Chords and their platforms, the three clipboard shapes Electron 44 answers
-with, the context-loss timeline, and the node-pty teardown crash the quit
-drain dodges: [docs/terminal.md](docs/terminal.md).
+with, the context-loss timeline, the two ways node-pty's macOS spawn helper
+arrives unusable, and the node-pty teardown crash the quit drain dodges:
+[docs/terminal.md](docs/terminal.md).
 
 ## Committing from the review
 
@@ -1158,6 +1159,28 @@ compares `path.txt` against the stock path and would fetch again on every
 run. Verified from an emptied `node_modules`: the binary is extracted from
 Electron's cache, branded, and a second `npm install` is a silent no-op.
 
+### node-pty's macOS spawn helper arrives unusable, twice over
+
+Every PTY on macOS is `posix_spawn`ed through a helper binary node-pty ships,
+and it reaches us broken in two unrelated ways -- the published package
+clears its executable bit, and node-pty's `app.asar` path rewrite fires even
+when the module was already loaded from `app.asar.unpacked`, which is always
+the case here because sertumd runs under `ELECTRON_RUN_AS_NODE`. Either one
+alone stops every PTY session, and both report the same errno-free sentence,
+`posix_spawnp failed.`, with no path in it and no macOS permission prompt to
+explain it. Since Claude and Codex are stream sessions with no PTY, the
+symptom is Shell alone refusing to start.
+
+Both are answered where the file lands rather than at spawn time:
+`scripts/ensure-pty-helper.js` from `postinstall` and `prestart` for the
+source tree, `fixDarwinPtyHelper` in `forge.config.ts` for the bundle, before
+the ad-hoc re-sign that has to seal it. `verifyPackagedDaemon` stats the path
+node-pty will really use, so packaging fails closed on either.
+
+Never diagnose this from the message alone, and never conclude a spawn failure
+here is macOS permissions: the exact modes, the isolating test and the
+reproduction are in [docs/terminal.md](docs/terminal.md).
+
 ## Verification
 
 Screen capture is unavailable in some environments, so the app can be checked
@@ -1298,6 +1321,7 @@ src/
   renderer/effort-picker.ts       The thinking levels this session's model offers, and the switch  [docs/models.md]
 scripts/
   ensure-electron.js          Fetch the Electron binary if absent; Electron 42+ has no postinstall
+  ensure-pty-helper.js        Restore the +x bit node-pty's package drops from spawn-helper  [docs/terminal.md]
   smoke-pty.js                Headless PTY test
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable

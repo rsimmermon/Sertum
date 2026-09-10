@@ -164,6 +164,78 @@ child process dying. `watchForProcessDeath` in `main.ts` now is.
 - **Unresponsive.** Not recoverable from here; logged so it stops being
   invisible.
 
+## macOS spawns every PTY through a helper binary node-pty ships broken
+
+On macOS node-pty does not `forkpty`. It `posix_spawn`s a 50KB helper --
+`prebuilds/darwin-<arch>/spawn-helper`, passed as `argv[0]` -- which opens the
+slave tty, `chdir`s to the session's folder and `execvp`s the real command
+(`src/unix/spawn-helper.cc`, twelve lines). Linux takes the `forkpty` branch
+and never execs it; Windows uses ConPTY. So this is a macOS-only failure, and
+the whole of plane 1 rests on that one file being reachable and runnable.
+
+Two independent things make it neither, and **both report the same sentence**:
+
+```
+posix_spawnp failed.
+```
+
+That is the entire message. `pty.cc` throws a fixed string on any non-zero
+`posix_spawn` return, so there is no errno, no path, and nothing pointing at
+node_modules -- and because a POSIX mode failure is not something TCC gates,
+macOS offers no permission prompt either. It looks like the app cannot find
+the shell.
+
+- **The executable bit is missing from the published package.** node-pty
+  1.1.0's own npm tarball ships it 0644:
+
+  ```
+  -rw-r--r--  50480  package/prebuilds/darwin-arm64/spawn-helper
+  -rw-r--r--   9248  package/prebuilds/darwin-x64/spawn-helper
+  ```
+
+  Read straight out of the tarball in npm's cache, so it is not something a
+  copy in this repo did. `posix_spawn` returns EACCES. Every install has it:
+  `npm start` and a packaged build alike. `scripts/ensure-pty-helper.js`
+  chmods the source tree from `postinstall` and `prestart` (npm restores the
+  0644 file on every install); `fixDarwinPtyHelper` in `forge.config.ts` does
+  the bundle.
+
+- **The asar rewrite fires when it must not.** `lib/unixTerminal.js` computes
+  the helper path and then rewrites it unconditionally:
+
+  ```js
+  helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');
+  ```
+
+  Right when Electron's asar-aware require loaded the module from inside the
+  archive. sertumd is not that: it runs under `ELECTRON_RUN_AS_NODE`, which
+  has no asar support, so it resolves node-pty on the real filesystem at
+  `Resources/app.asar.unpacked/node_modules/node-pty` -- already unpacked --
+  and the rewrite turns its helper path into `app.asar.unpacked.unpacked`,
+  which exists nowhere. `posix_spawn` returns ENOENT. Isolated by putting one
+  chmod-ed copy of the module at two paths differing only in that substring:
+  the one with `app.asar` in it fails, the other spawns.
+
+  Nothing else in Sertum loads node-pty -- `pty-manager.ts` is the only
+  importer and only the daemon reaches it -- so the rewrite is never useful
+  here and always wrong. `fixDarwinPtyHelper` answers the path it computes
+  with a symlink beside the real directory, created before the ad-hoc re-sign
+  so the signature seals it. Verified: `codesign --verify --deep` passes and
+  the bundle spawns.
+
+`verifyPackagedDaemon` then stats the path node-pty will *really* use
+(`ptyRuntimeHelper`), so one check that follows the symlink proves both fixes,
+and a build missing either fails rather than shipping an app whose every PTY
+session dies on arrival.
+
+**What it looks like from the front.** Claude and Codex are stream sessions
+with no PTY at all, so a broken helper never touches them: the symptom is
+Shell, alone, refusing to start while every agent works. The New Session
+dialog reported that as "Could not start Shell: posix_spawnp failed.. Check
+its location in Settings → Agents" -- and Settings > Agents holds a path per
+*managed* agent, so there was no Shell control to check. It no longer offers
+that advice for a shell.
+
 ## Quitting drains before it exits — in the daemon, now
 
 `disposeAll` kills every PTY, and node-pty reports each death from a

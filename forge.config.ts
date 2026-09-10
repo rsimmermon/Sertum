@@ -46,6 +46,71 @@ function shipInPackage(file: string): boolean {
 
 const run = promisify(execFile);
 
+/** Every node-pty spawn-helper the packaged bundle actually ships. */
+async function ptyHelpers(resources: string): Promise<string[]> {
+  const prebuilds = path.join(
+    resources, 'app.asar.unpacked', 'node_modules', 'node-pty', 'prebuilds',
+  );
+  const found: string[] = [];
+  for (const slice of await fs.readdir(prebuilds)) {
+    const helper = path.join(prebuilds, slice, 'spawn-helper');
+    // Only the darwin slices carry one; win32 has ConPTY instead.
+    if (await fs.stat(helper).then(() => true, () => false)) found.push(helper);
+  }
+  return found;
+}
+
+/**
+ * The path node-pty will ask the kernel for, which is not the one on disk.
+ *
+ * lib/unixTerminal.js rewrites `app.asar` to `app.asar.unpacked` in the
+ * helper path unconditionally, which is correct when the module was loaded
+ * from inside the archive by Electron's asar-aware require. sertumd is not
+ * that: it runs under ELECTRON_RUN_AS_NODE, which has no asar support, so it
+ * resolves node-pty on the real filesystem inside app.asar.unpacked already
+ * -- and the rewrite lands on `app.asar.unpacked.unpacked`, which exists
+ * nowhere. Reproduced verbatim in this repo's own copy of node-pty by moving
+ * it between two paths differing only in that substring.
+ */
+function ptyRuntimeHelper(helper: string): string {
+  return helper
+    .replace('app.asar', 'app.asar.unpacked')
+    .replace('node_modules.asar', 'node_modules.asar.unpacked');
+}
+
+/**
+ * Makes the helper node-pty asks for on macOS both present and executable.
+ *
+ * Two upstream facts, each of which alone stops every PTY session dead, and
+ * each of which surfaces as one flat sentence with no errno and no path in it
+ * -- `posix_spawnp failed.` -- because that is all the addon throws:
+ *
+ *  - node-pty 1.1.0 publishes `prebuilds/darwin-<arch>/spawn-helper` mode
+ *    0644, and npm, packager and asar's unpack all faithfully carry that
+ *    along. macOS `posix_spawn`s it as argv[0], so it has to be executable.
+ *    scripts/ensure-pty-helper.js does the same for the source tree, which
+ *    `npm start` runs from.
+ *  - the asar rewrite above sends it to a directory that does not exist. A
+ *    symlink beside the real one answers that path without moving the module,
+ *    patching it, or teaching pty-manager.ts a packaged-only require path.
+ *
+ * Both run before the re-sign below, since each changes the bundle and the
+ * signature has to seal it as shipped. docs/terminal.md carries the evidence.
+ */
+async function fixDarwinPtyHelper(outputPaths: string[]): Promise<void> {
+  for (const dir of outputPaths) {
+    const resources = path.join(dir, 'Sertum.app', 'Contents', 'Resources');
+    for (const helper of await ptyHelpers(resources)) {
+      const { mode } = await fs.stat(helper);
+      // Mirror read to execute, so the bit lands for whoever can already read.
+      await fs.chmod(helper, mode | ((mode & 0o444) >> 2));
+    }
+    const shim = path.join(resources, 'app.asar.unpacked.unpacked');
+    await fs.rm(shim, { recursive: true, force: true });
+    await fs.symlink('app.asar.unpacked', shim);
+  }
+}
+
 /**
  * Re-signs the packaged macOS bundle ad-hoc, after everything else has
  * finished writing to it.
@@ -85,9 +150,12 @@ async function resignDarwinBundle(outputPaths: string[]): Promise<void> {
 }
 
 /**
- * Fails packaging if the two pieces that make sertumd launchable were lost.
- * Both failures otherwise produce a perfectly healthy-looking installer and
- * only surface after launch, when the GUI tries to start its session fabric.
+ * Fails packaging if a piece the app cannot run without was lost: the two that
+ * make sertumd launchable, and on macOS the executable bit on node-pty's
+ * spawn-helper. Every one of these otherwise produces a perfectly
+ * healthy-looking installer and only surfaces after launch -- when the GUI
+ * tries to start its session fabric, or when the first PTY session refuses to
+ * spawn.
  */
 async function verifyPackagedDaemon(
   platform: string,
@@ -108,6 +176,35 @@ async function verifyPackagedDaemon(
       'sertumd.js',
     );
     await fs.access(daemon);
+
+    if (platform === 'darwin') {
+      // Checked at the path node-pty will really use, so the symlink and the
+      // executable bit are both proven by one stat that follows the link.
+      // Every slice present is checked rather than the one matching `arch`,
+      // since a universal build has no `darwin-universal` slice to name.
+      const helpers = await ptyHelpers(resources);
+      if (helpers.length === 0) {
+        throw new Error(
+          'packaged Sertum ships no node-pty spawn-helper; no PTY session can start',
+        );
+      }
+      for (const helper of helpers) {
+        const runtime = ptyRuntimeHelper(helper);
+        let mode: number;
+        try {
+          ({ mode } = await fs.stat(runtime));
+        } catch {
+          throw new Error(
+            `packaged Sertum resolves its PTY helper to ${runtime}, which is not there`,
+          );
+        }
+        if (!(mode & 0o111)) {
+          throw new Error(
+            `packaged Sertum has a non-executable ${runtime}; no PTY session can start`,
+          );
+        }
+      }
+    }
 
     const fuses = await getCurrentFuseWire(executable);
     // FuseState.ENABLE is the byte value for ASCII "1". Avoid importing the
@@ -185,7 +282,10 @@ const config: ForgeConfig = {
   ],
   hooks: {
     postPackage: async (_forgeConfig, { platform, outputPaths }) => {
-      if (platform === 'darwin') await resignDarwinBundle(outputPaths);
+      if (platform === 'darwin') {
+        await fixDarwinPtyHelper(outputPaths);
+        await resignDarwinBundle(outputPaths);
+      }
       await verifyPackagedDaemon(platform, outputPaths);
     },
   },
