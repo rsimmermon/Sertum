@@ -1606,10 +1606,10 @@ export class App {
     openPermissionModePicker(x, y, s, this.capabilities, (mode) => {
       void api.setPermissionMode(s.id, mode).then((result) => {
         // Success repaints from the snapshot the daemon pushes back, so
-        // nothing is drawn from the request. A refusal or a queued change has
+        // nothing is drawn from the request. A refusal or a deferred change has
         // nowhere else to land from here, so it goes to the session's own pane.
         if (!result.ok) this.chatPanes.get(s.id)?.reportModeRefusal(result.reason);
-        else if (result.queued) this.chatPanes.get(s.id)?.reportModeQueued(result.mode, result.beforeFirstTurn === true);
+        else if (result.appliesToNextTurn) this.chatPanes.get(s.id)?.reportModeDeferred(result.mode);
       });
     });
   }

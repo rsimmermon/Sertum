@@ -280,7 +280,11 @@ class CodexAdapter implements AgentAdapter {
       ok: false,
       reason: 'Codex approvals use its own session cache and command rules; Sertum’s stored rules are not applied to Codex.',
     },
-    'permission-mode': { ok: true, requires: 'structured-conversation', modes: ['codex-untrusted', 'codex-on-request', 'codex-never'] },
+    'permission-mode': {
+      ok: true,
+      requires: 'structured-conversation',
+      modes: ['codex-read-only', 'codex-ask', 'codex-auto-review', 'codex-full-access'],
+    },
     'conversation-view': { ok: true },
     // CodexChatHost owns thread/start and turn/start over the private server.
     'structured-conversation': { ok: true },

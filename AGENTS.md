@@ -116,8 +116,9 @@ below, or a file of its own in `docs/`, is described there rather than here:
       allow/deny/ask rules, and an approval bar that holds open the calls
       Claude actually asks about, on either transport; a call whose card *is*
       the question (`AskUserQuestion`, `ExitPlanMode`) is drawn as that card
-- [x] **Permission mode per session** — plan, auto, accept edits and the rest,
-      from a chip beside the composer or the sidebar row menu
+- [x] **Permission mode per session** — Claude's plan, auto and edit modes;
+      Codex's Read Only, Ask for approval, Approve for me and Full Access
+      presets; all from a chip beside the composer or the sidebar row menu
 - [x] **System notifications** (C20, E5) — fired from adapter events on a
       status transition, only when the window is unfocused, with per-session
       mute and snooze
@@ -553,7 +554,9 @@ empty answer to a question whose ids it does not understand. Protocol 4 takes
 answered `{ unchanged: true }`; a protocol 3 daemon would read that object as
 an id and answer every poll "Session not found." Protocol 5 adds attachments
 to `chat/send`; a protocol 4 daemon would otherwise accept the text while
-silently dropping the files.
+silently dropping the files. Protocol 6 replaces Codex's old single-policy
+mode ids with terminal-equivalent permission tuples; a protocol 5 daemon
+cannot safely interpret the new choices.
 
 **Terminals come back.** The daemon keeps a per-session ring of recent raw
 output (512KB). A reopened GUI asks `pty/replay` when it first builds a
@@ -914,8 +917,10 @@ the reason **which event is held is the whole design**.
   — is drawn as that card rather than an approve/deny bar, skips the rules
   and the session-scoped allows, and never writes a rule.
 - **The permission mode is read, never assumed.** `SessionSnapshot.permissionMode`
-  is null until the agent has said, and the chip beside the composer sets it
-  over `set_permission_mode`, showing the mode the agent reported back.
+  is null until the agent has said. Claude reports one mode over
+  `set_permission_mode`; Codex reports the effective permission profile,
+  approval policy and reviewer after `thread/settings/update`. The chip beside
+  the composer shows only the mode reconstructed from that agent-owned reply.
 
 The reply shapes, the two curl deadlines, the four choices and their reach,
 the card contract and every verified payload:

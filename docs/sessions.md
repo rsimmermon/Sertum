@@ -95,10 +95,23 @@ verified native approval policies, with the workspace sandbox retained.
 `permission-mode` declarations must name their structured-conversation
 dependency and supported modes in the type. `shared/session-capabilities.ts`
 combines that declaration with ownership, transport and exit state, shared by
-the daemon and picker. Codex's policies are distinct from Claude's permission
-modes. Applying a policy change requires an idle turn: `thread/resume` on a
-loaded thread ignores overrides, so the host unsubscribes first, resumes, and
-uses the returned effective policy. Failed sends keep the composer's text.
+the daemon and picker. Codex's modes are the same four compound presets its
+terminal picker presents, not aliases for `approvalPolicy` alone:
+
+| Preset | Permission profile | Approval policy | Reviewer |
+|---|---|---|---|
+| Read Only | `:read-only` | `on-request` | `user` |
+| Ask for approval | `:workspace` | `on-request` | `user` |
+| Approve for me | `:workspace` | `on-request` | `auto_review` |
+| Full Access | `:danger-full-access` | `never` | `user` (inert) |
+
+The app server's `permissionProfile/list` is consulted for the session's cwd
+before a switch, so a profile denied by effective managed requirements is
+refused with a reason. `thread/settings/update` then changes the profile,
+approval policy and reviewer together. Its empty response is not treated as
+success: `thread/settings/updated` carries the effective sandbox, policy and
+reviewer, and only that reported tuple moves `SessionSnapshot.permissionMode`.
+Failed sends keep the composer's text.
 
 Images on a turn use the app-server's `localImage` input beside the text
 input, re-checked against Codex CLI 0.154.0's generated schema and a live turn
@@ -107,32 +120,16 @@ because the protocol exposes image, skill and app mentions but no generic
 local-file input. The daemon validates every selected path before
 `turn/start`, so a disappeared file cannot create a partial turn.
 
-That idle requirement used to mean an outright refusal -- "Finish or stop
-the current turn before changing its policy" -- however long the turn ran,
-which read as the picker simply not working. `CodexChatHost` now queues the
-request instead: a mode asked for while `busy` is stashed as `pendingMode`
-and applied the instant `turn/completed` lands. A later ask while one is
-already queued simply overwrites it -- only the mode you actually land on
-when the turn ends is meaningful, the same as retyping over an unsent draft.
-`PermissionModeResult` carries a `queued` flag for exactly this reply,
-distinct from both an applied change and a refusal. The daemon must not publish
-that queued mode as effective session metadata; the composer note under
-the mode chip is the only place a queued change is visible until
-`mode-applied` lands and the chip repaints from the snapshot like any other
-mode change. A failure applying the queued mode reaches the session as an
-activity string rather than silently vanishing, the same pattern turn-steer
-and turn-interrupt failures already follow.
+The update applies to subsequent turns and does not require an idle thread or
+an unsubscribe/resume cycle. A running turn therefore keeps the permissions
+it started with while the chip moves to the newly reported preset and a note
+says the active turn is unchanged. A newly created thread can be changed
+before its first turn because the setting belongs to the live thread rather
+than to a rollout that must already exist.
 
-A newly created thread is a special idle case: it has no rollout for
-`thread/resume` to load, so Codex answers `no rollout found for thread id`.
-The first policy choice is held until the first `turn/start`, where it is sent
-as that request's `approvalPolicy` override. The host waits for
-`thread/settings/updated` before publishing the mode, and a failed policy
-change on that empty thread never marks the conversation exited. This keeps
-the empty welcome pane live while still recording the policy Codex actually
-accepted.
-
-Verified on Windows with Codex CLI 0.153.1: a real file approval stayed held,
+Verified on Windows with Codex CLI 0.154.0: the four preset tuples were
+accepted and read back through `thread/settings/updated`, including a switch
+while a turn was active without interrupting it. A real file approval stayed held,
 denial prevented the write, duplicate replies were refused, a policy change
 was echoed, multiple turns completed, and a native question was answered by id and
 acknowledged by the agent. Unsubscribe ended only the owned thread. `scripts/smoke-codex-chat.ts` retains that live probe;

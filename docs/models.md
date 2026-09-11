@@ -66,12 +66,7 @@ changed cannot ask for a model that is gone.
   default.
 - **Codex**, verified against Codex CLI 0.153.4. `turn/start` carries a `model`
   override documented as applying "for this turn and subsequent turns", so the
-  switch is stashed on the host and sent from then on. This is deliberately
-  *not* the `thread/unsubscribe` + `thread/resume` dance `setPermissionMode`
-  has to perform: it needs no idle thread, has no window in which the thread is
-  unowned, and works on a thread that has never taken a turn — which resume
-  does not, since `thread/resume` on a brand-new thread answers `no rollout
-  found for thread id`. `model/rerouted` is honoured when it arrives: the
+  switch is stashed on the host and sent from then on. `model/rerouted` is honoured when it arrives: the
   server moving a turn to another model is its own account of what is running
   and outranks what was asked for.
 - **Grok**, verified against Grok 1.0.13 in a real PTY. Grok has no control

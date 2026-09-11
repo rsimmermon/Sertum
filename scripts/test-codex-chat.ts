@@ -11,11 +11,39 @@ async function main() {
   class Server extends EventEmitter {
     connected = true;
     next = 0;
+    deniedProfiles = new Set<string>();
     calls: Array<{ method: string; params: Record<string, unknown> }> = [];
     async request(method: string, params: Record<string, unknown> = {}) {
       this.calls.push({ method, params });
-      if (method === 'thread/start') return { thread: { id: `thread-${++this.next}` }, approvalPolicy: 'untrusted' };
-      if (method === 'thread/resume') return { approvalPolicy: params.approvalPolicy };
+      if (method === 'thread/start') return {
+        thread: { id: `thread-${++this.next}` },
+        approvalPolicy: 'on-request', approvalsReviewer: 'user',
+        sandbox: { type: 'workspaceWrite' },
+      };
+      if (method === 'permissionProfile/list') return {
+        data: [':read-only', ':workspace', ':danger-full-access'].map(id => ({
+          id, allowed: !this.deniedProfiles.has(id),
+        })),
+      };
+      if (method === 'thread/settings/update') {
+        const profile = String(params.permissions);
+        const sandboxPolicy = {
+          type: profile === ':read-only' ? 'readOnly'
+            : profile === ':danger-full-access' ? 'dangerFullAccess' : 'workspaceWrite',
+        };
+        queueMicrotask(() => this.emit('notification', {
+          method: 'thread/settings/updated',
+          params: {
+            threadId: params.threadId,
+            threadSettings: {
+              approvalPolicy: params.approvalPolicy,
+              approvalsReviewer: params.approvalsReviewer,
+              sandboxPolicy,
+              activePermissionProfile: { id: profile },
+            },
+          },
+        }));
+      }
       return {};
     }
   }
@@ -23,6 +51,7 @@ async function main() {
   const host = new CodexChatHost(server as unknown as CodexAppServer);
   const a = await host.start('a', 'C:/a');
   const b = await host.start('b', 'C:/b');
+  assert.equal(a.mode, 'codex-ask');
   server.emit('notification', {
     method: 'thread/started',
     params: {
@@ -38,15 +67,22 @@ async function main() {
     params: { threadId: 'child-a', status: { type: 'idle' } },
   });
   assert.equal(host.subSessions('a')[0]?.status, 'idle');
-  const firstMode = await host.setPermissionMode('a', 'codex-on-request');
-  assert.deepEqual(firstMode, { ok: true, mode: 'codex-on-request', queued: true, beforeFirstTurn: true });
+  const firstMode = await host.setPermissionMode('a', 'codex-read-only');
+  assert.deepEqual(firstMode, { ok: true, mode: 'codex-read-only' });
   assert(host.has('a'), 'Changing a fresh thread policy must not end the session');
+  const settings = server.calls.findLast(c => c.method === 'thread/settings/update');
+  assert.deepEqual(settings?.params, {
+    threadId: a.threadId,
+    permissions: ':read-only',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+  });
   assert(await host.send('a', 'first turn', [
     { path: 'C:/shots/example.png', name: 'example.png', size: 42, kind: 'image' },
     { path: 'C:/notes/design brief.txt', name: 'design brief.txt', size: 99, kind: 'file' },
   ]));
   const firstTurn = server.calls.findLast(c => c.method === 'turn/start');
-  assert.equal(firstTurn?.params.approvalPolicy, 'on-request');
+  assert(!('approvalPolicy' in (firstTurn?.params ?? {})));
   assert.deepEqual(firstTurn?.params.input, [
     {
       type: 'text',
@@ -54,9 +90,13 @@ async function main() {
     },
     { type: 'localImage', path: 'C:/shots/example.png' },
   ]);
-  server.emit('notification', {
-    method: 'thread/settings/updated',
-    params: { threadId: a.threadId, threadSettings: { approvalPolicy: 'on-request' } },
+  const activeMode = await host.setPermissionMode('a', 'codex-auto-review');
+  assert.deepEqual(activeMode, { ok: true, mode: 'codex-auto-review', appliesToNextTurn: true });
+  server.deniedProfiles.add(':danger-full-access');
+  const blocked = await host.setPermissionMode('b', 'codex-full-access');
+  assert.deepEqual(blocked, {
+    ok: false,
+    reason: 'Codex’s effective requirements do not allow :danger-full-access.',
   });
   let reply: unknown;
   const ask = (method: string, params: Record<string, unknown>) => {
@@ -107,6 +147,6 @@ async function main() {
   assert(!sessionCapability({ ...session, transport: 'pty' }, caps, 'permission-mode').ok);
   assert(!sessionCapability({ ...session, exitCode: 0 }, caps, 'permission-mode').ok);
   assert(!sessionCapability({ ...session, origin: 'monitored' }, caps, 'permission-mode').ok);
-  console.log('PASS: question IDs, restricted approval scopes, cancellation, grant denial, isolation, stale events, session capabilities.');
+  console.log('PASS: permission presets/readback/policy limits, question IDs, approval scopes, cancellation, isolation, stale events, session capabilities.');
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

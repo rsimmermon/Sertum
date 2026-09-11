@@ -730,8 +730,8 @@ export class ChatPane {
       this.reportModeRefusal(result.reason);
       return;
     }
-    if (result.queued) {
-      this.reportModeQueued(result.mode, result.beforeFirstTurn === true);
+    if (result.appliesToNextTurn) {
+      this.reportModeDeferred(result.mode);
       return;
     }
     // The snapshot arrives on its own through `session:updated`; nothing is
@@ -746,16 +746,9 @@ export class ChatPane {
     this.say(`Could not change the permission mode — ${reason}`);
   }
 
-  /**
-   * A mode asked for mid-turn, held rather than refused. It takes the moment
-   * the turn ends -- the mode chip keeps reading the current mode until then,
-   * since that is still what is actually in effect, so this note is the only
-   * place the pending change is visible in the meantime.
-   */
-  reportModeQueued(mode: PermissionMode, beforeFirstTurn = false): void {
-    this.say(beforeFirstTurn
-      ? `Will use ${permissionModeLabel(mode)} on the first turn.`
-      : `Will switch to ${permissionModeLabel(mode)} once the current turn finishes.`);
+  /** A running turn keeps the permission tuple it started with. */
+  reportModeDeferred(mode: PermissionMode): void {
+    this.say(`Switched to ${permissionModeLabel(mode)}. The turn already running keeps its previous permissions.`);
   }
 
   private paintWaiting(s: SessionSnapshot): void {

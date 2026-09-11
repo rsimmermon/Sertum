@@ -27,22 +27,16 @@ const string = (v: unknown): string => typeof v === 'string' ? v : '';
 interface Hosted {
   id: string;
   threadId: string;
-  /** `thread/start` has no persisted rollout until its first turn. */
-  hasRollout: boolean;
+  cwd: string;
   turnId: string | null;
   busy: boolean;
   closing: boolean;
   reconfiguring?: boolean;
   items: Map<string, ObjectValue>;
-  /**
-   * A mode asked for while a turn was in flight, applied the instant it
-   * completes. Only the latest ask survives -- a second request overwrites
-   * the first exactly as retyping over an unsent draft would, since only the
-   * mode you actually land on when the turn ends is meaningful.
-   */
-  pendingMode?: PermissionMode | null;
-  /** A first-turn policy override waiting for Codex's settings notification. */
-  modeInFlight?: PermissionMode | null;
+  modeInFlight?: {
+    resolve: (mode: PermissionMode | null) => void;
+    timer: NodeJS.Timeout;
+  };
   /**
    * The model this session has been switched to, passed on every
    * `turn/start` from then on.
@@ -109,19 +103,29 @@ export class CodexChatHost extends EventEmitter {
   async start(id: string, cwd: string): Promise<{ threadId: string; model: string; path: string; cwd: string; mode: PermissionMode | null }> {
     if (!this.server.connected) throw new Error('Codex app server is unavailable.');
     const result = object(await this.server.request('thread/start', {
-      cwd, approvalPolicy: 'untrusted', sandbox: 'workspace-write',
+      // The terminal's ordinary "Ask for approval" preset. The other three
+      // presets are available immediately from the composer once the thread
+      // exists. Start on the bounded workspace sandbox rather than inheriting
+      // a possibly unrestricted user default without showing it first.
+      cwd, approvalPolicy: 'on-request', sandbox: 'workspace-write',
       approvalsReviewer: 'user',
     }));
     const thread = object(result.thread);
     const threadId = string(thread.id);
     if (!threadId || !this.server.connected) throw new Error('Codex did not return a live thread.');
     const session: Hosted = {
-      id, threadId, hasRollout: false, turnId: null, busy: false, closing: false,
+      id, threadId, cwd, turnId: null, busy: false, closing: false,
       items: new Map(),
     };
     this.sessions.set(id, session);
     this.threads.set(threadId, session);
-    return { threadId, model: string(result.model), path: string(thread.path), cwd, mode: policyMode(result.approvalPolicy) };
+    return {
+      threadId,
+      model: string(result.model),
+      path: string(thread.path),
+      cwd,
+      mode: codexPermissionMode(result),
+    };
   }
 
   /**
@@ -142,7 +146,7 @@ export class CodexChatHost extends EventEmitter {
     const resumedId = string(thread.id) || threadId;
     if (!resumedId || !this.server.connected) throw new Error('Codex did not return a live thread.');
     const session: Hosted = {
-      id, threadId: resumedId, hasRollout: true, turnId: null, busy: false,
+      id, threadId: resumedId, cwd: string(result.cwd), turnId: null, busy: false,
       closing: false, items: new Map(),
     };
     this.sessions.set(id, session);
@@ -152,7 +156,7 @@ export class CodexChatHost extends EventEmitter {
       model: string(result.model),
       path: string(thread.path),
       cwd: string(result.cwd),
-      mode: policyMode(result.approvalPolicy),
+      mode: codexPermissionMode(result),
     };
   }
 
@@ -185,12 +189,6 @@ export class CodexChatHost extends EventEmitter {
     const s = this.sessions.get(id);
     if (!s || s.closing || s.busy || (!text.trim() && !attachments.length)) return false;
     s.busy = true;
-    const firstTurnMode = !s.hasRollout && s.pendingMode ? s.pendingMode : null;
-    const firstTurnPolicy = firstTurnMode ? modePolicy(firstTurnMode) : null;
-    if (firstTurnMode) {
-      s.pendingMode = null;
-      s.modeInFlight = firstTurnMode;
-    }
     // Optimistic, like Claude's own send() -- `turn/started` and
     // `thread/status/changed` are separate async notifications that can
     // land a beat after this request's own response, verified up to ~90ms
@@ -214,18 +212,12 @@ export class CodexChatHost extends EventEmitter {
             .filter((attachment) => attachment.kind === 'image')
             .map((attachment) => ({ type: 'localImage', path: attachment.path })),
         ],
-        ...(firstTurnPolicy ? { approvalPolicy: firstTurnPolicy } : {}),
         ...(s.model ? { model: s.model } : {}),
         ...(s.effort ? { effort: s.effort } : {}),
       });
-      s.hasRollout = true;
       return this.sessions.get(id) === s;
     } catch (error) {
       if (this.sessions.get(id) === s) {
-        if (firstTurnMode) {
-          s.pendingMode = firstTurnMode;
-          s.modeInFlight = null;
-        }
         s.busy = false;
         this.emit('update', { id, status: 'attention', activity: String(error) });
       }
@@ -233,51 +225,81 @@ export class CodexChatHost extends EventEmitter {
     }
   }
 
-  /**
-   * `thread/resume` on an already-loaded thread ignores configuration
-   * overrides, so a policy change only ever takes on an idle thread. A busy
-   * one queues the request instead of refusing it outright: `pendingMode` is
-   * applied the moment `turn/completed` lands, and a later call here simply
-   * overwrites it, so only the last mode asked for while busy ever matters.
-   * A brand-new thread has no rollout for `thread/resume` to load, so its
-   * first change is held for `turn/start`'s `approvalPolicy` override.
-   */
+  /** Change the same sandbox/policy/reviewer tuple as Codex's TUI picker. */
   async setPermissionMode(id: string, mode: PermissionMode): Promise<PermissionModeResult> {
     const s = this.sessions.get(id);
     if (!s || s.closing) return { ok: false, reason: 'That session is gone.' };
-    if (!modePolicy(mode)) return { ok: false, reason: 'Codex does not support that permission policy.' };
-    if (s.busy) {
-      s.pendingMode = mode;
-      return { ok: true, mode, queued: true };
-    }
-    if (!s.hasRollout) {
-      s.pendingMode = mode;
-      return { ok: true, mode, queued: true, beforeFirstTurn: true };
-    }
-    return this.applyPermissionMode(s, mode);
+    if (!codexPermissionPreset(mode)) return { ok: false, reason: 'Codex does not support that permission preset.' };
+    if (s.reconfiguring) return { ok: false, reason: 'A permission change is already in progress.' };
+    const appliesToNextTurn = s.busy;
+    const result = await this.applyPermissionMode(s, mode);
+    return result.ok && appliesToNextTurn ? { ...result, appliesToNextTurn: true } : result;
   }
 
   private async applyPermissionMode(s: Hosted, mode: PermissionMode): Promise<PermissionModeResult> {
-    const policy = modePolicy(mode);
-    if (!policy) return { ok: false, reason: 'Codex does not support that permission policy.' };
-    s.busy = true;
+    const preset = codexPermissionPreset(mode);
+    if (!preset) return { ok: false, reason: 'Codex does not support that permission preset.' };
     s.reconfiguring = true;
     try {
-      // Unload the idle thread first, then read back its effective policy.
-      await this.server.request('thread/unsubscribe', { threadId: s.threadId });
-      const result = object(await this.server.request('thread/resume', {
-        threadId: s.threadId, approvalPolicy: policy,
-      }));
-      const actual = policyMode(result.approvalPolicy);
-      if (this.sessions.get(s.id) !== s || !actual) return { ok: false, reason: 'Codex did not report the updated policy.' };
+      const available = await this.permissionProfileAllowed(s.cwd, preset.permissions);
+      if (!available.ok) return available;
+      // Install the waiter only around the mutation itself. A settings event
+      // that lands while permission profiles are being listed must not be
+      // mistaken for the acknowledgement of this change.
+      const confirmation = new Promise<PermissionMode | null>((resolve) => {
+        const timer = setTimeout(() => {
+          if (s.modeInFlight?.timer !== timer) return;
+          s.modeInFlight = undefined;
+          resolve(null);
+        }, 10_000);
+        s.modeInFlight = { resolve, timer };
+      });
+      await this.server.request('thread/settings/update', {
+        threadId: s.threadId,
+        permissions: preset.permissions,
+        approvalPolicy: preset.approvalPolicy,
+        approvalsReviewer: preset.approvalsReviewer,
+      });
+      const actual = await confirmation;
+      if (this.sessions.get(s.id) !== s || !actual) {
+        return { ok: false, reason: 'Codex did not report the updated permission settings.' };
+      }
       return { ok: true, mode: actual };
     } catch (error) {
-      // The thread was unsubscribed before this rebind. If resume fails, the
-      // host no longer owns a live thread, so report that lifecycle change;
-      // an empty thread never reaches this path because it uses turn/start.
-      this.finish(s, -1);
       return { ok: false, reason: String(error) };
-    } finally { s.busy = false; s.reconfiguring = false; }
+    } finally {
+      const pending = s.modeInFlight;
+      if (pending) {
+        clearTimeout(pending.timer);
+        s.modeInFlight = undefined;
+        pending.resolve(null);
+      }
+      s.reconfiguring = false;
+    }
+  }
+
+  /** Ask Codex which built-in profiles this cwd is actually allowed to use. */
+  private async permissionProfileAllowed(
+    cwd: string,
+    wanted: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const result = object(await this.server.request(
+        'permissionProfile/list',
+        cursor ? { cwd, cursor } : { cwd },
+      ));
+      for (const value of Array.isArray(result.data) ? result.data : []) {
+        const profile = object(value);
+        if (string(profile.id) !== wanted) continue;
+        return profile.allowed === false
+          ? { ok: false, reason: `Codex’s effective requirements do not allow ${wanted}.` }
+          : { ok: true };
+      }
+      cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined;
+      if (!cursor) break;
+    }
+    return { ok: false, reason: `Codex did not offer the ${wanted} permission profile.` };
   }
 
   /**
@@ -458,6 +480,12 @@ export class CodexChatHost extends EventEmitter {
 
   private finish(s: Hosted, exitCode: number): void {
     if (this.sessions.get(s.id) !== s) return;
+    const mode = s.modeInFlight;
+    if (mode) {
+      clearTimeout(mode.timer);
+      s.modeInFlight = undefined;
+      mode.resolve(null);
+    }
     this.sessions.delete(s.id);
     this.threads.delete(s.threadId);
     for (const [threadId, child] of this.childThreads) {
@@ -499,31 +527,17 @@ export class CodexChatHost extends EventEmitter {
       const turn = object(params.turn);
       this.emit('update', { id: s.id, status: turn.status === 'failed' ? 'attention' : 'idle',
         activity: string(object(turn.error).message) || (turn.status === 'interrupted' ? 'turn interrupted' : 'turn finished') });
-      // The thread just went idle -- exactly the moment a mode queued while
-      // it was busy becomes applicable. Runs after the idle/attention update
-      // above, so a failure here overwrites "turn finished" with why the
-      // mode did not take, rather than the other way around.
-      if (s.modeInFlight) {
-        const mode = s.modeInFlight;
-        s.modeInFlight = null;
-        void this.applyPermissionMode(s, mode).then((result) => {
-          if (result.ok) this.emit('mode-applied', { id: s.id, mode: result.mode });
-          else this.emit('update', { id: s.id, activity: `Could not switch permission mode — ${result.reason}` });
-        });
-      } else if (s.pendingMode) {
-        const mode = s.pendingMode;
-        s.pendingMode = null;
-        void this.applyPermissionMode(s, mode).then((result) => {
-          if (result.ok) this.emit('mode-applied', { id: s.id, mode: result.mode });
-          else this.emit('update', { id: s.id, activity: `Could not switch permission mode — ${result.reason}` });
-        });
-      }
     } else if (method === 'thread/settings/updated') {
       const settings = object(params.threadSettings);
-      const actual = policyMode(settings.approvalPolicy);
-      if (actual && s.modeInFlight) {
-        s.modeInFlight = null;
+      const actual = codexPermissionMode(settings);
+      if (actual) {
         this.emit('mode-applied', { id: s.id, mode: actual });
+      }
+      const pending = s.modeInFlight;
+      if (pending) {
+        clearTimeout(pending.timer);
+        s.modeInFlight = undefined;
+        pending.resolve(actual);
       }
     } else if (method === 'item/started') {
       const item = object(params.item);
@@ -669,9 +683,49 @@ function codexEfforts(row: Record<string, unknown>): AgentEffort[] {
   return efforts;
 }
 
-function policyMode(policy: unknown): PermissionMode | null {
-  return policy === 'untrusted' ? 'codex-untrusted' : policy === 'on-request' ? 'codex-on-request' : policy === 'never' ? 'codex-never' : null;
+type CodexPermissionPreset = {
+  permissions: ':read-only' | ':workspace' | ':danger-full-access';
+  approvalPolicy: 'on-request' | 'never';
+  approvalsReviewer: 'user' | 'auto_review';
+};
+
+function codexPermissionPreset(mode: PermissionMode): CodexPermissionPreset | null {
+  if (mode === 'codex-read-only') {
+    return { permissions: ':read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user' };
+  }
+  if (mode === 'codex-ask') {
+    return { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'user' };
+  }
+  if (mode === 'codex-auto-review') {
+    return { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' };
+  }
+  if (mode === 'codex-full-access') {
+    return { permissions: ':danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' };
+  }
+  return null;
 }
-function modePolicy(mode: PermissionMode): string | null {
-  return mode === 'codex-untrusted' ? 'untrusted' : mode === 'codex-on-request' ? 'on-request' : mode === 'codex-never' ? 'never' : null;
+
+/** Reduce Codex's three reported settings back to one terminal-style preset. */
+function codexPermissionMode(settings: Record<string, unknown>): PermissionMode | null {
+  const policy = settings.approvalPolicy;
+  const reviewer = string(settings.approvalsReviewer);
+  const sandbox = object(settings.sandboxPolicy ?? settings.sandbox);
+  const sandboxType = string(sandbox.type);
+  if (policy === 'on-request' && reviewer === 'user' && sandboxType === 'readOnly') {
+    return 'codex-read-only';
+  }
+  if (policy === 'on-request' && reviewer === 'user' && sandboxType === 'workspaceWrite') {
+    return 'codex-ask';
+  }
+  if (
+    policy === 'on-request'
+    && (reviewer === 'auto_review' || reviewer === 'guardian_subagent')
+    && sandboxType === 'workspaceWrite'
+  ) {
+    return 'codex-auto-review';
+  }
+  if (policy === 'never' && sandboxType === 'dangerFullAccess') {
+    return 'codex-full-access';
+  }
+  return null;
 }

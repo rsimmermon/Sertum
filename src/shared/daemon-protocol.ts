@@ -19,6 +19,11 @@ import path from 'node:path';
 /**
  * Bumped on any incompatible change to methods, params or events.
  *
+ * Protocol 6 replaces Codex's approval-policy-only mode ids with the four
+ * permission presets reported by Codex 0.154. An older client could otherwise
+ * send a retired `codex-untrusted` value to a daemon that now expects a full
+ * sandbox/policy/reviewer combination.
+ *
  * Protocol 5 adds the attachment descriptors on `chat/send`; a protocol 4
  * daemon would silently discard them and start a text-only turn.
  *
@@ -28,7 +33,7 @@ import path from 'node:path';
  * poll "Session not found." -- which is exactly why the handshake refuses
  * rather than trying.
  */
-export const DAEMON_PROTOCOL = 5;
+export const DAEMON_PROTOCOL = 6;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }

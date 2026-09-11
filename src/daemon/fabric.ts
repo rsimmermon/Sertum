@@ -1179,8 +1179,8 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       if (!answer.ok) return answer;
       if (!answer.modes?.includes(p.mode)) return { ok: false, reason: 'This agent does not support that mode.' };
       const result = await structuredHostFor(p.id).setPermissionMode(p.id, p.mode);
-      // Queued Codex changes are not effective until mode-applied arrives.
-      if (result.ok && !result.queued) ptys.applyMeta(p.id, { permissionMode: result.mode });
+      // The host returns only after Codex reports the effective combination.
+      if (result.ok) ptys.applyMeta(p.id, { permissionMode: result.mode });
       return result;
     },
 

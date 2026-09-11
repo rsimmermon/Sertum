@@ -145,9 +145,10 @@ export type PermissionMode =
   | 'acceptEdits'
   | 'plan'
   | 'dontAsk'
-  | 'codex-untrusted'
-  | 'codex-on-request'
-  | 'codex-never'
+  | 'codex-read-only'
+  | 'codex-ask'
+  | 'codex-auto-review'
+  | 'codex-full-access'
   | 'bypassPermissions';
 
 /**
@@ -394,16 +395,13 @@ export interface SessionDiagnostics {
 /**
  * What came of asking an agent to change its permission mode.
  *
- * `queued` marks the case that is neither applied nor refused: the agent
- * cannot take the change yet, so the request is held. `mode` there is what
- * was *asked for*, not yet what is in effect -- the snapshot's own
- * `permissionMode` still reads the old one until the queued change actually
- * applies. `beforeFirstTurn` distinguishes a new Codex thread, where the
- * override waits for its first turn rather than an active turn to finish.
+ * `appliesToNextTurn` says the setting was accepted while a turn was already
+ * running. That turn keeps the permissions it started with; the reported
+ * mode governs the next one. The mode is always what the agent reported back,
+ * never merely what Sertum asked for.
  */
 export type PermissionModeResult =
-  | { ok: true; mode: PermissionMode; queued?: false }
-  | { ok: true; mode: PermissionMode; queued: true; beforeFirstTurn?: boolean }
+  | { ok: true; mode: PermissionMode; appliesToNextTurn?: boolean }
   | { ok: false; reason: string };
 
 /**

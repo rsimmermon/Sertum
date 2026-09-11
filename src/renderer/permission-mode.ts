@@ -8,6 +8,9 @@ import type {
 import { openSessionMenu, SEPARATOR, type MenuEntry } from './session-menu';
 
 /**
+ * Wireframe D4a. Its visible rows are agent-specific; the frame shows the
+ * Claude example, while Codex supplies its four compound presets at runtime.
+ *
  * How the agent decides permissions, and the one popup that changes it.
  *
  * The mode is the setting that decides how much of the session you are asked
@@ -35,9 +38,10 @@ export interface PermissionModeOption {
 }
 
 export const PERMISSION_MODES: PermissionModeOption[] = [
-  { mode: 'codex-untrusted', label: 'Ask for untrusted commands', note: 'Codex asks before commands outside its trusted set. Workspace sandbox stays enabled.' },
-  { mode: 'codex-on-request', label: 'Ask on request', note: 'Codex asks when it needs to leave the workspace sandbox.' },
-  { mode: 'codex-never', label: 'Never ask', note: 'Keep the workspace sandbox and refuse requests that require approval.' },
+  { mode: 'codex-read-only', label: 'Read Only', note: 'Codex can read workspace files and asks before editing, using the internet, or leaving the sandbox.' },
+  { mode: 'codex-ask', label: 'Ask for approval', note: 'Codex can edit the workspace and asks before internet or outside-workspace access.' },
+  { mode: 'codex-auto-review', label: 'Approve for me', note: 'Codex uses its reviewer agent for eligible requests beyond the workspace sandbox.' },
+  { mode: 'codex-full-access', label: 'Full Access', note: 'Codex runs without filesystem or network sandbox restrictions and never asks.' },
   {
     mode: 'plan',
     label: 'Plan',

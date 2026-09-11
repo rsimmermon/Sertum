@@ -328,13 +328,15 @@ for a file: `acceptEdits` wrote it with no ask, `default` raised one, and
   the single list every surface reads. The sidebar row menu offers the same
   picker for reaching it without bringing the pane forward.
 - **`permission-mode` is a declared capability**, answered `ok` by Claude and
-  declined with a reason by Codex, Grok and shell. The agent-level answer is
-  not the whole story, though: only a conversation session has a channel to
-  say it on, so a PTY-backed Claude session gets the chip disabled saying the
-  mode is set there with Shift+Tab — which is a truer answer than hiding it,
-  since "where is this set?" is exactly the question that session raises.
-  `bypassPermissions` is listed the same way, disabled carrying the reason,
-  rather than as a row that reports an error when pressed.
+  Codex and declined with a reason by Grok and shell. The agent-level answer
+  is not the whole story, though: only a conversation session has a channel
+  to say it on, so a PTY-backed session gets the chip disabled and points to
+  its own terminal picker. Claude sends one mode name over
+  `set_permission_mode`; Codex sends the complete permission-profile,
+  approval-policy and reviewer tuple over `thread/settings/update`, then
+  accepts only the tuple in `thread/settings/updated` as the effective mode.
+  `bypassPermissions` remains listed for Claude but disabled carrying its
+  launch-time reason rather than reporting an error only after it is pressed.
 
 Setting the mode at spawn is deliberately not offered in C1: the control works
 the moment a session exists, so a second place to choose it would be a second

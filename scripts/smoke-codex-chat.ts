@@ -9,7 +9,10 @@ import type { PendingApproval } from '../src/shared/types';
 
 async function main() {
   const cwd = process.argv[2];
+  const outside = process.argv[3];
   assert(cwd, 'Provide a disposable working folder');
+  assert(outside, 'Provide a non-existent file outside the disposable working folder');
+  assert(!fs.existsSync(outside), 'The outside-workspace probe path must not already exist');
   fs.mkdirSync(cwd, { recursive: true });
   const server = new CodexAppServer();
   const host = new CodexChatHost(server);
@@ -54,29 +57,33 @@ async function main() {
     assert(await server.start());
     const started = await host.start('probe', cwd);
     console.log('started', started);
-    assert.equal(started.mode, 'codex-untrusted');
-    assert(await host.send('probe', 'Use your apply_patch tool to create probe.txt containing hello. Do not use a shell command. If denied, stop and report that.'));
+    assert.equal(started.mode, 'codex-ask');
+    assert(await host.send('probe', `Use your apply_patch tool to create the absolute file ${JSON.stringify(outside)} containing hello. Do not use a shell command. If denied, stop and report that.`));
     await waitFor(() => completed >= 1);
     assert(approvals > 0, 'Expected a real approval request');
-    assert(!fs.existsSync(`${cwd}/probe.txt`), 'Denied change must not be written');
-    const mode = await host.setPermissionMode('probe', 'codex-on-request');
+    assert(!fs.existsSync(outside), 'Denied outside-workspace change must not be written');
+    const mode = await host.setPermissionMode('probe', 'codex-read-only');
     console.log('mode', mode);
-    assert.deepEqual(mode, { ok: true, mode: 'codex-on-request' });
+    assert.deepEqual(mode, { ok: true, mode: 'codex-read-only' });
+    const automatic = await host.setPermissionMode('probe', 'codex-auto-review');
+    assert.deepEqual(automatic, { ok: true, mode: 'codex-auto-review' });
+    // Verify Full Access can be selected and reported, but never start a turn
+    // under it in this probe. Return to Read Only before sending anything.
+    const full = await host.setPermissionMode('probe', 'codex-full-access');
+    assert.deepEqual(full, { ok: true, mode: 'codex-full-access' });
+    const bounded = await host.setPermissionMode('probe', 'codex-read-only');
+    assert.deepEqual(bounded, { ok: true, mode: 'codex-read-only' });
     assert(await host.send('probe', 'Reply with exactly second-turn-ok. Do not call tools.'));
     await waitFor(() => completed >= 2);
-    // Queued permission-mode change: asked mid-turn, it must not be refused,
-    // a second ask before the first lands must overwrite it rather than
-    // queueing both, and it takes the instant this turn ends.
+    // A settings change during a turn applies to subsequent turns without
+    // interrupting or reloading this one.
     assert(await host.send('probe', 'Count slowly from one to five, one number per line, then stop. Do not call tools.'));
-    const queuedFirst = await host.setPermissionMode('probe', 'codex-never');
-    assert.deepEqual(queuedFirst, { ok: true, mode: 'codex-never', queued: true });
-    const queuedSecond = await host.setPermissionMode('probe', 'codex-untrusted');
-    assert.deepEqual(queuedSecond, { ok: true, mode: 'codex-untrusted', queued: true },
-      'A second ask while one is queued must overwrite it, not queue both');
-    await waitFor(() => completed >= 3);
+    modeApplied = null;
+    const nextTurnMode = await host.setPermissionMode('probe', 'codex-ask');
+    assert.deepEqual(nextTurnMode, { ok: true, mode: 'codex-ask', appliesToNextTurn: true });
     await waitFor(() => modeApplied !== null);
-    assert.deepEqual(modeApplied, { id: 'probe', mode: 'codex-untrusted' },
-      'The mode actually applied must be the last one asked for, not the first');
+    assert.deepEqual(modeApplied, { id: 'probe', mode: 'codex-ask' });
+    await waitFor(() => completed >= 3);
     // Exercise the native question wire directly; the product does not yet
     // expose collaboration-mode selection as a permission policy.
     await server.request('turn/start', {
@@ -93,7 +100,7 @@ async function main() {
     assert(host.has('keeper') && server.connected, 'Ending an active thread must preserve the other session and server');
     assert(await host.terminate('keeper'));
     assert(!await host.send('probe', 'Must not run'));
-    console.log('PASS: approval held/denied, duplicate rejected, multiple turns, policy echoed, queued policy change overwritten and applied on idle, native question answered, isolated thread closed.');
+    console.log('PASS: approval held/denied, duplicate rejected, terminal-equivalent permission presets read back, active turn preserved, native question answered, isolated thread closed.');
   } finally { server.stop(); }
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });
