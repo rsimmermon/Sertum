@@ -2,15 +2,17 @@ import { app, clipboard } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ClipboardPaste } from '../shared/types';
+import type { ChatAttachment, ClipboardPaste } from '../shared/types';
+import { describeChatAttachment } from './chat-attachments';
 
 /**
- * Reading the system clipboard on behalf of a terminal paste.
+ * Reading the system clipboard on behalf of a terminal or chat paste.
  *
  * A PTY is a byte stream, so an image has nowhere to go in it. What every
  * agent does understand is a path, so a bitmap on the clipboard is spilled to
- * a file first and the paste becomes that path. An image file copied in
- * Explorer or Finder is already on disk and is used where it lies.
+ * a file first. Structured chats turn supported image files into native image
+ * input later; a file copied in Explorer or Finder is already on disk and is
+ * used where it lies.
  */
 
 const SPILL_DIR = 'sertum-pastes';
@@ -26,8 +28,6 @@ const EXTENSIONS: Record<string, string> = {
   'image/bmp': '.bmp',
   'image/tiff': '.tif',
 };
-
-const IMAGE_EXTENSIONS = new Set(Object.values(EXTENSIONS).concat('.jpeg'));
 
 /**
  * The formats a copied *file* hides behind. `getType` rejects on a format the
@@ -53,10 +53,10 @@ export async function readClipboardPaste(): Promise<ClipboardPaste> {
   // A bitmap wins over text: an image copied from a browser puts both on the
   // clipboard, and the image is the part worth having.
   const bitmap = await readBitmap(items);
-  if (bitmap) return { kind: 'image', path: bitmap };
+  if (bitmap) return { kind: 'attachments', attachments: [bitmap] };
 
-  const file = await readImageFilePath(items);
-  if (file) return { kind: 'image', path: file };
+  const files = await readFileAttachments(items);
+  if (files.length) return { kind: 'attachments', attachments: files };
 
   const text = await clipboard.readText().catch(() => '');
   return text ? { kind: 'text', text } : { kind: 'empty' };
@@ -65,14 +65,17 @@ export async function readClipboardPaste(): Promise<ClipboardPaste> {
 /** Spills the first image on the clipboard to disk, returning its path. */
 async function readBitmap(
   items: Electron.ClipboardItem[],
-): Promise<string | null> {
+): Promise<ChatAttachment | null> {
   for (const item of items) {
     const mime = item.types.find((type) => type.startsWith('image/'));
     if (!mime) continue;
     try {
       const blob = (await item.getType(mime)) as Blob;
       const bytes = Buffer.from(await blob.arrayBuffer());
-      if (bytes.length) return spill(bytes, EXTENSIONS[mime] ?? '.png');
+      if (bytes.length) {
+        const file = spill(bytes, EXTENSIONS[mime] ?? '.png');
+        if (file) return describeChatAttachment(file);
+      }
     } catch {
       // Another format may still work.
     }
@@ -113,35 +116,47 @@ function sweep(dir: string): void {
   }
 }
 
-/** The path of an image file copied in the OS file manager, if that is what this is. */
-async function readImageFilePath(
+/** Files copied in the OS file manager become draft attachments. */
+async function readFileAttachments(
   items: Electron.ClipboardItem[],
-): Promise<string | null> {
+): Promise<ChatAttachment[]> {
+  const attachments: ChatAttachment[] = [];
+  const seen = new Set<string>();
   for (const item of items) {
     for (const format of FILE_FORMATS) {
-      const candidate = await readFilePath(item, format);
-      if (!candidate) continue;
-      if (!IMAGE_EXTENSIONS.has(path.extname(candidate).toLowerCase())) continue;
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch {
-        // A path to nothing is not a paste.
+      for (const candidate of await readFilePaths(item, format)) {
+        const key = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+        if (seen.has(key)) continue;
+        const attachment = describeChatAttachment(candidate);
+        if (attachment) {
+          seen.add(key);
+          attachments.push(attachment);
+        }
       }
     }
   }
-  return null;
+  return attachments;
 }
 
-async function readFilePath(
+async function readFilePaths(
   item: Electron.ClipboardItem,
   format: string,
-): Promise<string | null> {
+): Promise<string[]> {
   try {
     const blob = (await item.getType(format)) as Blob;
-    const line = (await blob.text()).split(/\r?\n/)[0]?.trim();
-    if (!line) return null;
-    return line.startsWith('file:') ? fileURLToPath(line) : line;
+    return (await blob.text())
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .map((line) => {
+        try {
+          return line.startsWith('file:') ? fileURLToPath(line) : line;
+        } catch {
+          return '';
+        }
+      })
+      .filter(Boolean);
   } catch {
-    return null;
+    return [];
   }
 }

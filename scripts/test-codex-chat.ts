@@ -41,9 +41,19 @@ async function main() {
   const firstMode = await host.setPermissionMode('a', 'codex-on-request');
   assert.deepEqual(firstMode, { ok: true, mode: 'codex-on-request', queued: true, beforeFirstTurn: true });
   assert(host.has('a'), 'Changing a fresh thread policy must not end the session');
-  assert(await host.send('a', 'first turn'));
+  assert(await host.send('a', 'first turn', [
+    { path: 'C:/shots/example.png', name: 'example.png', size: 42, kind: 'image' },
+    { path: 'C:/notes/design brief.txt', name: 'design brief.txt', size: 99, kind: 'file' },
+  ]));
   const firstTurn = server.calls.findLast(c => c.method === 'turn/start');
   assert.equal(firstTurn?.params.approvalPolicy, 'on-request');
+  assert.deepEqual(firstTurn?.params.input, [
+    {
+      type: 'text',
+      text: 'first turn\n\nAttachments:\n- example.png (image)\n- design brief.txt: "C:/notes/design brief.txt"',
+    },
+    { type: 'localImage', path: 'C:/shots/example.png' },
+  ]);
   server.emit('notification', {
     method: 'thread/settings/updated',
     params: { threadId: a.threadId, threadSettings: { approvalPolicy: 'on-request' } },

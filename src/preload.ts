@@ -5,6 +5,7 @@ import type {
   EffortChangeResult,
   ModelChangeResult,
   AgentKind,
+  ChatAttachment,
   ApprovalAnswer,
   DiffCommitRequest,
   PendingApproval,
@@ -39,6 +40,8 @@ const api: SertumApi = {
   copySelection: () => ipcRenderer.invoke('clipboard:copy-selection'),
   pasteSelection: () => ipcRenderer.invoke('clipboard:paste-selection'),
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  pickChatAttachments: (startIn?: string): Promise<ChatAttachment[]> =>
+    ipcRenderer.invoke('chat:pick-attachments', startIn),
   listWorktrees: (cwd: string) => ipcRenderer.invoke('worktree:list', cwd),
   removeWorktree: (root: string, path: string, force: boolean) =>
     ipcRenderer.invoke('worktree:remove', { root, path, force }),
@@ -125,8 +128,8 @@ const api: SertumApi = {
     ipcRenderer.invoke('workspace:inspect', dir),
   readConversation: (id: string, known?: string | null) =>
     ipcRenderer.invoke('conversation:read', id, known),
-  sendChatMessage: (id: string, text: string) =>
-    ipcRenderer.invoke('chat:send', { id, text }),
+  sendChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
+    ipcRenderer.invoke('chat:send', { id, text, attachments }),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),
   discoverSessions: () => ipcRenderer.invoke('discovery:list'),
   attachSession: (d) => ipcRenderer.invoke('discovery:attach', d),

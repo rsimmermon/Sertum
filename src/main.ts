@@ -37,10 +37,12 @@ import {
 } from './main/keybindings';
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
+import { describeChatAttachment } from './main/chat-attachments';
 import { readLocalImage } from './main/local-image';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
   AgentKind,
+  ChatAttachment,
   DiffCommitRequest,
   PermissionRule,
   ManagedAgent,
@@ -729,8 +731,10 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
  * Input for a stream session: one structured message, no PTY bytes anywhere.
  * The status flip to working happens in the host, on the write itself.
  */
-ipcMain.handle('chat:send', (_e, p: { id: string; text: string }) =>
-  daemon.request('chat/send', p),
+ipcMain.handle(
+  'chat:send',
+  (_e, p: { id: string; text: string; attachments?: ChatAttachment[] }) =>
+    daemon.request('chat/send', p),
 );
 ipcMain.handle('conversation:read', (_e, id: string, known?: string | null) =>
   daemon.request('conversation/read', { id, known }),
@@ -779,6 +783,18 @@ ipcMain.handle('dialog:pick-file', async (_e, startIn?: string) => {
     buttonLabel: 'Use this file',
   });
   return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+ipcMain.handle('chat:pick-attachments', async (_e, startIn?: string) => {
+  const result = await dialog.showOpenDialog({
+    title: 'Add attachments',
+    defaultPath: startIn || undefined,
+    properties: ['openFile', 'multiSelections'],
+    buttonLabel: 'Attach',
+  });
+  if (result.canceled) return [];
+  return result.filePaths
+    .map(describeChatAttachment)
+    .filter((attachment): attachment is ChatAttachment => attachment !== null);
 });
 // Keystrokes are the hot path: fire-and-forget, no response round trip.
 ipcMain.on('pty:input', (_e, p: { id: string; data: string }) =>

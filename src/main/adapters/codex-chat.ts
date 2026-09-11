@@ -1,6 +1,22 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { AgentEffort, AgentEffortList, AgentModel, AgentModelList, ApprovalAnswer, EffortChangeResult, ModelChangeResult, PendingApproval, PermissionMode, PermissionModeResult, ResumableSession, SessionSubsessionInfo, SessionStatus } from '../../shared/types';
+import type {
+  AgentEffort,
+  AgentEffortList,
+  AgentModel,
+  AgentModelList,
+  ApprovalAnswer,
+  ChatAttachment,
+  EffortChangeResult,
+  ModelChangeResult,
+  PendingApproval,
+  PermissionMode,
+  PermissionModeResult,
+  ResumableSession,
+  SessionSubsessionInfo,
+  SessionStatus,
+} from '../../shared/types';
+import { promptWithAttachments } from '../../shared/chat-attachments';
 import { CodexAppServer, type CodexNotification, type CodexServerRequest } from './codex-app-server';
 import { mapCodexStatus, resumableThread, type CodexThread, type CodexThreadStatus } from './codex';
 
@@ -161,9 +177,13 @@ export class CodexChatHost extends EventEmitter {
       .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   }
 
-  async send(id: string, text: string): Promise<boolean> {
+  async send(
+    id: string,
+    text: string,
+    attachments: ChatAttachment[] = [],
+  ): Promise<boolean> {
     const s = this.sessions.get(id);
-    if (!s || s.closing || s.busy || !text.trim()) return false;
+    if (!s || s.closing || s.busy || (!text.trim() && !attachments.length)) return false;
     s.busy = true;
     const firstTurnMode = !s.hasRollout && s.pendingMode ? s.pendingMode : null;
     const firstTurnPolicy = firstTurnMode ? modePolicy(firstTurnMode) : null;
@@ -182,9 +202,18 @@ export class CodexChatHost extends EventEmitter {
     // lands, same as the interrupt path's optimistic label.
     this.emit('update', { id, status: 'working', activity: 'working' });
     try {
+      const nativeImages = new Set(
+        attachments.filter((attachment) => attachment.kind === 'image')
+          .map((attachment) => attachment.path),
+      );
       await this.server.request('turn/start', {
         threadId: s.threadId,
-        input: [{ type: 'text', text }],
+        input: [
+          { type: 'text', text: promptWithAttachments(text, attachments, nativeImages) },
+          ...attachments
+            .filter((attachment) => attachment.kind === 'image')
+            .map((attachment) => ({ type: 'localImage', path: attachment.path })),
+        ],
         ...(firstTurnPolicy ? { approvalPolicy: firstTurnPolicy } : {}),
         ...(s.model ? { model: s.model } : {}),
         ...(s.effort ? { effort: s.effort } : {}),

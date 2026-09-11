@@ -31,12 +31,13 @@ rest of the app copies.
 
 Ctrl+V (Cmd+V on macOS) pastes, handled here rather than left to the browser
 because an image has to be turned into something a byte stream can carry before
-xterm sees it. `main/clipboard-paste.ts` answers with one of three things:
+xterm sees it. The same reader now feeds the chat composer and answers with
+text, file descriptors, or empty:
 
 | Clipboard holds | Pasted as |
 |---|---|
 | a bitmap (screenshot, image copied from a browser) | path to a PNG spilled into the temp dir |
-| an image file copied in Explorer/Finder | that file's own path, used where it lies |
+| file(s) copied in Explorer/Finder | their own quoted paths, used where they lie |
 | text | the text, through `term.paste` so bracketed-paste mode is honoured |
 
 A bitmap wins over text, because copying an image from a browser puts both on

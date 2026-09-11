@@ -152,6 +152,10 @@ below, or a file of its own in `docs/`, is described there rather than here:
 - [x] **A waiting bubble and a stop sign** — bouncing dots and the session's
       activity line while plane 2 says the agent is working, and a red stop
       square at the right edge of the composer
+- [x] **Chat attachments and image paste** — native multi-file picker,
+      clipboard images spilled to durable temp files, visible removable draft
+      chips, native Claude/Codex image inputs, and explicit paths for ordinary
+      files and PTY-backed agents
 
 ## How status actually works
 
@@ -435,6 +439,11 @@ Five rules constrain any change here:
   keeps the labelled link it already had.
 - **The composer writes the body and then a CR 150ms later**, never as one
   burst — Claude's and Codex's TUIs both silently fail to submit otherwise.
+- **Attachments remain files until the owning transport takes them.** The
+  renderer holds bounded path descriptors and never base64. Claude turns
+  verified PNG/JPEG/GIF/WebP files into image content blocks in `sertumd`;
+  Codex sends `localImage` inputs; ordinary files and PTY-backed agents receive
+  explicit absolute paths so their normal file permissions still apply.
 - **A poll asks whether the transcript moved; it does not fetch it again.**
   `conversation/read` takes the `version` the pane holds and answers
   `{ unchanged: true }` when it still matches. Sending the snapshot every
@@ -542,7 +551,9 @@ restarted before the new GUI can connect, so an old client cannot submit an
 empty answer to a question whose ids it does not understand. Protocol 4 takes
 `conversation/read` from a bare session id to `{ id, known }` so a poll can be
 answered `{ unchanged: true }`; a protocol 3 daemon would read that object as
-an id and answer every poll "Session not found."
+an id and answer every poll "Session not found." Protocol 5 adds attachments
+to `chat/send`; a protocol 4 daemon would otherwise accept the text while
+silently dropping the files.
 
 **Terminals come back.** The daemon keeps a per-session ring of recent raw
 output (512KB). A reopened GUI asks `pty/replay` when it first builds a
@@ -1197,6 +1208,10 @@ node scripts/drive.js "document.querySelectorAll('.tab').length"
 # A conversation session's permission channel, against a real claude process:
 # the ask arrives, the turn stays held, the answer resumes it.
 npx esbuild scripts/smoke-chat-permission.ts --bundle --platform=node   --format=cjs --outfile=/tmp/smoke-chat.cjs &&   node /tmp/smoke-chat.cjs <folder> deny 8000
+
+# Native image input against each owned structured host:
+npx esbuild scripts/smoke-chat-image.ts --bundle --platform=node --format=cjs --outfile=/tmp/smoke-chat-image.cjs && node /tmp/smoke-chat-image.cjs <folder>
+npx esbuild scripts/smoke-codex-chat-image.ts --bundle --platform=node --format=cjs --outfile=/tmp/smoke-codex-image.cjs && node /tmp/smoke-codex-image.cjs <folder>
 ```
 
 `scripts/drive.js` opens a CDP WebSocket, so it needs a Node with the
@@ -1266,7 +1281,8 @@ src/
   main/workspace.ts           Folder validation, git/worktree detection
   main/hook-server.ts         Plane 2 ingress — loopback HTTP, per-session URLs
   main/settings.ts            Display/agent-path preferences, JSON in userData
-  main/clipboard-paste.ts     Clipboard reads for paste; images spilled to disk  [docs/terminal.md]
+  main/clipboard-paste.ts     Clipboard reads for terminal/chat paste; images spilled to disk  [docs/terminal.md, docs/conversation.md]
+  main/chat-attachments.ts    Validates chat files and encodes native Claude images  [docs/conversation.md]
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
   main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)  [docs/git.md]
   main/pull-request.ts        Pull requests through the GitHub CLI (C16)  [docs/git.md]

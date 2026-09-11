@@ -210,8 +210,31 @@ closing, which is the honest limit of putting it there and the same one pane
 occupancy already has; moving it into the session fabric would make it
 survive, at the cost of a protocol change and a snapshot field.
 
-Status: typechecked and reviewed, and the app runs clean with it, but the
-queue has **not** yet been exercised against a live agent turn.
+Attachments follow the same draft and queue lifetime. A paperclip opens a
+native multi-file picker; pasting a clipboard bitmap or files into the
+textarea adds them without turning their paths into editable prompt text.
+Every attachment is a removable chip before send and remains visible on a
+queued message. Ten files is the per-message bound. Clipboard bitmap bytes are
+spilled under the OS temp directory and swept after a day, while files picked
+from disk stay where the reader selected them.
+
+The renderer carries only `{path, name, size, kind}` descriptors. `sertumd`
+re-stats each path, determines image kind from magic bytes, rejects a missing
+file or a native image above 7MB, and only then starts the turn. Base64 never
+crosses the GUI/daemon socket. Claude receives verified PNG, JPEG, GIF and
+WebP files as base64 image content blocks before the text; Codex receives its
+documented `localImage` input. Ordinary files have no shared binary input in
+these coding-agent transports, so the turn names each one with an absolute
+path and the agent's normal read/permission flow applies. PTY-backed agents
+receive image and file paths the same way. An attachment-only send gets a
+small explicit review request so it still produces an honest user message in
+the transcript.
+
+Status: attachment classification, validation, prompt labelling and Codex's
+exact `localImage` request shape are fixture-tested. Claude Code 2.1.268 and
+Codex CLI 0.154.0 also completed real structured turns carrying
+`assets/icon.png` through their native image inputs. The queue has **not** yet
+been exercised against a live agent turn.
 
 ## Markdown, and when the markup is the answer
 

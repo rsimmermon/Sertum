@@ -54,6 +54,7 @@ import {
   type AgentSessionRef,
 } from '../main/adapters/agent-adapter';
 import { approvalCardFor } from '../main/adapters/interactive-tools';
+import { validateChatAttachments } from '../main/chat-attachments';
 import { inspectProcessTree } from '../main/process-tree';
 import {
   addRule,
@@ -70,6 +71,7 @@ import {
   type AgentModelList,
   type ApprovalAnswer,
   type BinaryDetection,
+  type ChatAttachment,
   type ConversationRead,
   type DiscoveredSession,
   type ManagedAgent,
@@ -1001,11 +1003,19 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       return null;
     },
 
-    'chat/send': (p: { id: string; text: string }) => {
+    'chat/send': (
+      p: { id: string; text: string; attachments?: ChatAttachment[] },
+    ) => {
       const session = ptys.get(p.id);
       const message = p.text.trim();
-      if (!session || session.exitCode !== null || session.origin !== 'owned' || !hasStructuredTransport(session) || !message) return false;
-      return structuredHostFor(p.id).send(p.id, message);
+      const attachments = validateChatAttachments(
+        Array.isArray(p.attachments) ? p.attachments : [],
+      );
+      if (
+        !session || session.exitCode !== null || session.origin !== 'owned' ||
+        !hasStructuredTransport(session) || (!message && !attachments.length)
+      ) return false;
+      return structuredHostFor(p.id).send(p.id, message, attachments);
     },
     /**
      * A chat pane's poll. `known` is the version the pane already holds, and

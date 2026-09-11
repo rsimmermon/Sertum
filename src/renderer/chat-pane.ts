@@ -3,13 +3,19 @@ import type {
   AgentCapabilities,
   AgentKind,
   CapabilityAnswer,
+  ChatAttachment,
   ChatItem,
+  ClipboardPaste,
   ConversationRead,
   ConversationSnapshot,
   PendingApproval,
   PermissionMode,
   SessionSnapshot,
 } from '../shared/types';
+import {
+  MAX_CHAT_ATTACHMENTS,
+  promptWithAttachments,
+} from '../shared/chat-attachments';
 import { ApprovalBar } from './approval-bar';
 import {
   effortAvailability,
@@ -34,10 +40,11 @@ const api = window.sertum;
  * A session rendered as a conversation instead of a terminal.
  *
  * Everything shown here is read from the agent's own transcript through
- * `conversation:read`; nothing is inferred from terminal output. Input still
- * goes to the PTY — see `submit` for the exact byte sequence and why. The
- * For a PTY-backed agent the terminal keeps running underneath as an
- * implementation detail; only Shell exposes a terminal as its product UI.
+ * `conversation:read`; nothing is inferred from terminal output. Input uses
+ * the agent's structured host where one exists and otherwise goes to the PTY
+ * with the exact byte sequence described by `deliver`. For a PTY-backed agent
+ * the terminal keeps running underneath as an implementation detail; only
+ * Shell exposes a terminal as its product UI.
  *
  * The transcript is followed on a poll, like Grok's event log and for the
  * same reasons: the file may not exist yet, watch semantics differ by
@@ -60,6 +67,7 @@ const NOTE_FADE_MS = 6000;
 interface QueuedMessage {
   id: number;
   text: string;
+  attachments: ChatAttachment[];
 }
 
 export class ChatPane {
@@ -68,6 +76,9 @@ export class ChatPane {
   private note: HTMLDivElement;
   private input: HTMLTextAreaElement;
   private action: HTMLButtonElement;
+  private attachButton: HTMLButtonElement;
+  private attachmentList: HTMLDivElement;
+  private attachments: ChatAttachment[] = [];
   /** Which of the two things the one composer button currently does. */
   private mode: 'send' | 'stop' = 'send';
   private composerNote: HTMLDivElement;
@@ -208,6 +219,14 @@ export class ChatPane {
         this.submit();
       }
     });
+    // The browser cannot turn clipboard bitmap bytes into a durable agent
+    // input. Main spills them to disk, then this draft treats that path like
+    // one chosen through the attachment button. Plain text is inserted back
+    // at the selection so the platform paste keeps ordinary textarea rules.
+    this.input.addEventListener('paste', (event) => {
+      event.preventDefault();
+      void this.pasteClipboard();
+    });
 
     // One button at the right edge of the box you type into, carrying
     // whichever of the two things you can currently do. Typing is the signal:
@@ -224,6 +243,14 @@ export class ChatPane {
       if (this.mode === 'stop') void this.stop();
       else this.submit();
     };
+
+    this.attachButton = document.createElement('button');
+    this.attachButton.type = 'button';
+    this.attachButton.className = 'chat-attach';
+    this.attachButton.append(attachmentIcon());
+    this.attachButton.title = 'Add attachments';
+    this.attachButton.setAttribute('aria-label', 'Add attachments');
+    this.attachButton.onclick = () => void this.pickAttachments();
     // The mode follows the composer, so it flips on the first keystroke and
     // back on the last backspace.
     this.input.addEventListener('input', () => {
@@ -298,12 +325,18 @@ export class ChatPane {
 
     const row = document.createElement('div');
     row.className = 'chat-composer-row';
-    row.append(box);
+    row.append(this.attachButton, box);
+
+    this.attachmentList = document.createElement('div');
+    this.attachmentList.className = 'chat-attachments';
+    this.attachmentList.hidden = true;
 
     const meta = document.createElement('div');
     meta.className = 'chat-composer-meta';
     meta.append(this.modeButton, this.modelButton, this.effortButton, this.composerNote);
-    composer.append(row, meta);
+    // B3 composer: attachments stay visibly part of the unsent turn, above
+    // the same input box and one send/stop control the frame already owns.
+    composer.append(this.attachmentList, row, meta);
 
     this.waiting = document.createElement('div');
     this.waiting.className = 'chat-item chat-assistant chat-waiting';
@@ -376,8 +409,8 @@ export class ChatPane {
   }
 
   /**
-   * Whether this pane can put input into the session at all: only a PTY we
-   * own carries keystrokes, and only while its process is alive.
+   * Whether this pane can put input into the session at all: it must be an
+   * owned live transport, structured or PTY-backed.
    */
   private canWrite(s: SessionSnapshot): boolean {
     return s.origin !== 'monitored' && s.exitCode === null;
@@ -399,6 +432,11 @@ export class ChatPane {
   private applySession(s: SessionSnapshot): void {
     const writable = this.canWrite(s);
     this.input.disabled = !writable;
+    this.attachButton.disabled = !writable;
+    this.attachButton.title = writable
+      ? 'Add attachments'
+      : 'This session cannot take attachments here.';
+    this.attachButton.setAttribute('aria-label', this.attachButton.title);
     this.paintAction();
     // A status that just became receivable is the moment the queue exists
     // for. Session updates arrive from the daemon's own events, so this is
@@ -473,9 +511,9 @@ export class ChatPane {
   private paintAction(): void {
     const s = this.session;
     const writable = this.canWrite(s);
-    const hasText = this.input.value.trim().length > 0;
+    const hasDraft = this.input.value.trim().length > 0 || this.attachments.length > 0;
     const turnActive = s.status === 'working' || s.status === 'needs-input';
-    this.mode = writable && !hasText && turnActive ? 'stop' : 'send';
+    this.mode = writable && !hasDraft && turnActive ? 'stop' : 'send';
     const canStop = writable && turnActive && this.interruptCapability.ok;
 
     let reason: string;
@@ -485,12 +523,12 @@ export class ChatPane {
         ? `Stop ${s.agent}’s current turn`
         : this.interruptCapability.reason;
     } else {
-      this.action.disabled = !writable || !hasText;
+      this.action.disabled = !writable || !hasDraft;
       reason = !writable
         ? 'This session cannot take input here.'
-        : hasText
+        : hasDraft
           ? `Send to ${s.agent}`
-          : 'Type a message to send.';
+          : 'Type a message or add an attachment to send.';
     }
     this.action.classList.toggle('is-stop', this.mode === 'stop');
     this.action.classList.toggle('is-send', this.mode === 'send');
@@ -750,9 +788,77 @@ export class ChatPane {
     this.paintAction();
   }
 
+  /** Ask the platform for files; only the native picker can mint this draft. */
+  private async pickAttachments(): Promise<void> {
+    if (this.attachButton.disabled) return;
+    try {
+      const picked = await api.pickChatAttachments(this.session.cwd);
+      this.addAttachments(picked);
+    } catch (error) {
+      this.say(`Attachments were not added: ${String(error)}`);
+    }
+    this.focus();
+  }
+
+  /** Image-aware paste for the chat composer, with ordinary text preserved. */
+  private async pasteClipboard(): Promise<void> {
+    let paste: ClipboardPaste;
+    try {
+      paste = await api.readClipboard();
+    } catch (error) {
+      this.say(`Could not paste: ${String(error)}`);
+      return;
+    }
+    if (paste.kind === 'text') {
+      const start = this.input.selectionStart;
+      const end = this.input.selectionEnd;
+      this.input.setRangeText(paste.text, start, end, 'end');
+      this.input.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (paste.kind === 'attachments') this.addAttachments(paste.attachments);
+  }
+
+  /** Merge files into the draft by path, keeping the ten-item bound visible. */
+  private addAttachments(incoming: ChatAttachment[]): void {
+    const key = (attachment: ChatAttachment) =>
+      api.platform === 'win32' ? attachment.path.toLowerCase() : attachment.path;
+    const seen = new Set(this.attachments.map(key));
+    let omitted = 0;
+    for (const attachment of incoming) {
+      const pathKey = key(attachment);
+      if (seen.has(pathKey)) continue;
+      if (this.attachments.length >= MAX_CHAT_ATTACHMENTS) {
+        omitted += 1;
+        continue;
+      }
+      seen.add(pathKey);
+      this.attachments.push(attachment);
+    }
+    this.paintAttachments();
+    this.paintAction();
+    if (omitted) this.say(`A message can contain at most ${MAX_CHAT_ATTACHMENTS} attachments.`);
+  }
+
+  /** Draw removable attachment chips without ever interpreting their names. */
+  private paintAttachments(): void {
+    this.attachmentList.replaceChildren(
+      ...this.attachments.map((attachment, index) =>
+        renderAttachment(attachment, () => {
+          this.attachments.splice(index, 1);
+          this.paintAttachments();
+          this.paintAction();
+          this.focus();
+        }),
+      ),
+    );
+    this.attachmentList.hidden = this.attachments.length === 0;
+  }
+
   /**
-   * Send the composer's text into the PTY the way a person would: the body
-   * as a paste, then Enter as its own keystroke.
+   * Send the draft through its owning transport. A structured host receives
+   * text plus attachment descriptors; a PTY receives one prompt containing
+   * explicit file paths, then Enter as its own keystroke.
    *
    * Multi-line text travels as a bracketed paste, because that is what the
    * agent's composer is built to receive whole. Encoding the newlines as ESC
@@ -771,11 +877,14 @@ export class ChatPane {
 
   private async submit(): Promise<void> {
     const text = this.input.value.replace(/\s+$/, '');
-    if (!text || this.input.disabled || this.submitting) return;
+    const attachments = [...this.attachments];
+    if ((!text && !attachments.length) || this.input.disabled || this.submitting) return;
     // A turn in progress does not refuse the message any more; it defers it.
     if (!this.receivable()) {
-      this.queue.push({ id: ++this.nextQueueId, text });
+      this.queue.push({ id: ++this.nextQueueId, text, attachments });
       this.input.value = '';
+      this.attachments = [];
+      this.paintAttachments();
       this.paintQueuedMessages(true);
       this.say(this.queue.length === 1
         ? `Queued — it goes in when ${this.session.agent} is ready.`
@@ -784,10 +893,14 @@ export class ChatPane {
       return;
     }
 
-    if (!(await this.deliver(text))) return;
+    if (!(await this.deliver(text, attachments))) return;
     // Only the text that was actually sent is cleared: anything typed while
     // the send was in flight is newer and is not this message.
     if (this.input.value.replace(/\s+$/, '') === text) this.input.value = '';
+    this.attachments = this.attachments.filter(
+      (attachment) => !attachments.includes(attachment),
+    );
+    this.paintAttachments();
     this.paintAction();
   }
 
@@ -795,13 +908,16 @@ export class ChatPane {
    * Put one message into the session by whichever route its transport has,
    * Resolves false when it did not go, in which case the caller keeps it.
    */
-  private async deliver(text: string): Promise<boolean> {
+  private async deliver(
+    text: string,
+    attachments: ChatAttachment[] = [],
+  ): Promise<boolean> {
     const id = this.session.id;
     if (hasStructuredTransport(this.session)) {
       // A stream session takes the message whole, structured, no PTY bytes.
       this.submitting = true;
       try {
-        if (!await api.sendChatMessage(id, text)) {
+        if (!await api.sendChatMessage(id, text, attachments)) {
           this.say('Message was not sent. Finish or stop the current turn, then try again.');
           return false;
         }
@@ -811,9 +927,10 @@ export class ChatPane {
       } finally { this.submitting = false; }
       this.say('Sent — it appears here once the agent records it.');
     } else {
+      const message = promptWithAttachments(text, attachments);
       api.write(
         id,
-        text.includes('\n') ? `\x1b[200~${text}\x1b[201~` : text,
+        message.includes('\n') ? `\x1b[200~${message}\x1b[201~` : message,
       );
       setTimeout(() => api.write(id, '\r'), 150);
       this.say('Sent to the terminal — it appears here once the agent records it.');
@@ -836,7 +953,7 @@ export class ChatPane {
     this.flushing = true;
     try {
       const next = this.queue[0];
-      if (next !== undefined && await this.deliver(next.text)) {
+      if (next !== undefined && await this.deliver(next.text, next.attachments)) {
         const delivered = this.queue.findIndex((entry) => entry.id === next.id);
         if (delivered >= 0) this.queue.splice(delivered, 1);
         this.paintQueuedMessages();
@@ -855,7 +972,7 @@ export class ChatPane {
     const nearBottom = this.isNearBottom();
     this.queuedMessages.replaceChildren(
       ...this.queue.map((entry, index) =>
-        renderQueuedMessage(entry.text, index, () => this.removeQueued(index)),
+        renderQueuedMessage(entry.text, entry.attachments, index, () => this.removeQueued(index)),
       ),
     );
     if (scrollToTail || nearBottom) this.scrollToTail();
@@ -958,6 +1075,24 @@ function sendArrow(): SVGSVGElement {
     path.setAttribute('stroke-linejoin', 'round');
     svg.appendChild(path);
   }
+  return svg;
+}
+
+/** Paperclip mark for B3's add-attachment control, built as safe SVG nodes. */
+function attachmentIcon(): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'chat-attach-icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', 'M8.5 12.5 15 6a3.5 3.5 0 0 1 5 5l-8.5 8.5a6 6 0 0 1-8.5-8.5l8-8a2.5 2.5 0 0 1 3.5 3.5L7 14a1 1 0 0 0 1.5 1.5l7-7');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.8');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.append(path);
   return svg;
 }
 
@@ -1119,6 +1254,7 @@ function renderMessage(
 /** A queued user message, kept separate from the transcript until delivery. */
 function renderQueuedMessage(
   text: string,
+  attachments: ChatAttachment[],
   index: number,
   remove: () => void,
 ): HTMLElement {
@@ -1127,7 +1263,20 @@ function renderQueuedMessage(
 
   const bubble = document.createElement('div');
   bubble.className = 'chat-bubble';
-  bubble.textContent = text;
+  const copy = document.createElement('div');
+  copy.textContent = text || 'Attachments';
+  bubble.append(copy);
+  if (attachments.length) {
+    const files = document.createElement('div');
+    files.className = 'chat-queued-attachments';
+    for (const attachment of attachments) {
+      const label = document.createElement('span');
+      label.textContent = `${attachment.kind === 'image' ? 'Image' : 'File'} · ${attachment.name}`;
+      label.title = attachment.path;
+      files.append(label);
+    }
+    bubble.append(files);
+  }
 
   const button = document.createElement('button');
   button.type = 'button';
@@ -1143,6 +1292,37 @@ function renderQueuedMessage(
   bubble.append(button);
   wrap.append(bubble);
   return wrap;
+}
+
+/** One file in the unsent draft. */
+function renderAttachment(
+  attachment: ChatAttachment,
+  remove: () => void,
+): HTMLElement {
+  const chip = document.createElement('span');
+  chip.className = 'chat-attachment';
+  chip.title = `${attachment.path} · ${fileSize(attachment.size)}`;
+
+  const kind = document.createElement('span');
+  kind.className = 'chat-attachment-kind';
+  kind.textContent = attachment.kind === 'image' ? 'Image' : 'File';
+  const name = document.createElement('span');
+  name.className = 'chat-attachment-name';
+  name.textContent = attachment.name;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = '×';
+  button.title = `Remove ${attachment.name}`;
+  button.setAttribute('aria-label', `Remove attachment ${attachment.name}`);
+  button.onclick = remove;
+  chip.append(kind, name, button);
+  return chip;
+}
+
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function renderThinking(item: ChatItem & { kind: 'thinking' }): HTMLElement {

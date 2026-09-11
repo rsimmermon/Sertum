@@ -1778,6 +1778,14 @@ select.field {
 .chat-queued-message .chat-bubble {
   position: relative; padding-right: 32px; border: 1px dashed var(--accent);
 }
+.chat-queued-attachments {
+  display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px;
+  color: var(--ink-2); font-size: 11px;
+}
+.chat-queued-attachments span {
+  padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
 .chat-queued-remove {
   position: absolute; top: 3px; right: 5px;
   width: 20px; height: 20px; padding: 0;
@@ -1996,6 +2004,37 @@ select.field {
   border-top: 1px solid var(--line); background: var(--surface);
 }
 .chat-composer-row { display: flex; gap: 8px; align-items: flex-end; }
+.chat-attachments {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 0 0 8px 42px;
+}
+.chat-attachments[hidden] { display: none; }
+.chat-attachment {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: min(320px, 100%); padding: 4px 5px 4px 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-2);
+  font: 11px/1.4 var(--font-ui);
+}
+.chat-attachment-kind { color: var(--muted); }
+.chat-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-attachment button {
+  flex: none; width: 18px; height: 18px; padding: 0; border: 0;
+  border-radius: 50%; background: transparent; color: var(--muted);
+  cursor: pointer; font: 15px/16px var(--font-ui);
+}
+.chat-attachment button:hover { color: var(--err); background: var(--err-soft); }
+.chat-attachment button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-attach {
+  flex: none; width: 34px; height: 34px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface-2); color: var(--ink-2); cursor: pointer;
+}
+.chat-attach:hover:enabled { border-color: var(--accent); color: var(--ink); }
+.chat-attach:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-attach:disabled { cursor: default; opacity: 0.45; }
+.chat-attach-icon { width: 18px; height: 18px; }
 /* The box you type into owns the control that ends a turn, so stopping is a
    reach to the edge of the field rather than to a row of words. */
 .chat-input-box { position: relative; flex: 1; min-width: 0; display: flex; }

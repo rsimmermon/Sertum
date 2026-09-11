@@ -14,7 +14,8 @@ starts an owned app-server thread, without a TUI. Grok declines (no input
 channel) and retains a PTY beneath the same chat UI. A shell declines
 and is the one session kind whose PTY is shown.
 
-The Claude implementation, all verified against Claude Code 2.1.252:
+The Claude implementation, first verified against Claude Code 2.1.252 (with
+newer checks named where they differ):
 
 - **The process** is `claude --print --input-format stream-json
   --output-format stream-json --include-partial-messages --verbose`, hosted
@@ -23,6 +24,10 @@ The Claude implementation, all verified against Claude Code 2.1.252:
   turns on one session id. Input is one JSON user message per line on stdin.
   The process and its stdin belong to `sertumd`, so closing or crashing the
   Electron GUI does not end the stream session.
+- **Images are native content blocks.** `sertumd` reads a selected image only
+  after validating its path, size and magic bytes, then writes a base64 image
+  block before the turn's text. Claude Code 2.1.268 completed a real turn with
+  `assets/icon.png` through this exact `ClaudeChatHost.send` path.
 - **The stream is plane 2 at full width.** `system/init` names the session
   and model, `stream_event` partials drive activity (a tool's name,
   "responding", "thinking"), `result` closes the turn. Content is
@@ -94,6 +99,13 @@ the daemon and picker. Codex's policies are distinct from Claude's permission
 modes. Applying a policy change requires an idle turn: `thread/resume` on a
 loaded thread ignores overrides, so the host unsubscribes first, resumes, and
 uses the returned effective policy. Failed sends keep the composer's text.
+
+Images on a turn use the app-server's `localImage` input beside the text
+input, re-checked against Codex CLI 0.154.0's generated schema and a live turn
+carrying `assets/icon.png`. Other attachments are absolute paths in the text
+because the protocol exposes image, skill and app mentions but no generic
+local-file input. The daemon validates every selected path before
+`turn/start`, so a disappeared file cannot create a partial turn.
 
 That idle requirement used to mean an outright refusal -- "Finish or stop
 the current turn before changing its policy" -- however long the turn ran,

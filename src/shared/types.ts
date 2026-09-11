@@ -1171,16 +1171,31 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 /**
- * What the clipboard is offering a terminal paste.
+ * What the clipboard is offering a terminal or chat-composer paste.
  *
- * An image is handed over as a path rather than as bytes: a PTY carries
- * characters, so the file on disk is the only form an agent on the other end
- * can act on.
+ * Files are handed over as paths rather than bytes. A PTY can paste those
+ * paths directly; a structured host can turn an image path into its native
+ * multimodal input without hauling base64 through the renderer.
  */
 export type ClipboardPaste =
   | { kind: 'text'; text: string }
-  | { kind: 'image'; path: string }
+  | { kind: 'attachments'; attachments: ChatAttachment[] }
   | { kind: 'empty' };
+
+/**
+ * A file the reader deliberately added to a chat draft.
+ *
+ * Only this small descriptor crosses process boundaries, never the file's
+ * bytes. `name`, `size` and `kind` are display metadata read from `path` by
+ * the main process and re-checked by the daemon before a turn starts; the
+ * renderer never gets to assert that an arbitrary file is an image.
+ */
+export interface ChatAttachment {
+  path: string;
+  name: string;
+  size: number;
+  kind: 'image' | 'file';
+}
 
 /** The surface exposed to the renderer through the preload bridge. */
 export interface SertumApi {
@@ -1238,13 +1253,14 @@ export interface SertumApi {
   copySelection(): Promise<void>;
   pasteSelection(): Promise<void>;
   /**
-   * Read the system clipboard for a paste into a terminal.
+   * Read the system clipboard for a paste into a terminal or chat composer.
    *
-   * Read here rather than in the renderer because an image has to be spilled
-   * to a file before it can cross a PTY, and only the main process can write
-   * one.
+   * Read here rather than in the renderer because bitmap bytes have to be
+   * spilled to a file before either route can keep them as a durable draft.
    */
   readClipboard(): Promise<ClipboardPaste>;
+  /** Pick one or more files to add to a chat draft. */
+  pickChatAttachments(startIn?: string): Promise<ChatAttachment[]>;
   /** Git worktrees for the repository containing `cwd` (wireframe C9). */
   listWorktrees(cwd: string): Promise<WorktreeInventory | null>;
   /**
@@ -1379,7 +1395,11 @@ export interface SertumApi {
    * protocol. Resolves false when the session cannot take one — wrong
    * transport, or its process has exited.
    */
-  sendChatMessage(id: string, text: string): Promise<boolean>;
+  sendChatMessage(
+    id: string,
+    text: string,
+    attachments?: ChatAttachment[],
+  ): Promise<boolean>;
   /** Health of the plane 2 adapters. */
   adapterStatus(): Promise<AdapterStatus>;
   /** Agent sessions running outside this app. */

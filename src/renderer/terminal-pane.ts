@@ -351,7 +351,9 @@ export class TerminalPane {
   private async pasteClipboard(): Promise<void> {
     const item = await api.readClipboard();
     if (item.kind === 'text') this.term.paste(item.text);
-    if (item.kind === 'image') this.term.paste(`${quotedPath(item.path)} `);
+    if (item.kind === 'attachments') {
+      this.term.paste(`${item.attachments.map((attachment) => quotedPath(attachment.path)).join(' ')} `);
+    }
   }
 
   /** Scrollback as text, for restoring a pane later. */

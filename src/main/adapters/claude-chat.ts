@@ -9,7 +9,10 @@ import type {
   PermissionMode,
   PermissionModeResult,
   SessionStatus,
+  ChatAttachment,
 } from '../../shared/types';
+import { promptWithAttachments } from '../../shared/chat-attachments';
+import { readChatImage } from '../chat-attachments';
 
 /** See `Hosted.awaitingResumeSettle`. */
 const RESUME_SETTLE_MS = 2000;
@@ -139,7 +142,10 @@ interface Hosted {
    * answer, while the identical message held for this long answered
    * correctly and recalled the earlier turn.
    */
-  awaitingResumeSettle?: { queued: string[]; timer: NodeJS.Timeout };
+  awaitingResumeSettle?: {
+    queued: Array<{ text: string; attachments: ChatAttachment[] }>;
+    timer: NodeJS.Timeout;
+  };
 }
 
 /** The CLI's answer to one request of ours. */
@@ -262,12 +268,12 @@ export class ClaudeChatHost extends EventEmitter {
    * except for a `--resume`d process still settling in, which queues the
    * text instead. See `Hosted.awaitingResumeSettle`.
    */
-  send(id: string, text: string): boolean {
+  send(id: string, text: string, attachments: ChatAttachment[] = []): boolean {
     const entry = this.hosted.get(id);
     if (!entry?.alive || !entry.child.stdin?.writable) return false;
     if (entry.awaitingResumeSettle) {
-      entry.awaitingResumeSettle.queued.push(text);
-    } else if (!this.writeUserMessage(entry, text)) {
+      entry.awaitingResumeSettle.queued.push({ text, attachments });
+    } else if (!this.writeUserMessage(entry, text, attachments)) {
       return false;
     }
     // The stream stays silent until the model starts answering (or until the
@@ -277,10 +283,33 @@ export class ClaudeChatHost extends EventEmitter {
     return true;
   }
 
-  private writeUserMessage(entry: Hosted, text: string): boolean {
+  private writeUserMessage(
+    entry: Hosted,
+    text: string,
+    attachments: ChatAttachment[],
+  ): boolean {
+    const images = attachments
+      .map((attachment) => ({ attachment, image: readChatImage(attachment) }))
+      .filter((candidate): candidate is {
+        attachment: ChatAttachment;
+        image: { mime: string; data: string };
+      } => candidate.image !== null);
+    const nativeImages = new Set(images.map(({ attachment }) => attachment.path));
+    const prompt = promptWithAttachments(text, attachments, nativeImages);
     const message = {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text }] },
+      message: {
+        role: 'user',
+        // Images precede the prompt, matching Claude's preferred multimodal
+        // ordering. Files without a native block remain explicit paths in it.
+        content: [
+          ...images.map(({ image }) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: image.mime, data: image.data },
+          })),
+          { type: 'text', text: prompt },
+        ],
+      },
     };
     try {
       entry.child.stdin!.write(`${JSON.stringify(message)}\n`);
@@ -296,7 +325,9 @@ export class ClaudeChatHost extends EventEmitter {
     if (!entry?.awaitingResumeSettle) return;
     const { queued } = entry.awaitingResumeSettle;
     entry.awaitingResumeSettle = undefined;
-    for (const text of queued) this.writeUserMessage(entry, text);
+    for (const message of queued) {
+      this.writeUserMessage(entry, message.text, message.attachments);
+    }
   }
 
   /**
