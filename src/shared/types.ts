@@ -1261,6 +1261,8 @@ export interface SertumApi {
   readClipboard(): Promise<ClipboardPaste>;
   /** Pick one or more files to add to a chat draft. */
   pickChatAttachments(startIn?: string): Promise<ChatAttachment[]>;
+  /** A bounded PNG thumbnail for an image attachment, or null for a file. */
+  readChatAttachmentPreview(attachment: ChatAttachment): Promise<string | null>;
   /** Git worktrees for the repository containing `cwd` (wireframe C9). */
   listWorktrees(cwd: string): Promise<WorktreeInventory | null>;
   /**

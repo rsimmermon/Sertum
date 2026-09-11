@@ -42,6 +42,8 @@ const api: SertumApi = {
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   pickChatAttachments: (startIn?: string): Promise<ChatAttachment[]> =>
     ipcRenderer.invoke('chat:pick-attachments', startIn),
+  readChatAttachmentPreview: (attachment: ChatAttachment) =>
+    ipcRenderer.invoke('chat:attachment-preview', attachment),
   listWorktrees: (cwd: string) => ipcRenderer.invoke('worktree:list', cwd),
   removeWorktree: (root: string, path: string, force: boolean) =>
     ipcRenderer.invoke('worktree:remove', { root, path, force }),

@@ -1775,16 +1775,12 @@ select.field {
   display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
   width: 100%;
 }
+.chat-sent-attachment-messages {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  width: 100%;
+}
 .chat-queued-message .chat-bubble {
   position: relative; padding-right: 32px; border: 1px dashed var(--accent);
-}
-.chat-queued-attachments {
-  display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px;
-  color: var(--ink-2); font-size: 11px;
-}
-.chat-queued-attachments span {
-  padding: 2px 6px; border: 1px solid var(--line); border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
 }
 .chat-queued-remove {
   position: absolute; top: 3px; right: 5px;
@@ -2009,22 +2005,44 @@ select.field {
   margin: 0 0 8px 42px;
 }
 .chat-attachments[hidden] { display: none; }
+.chat-attachment-previews {
+  display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px;
+  white-space: normal;
+}
 .chat-attachment {
-  display: inline-flex; align-items: center; gap: 6px;
-  max-width: min(320px, 100%); padding: 4px 5px 4px 8px;
-  border: 1px solid var(--line); border-radius: 999px;
+  position: relative; display: flex; flex-direction: column;
+  width: 148px; min-width: 0; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 8px;
   background: var(--surface-2); color: var(--ink-2);
   font: 11px/1.4 var(--font-ui);
 }
-.chat-attachment-kind { color: var(--muted); }
-.chat-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-attachment button {
-  flex: none; width: 18px; height: 18px; padding: 0; border: 0;
-  border-radius: 50%; background: transparent; color: var(--muted);
-  cursor: pointer; font: 15px/16px var(--font-ui);
+.chat-attachment-visual {
+  height: 78px; display: grid; place-items: center; overflow: hidden;
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--bg) 76%, var(--surface-2));
+  color: var(--muted);
 }
-.chat-attachment button:hover { color: var(--err); background: var(--err-soft); }
-.chat-attachment button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-attachment-visual img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.chat-attachment-visual img[hidden] { display: none; }
+.chat-attachment-placeholder {
+  width: 34px; height: 34px; fill: none; stroke: currentColor;
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+.chat-attachment-copy { min-width: 0; padding: 6px 8px 7px; }
+.chat-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-attachment-copy span { display: block; }
+.chat-attachment-meta { margin-top: 1px; color: var(--muted); font-size: 10px; }
+.chat-attachment-remove {
+  position: absolute; top: 5px; right: 5px;
+  width: 21px; height: 21px; padding: 0; border: 1px solid var(--line);
+  border-radius: 50%; background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--ink-2); cursor: pointer; font: 16px/18px var(--font-ui);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+.chat-attachment-remove:hover { color: var(--err); background: var(--err-soft); }
+.chat-attachment-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .chat-attach {
   flex: none; width: 34px; height: 34px; padding: 0;
   display: flex; align-items: center; justify-content: center;

@@ -38,6 +38,7 @@ import {
 import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import { describeChatAttachment } from './main/chat-attachments';
+import { readChatAttachmentPreview } from './main/attachment-preview';
 import { readLocalImage } from './main/local-image';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
@@ -796,6 +797,10 @@ ipcMain.handle('chat:pick-attachments', async (_e, startIn?: string) => {
     .map(describeChatAttachment)
     .filter((attachment): attachment is ChatAttachment => attachment !== null);
 });
+ipcMain.handle(
+  'chat:attachment-preview',
+  (_e, attachment: ChatAttachment) => readChatAttachmentPreview(attachment),
+);
 // Keystrokes are the hot path: fire-and-forget, no response round trip.
 ipcMain.on('pty:input', (_e, p: { id: string; data: string }) =>
   daemon.send('pty/input', p),

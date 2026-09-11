@@ -153,9 +153,9 @@ below, or a file of its own in `docs/`, is described there rather than here:
       activity line while plane 2 says the agent is working, and a red stop
       square at the right edge of the composer
 - [x] **Chat attachments and image paste** — native multi-file picker,
-      clipboard images spilled to durable temp files, visible removable draft
-      chips, native Claude/Codex image inputs, and explicit paths for ordinary
-      files and PTY-backed agents
+      clipboard images spilled to durable temp files, bounded image previews
+      and file placeholders in drafts and sent messages, native Claude/Codex
+      image inputs, and explicit paths for ordinary files and PTY-backed agents
 
 ## How status actually works
 
@@ -1283,6 +1283,7 @@ src/
   main/settings.ts            Display/agent-path preferences, JSON in userData
   main/clipboard-paste.ts     Clipboard reads for terminal/chat paste; images spilled to disk  [docs/terminal.md, docs/conversation.md]
   main/chat-attachments.ts    Validates chat files and encodes native Claude images  [docs/conversation.md]
+  main/attachment-preview.ts  Builds bounded composer/chat thumbnails  [docs/conversation.md]
   main/worktrees.ts           Worktree inventory, provisioning, removal (C9)
   main/diff-review.ts         Git-backed changes, discard and commit (C11, C15)  [docs/git.md]
   main/pull-request.ts        Pull requests through the GitHub CLI (C16)  [docs/git.md]

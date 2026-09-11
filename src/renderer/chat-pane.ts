@@ -70,6 +70,13 @@ interface QueuedMessage {
   attachments: ChatAttachment[];
 }
 
+interface SentAttachmentMessage extends QueuedMessage {
+  /** Last visible user record at send time; the new record must follow it. */
+  afterUserKey: string | null;
+  /** Identity remembered once the transcript has acknowledged this send. */
+  transcriptKey?: string;
+}
+
 export class ChatPane {
   readonly element: HTMLDivElement;
   private scroll: HTMLDivElement;
@@ -134,6 +141,12 @@ export class ChatPane {
   private nextQueueId = 0;
   /** The visible, removable queued-message group in the conversation. */
   private queuedMessages: HTMLDivElement;
+  /** Attachment messages sent by this pane, retained for transcript previews. */
+  private sentAttachmentMessages: SentAttachmentMessage[] = [];
+  /** Sent messages not recorded by the transcript yet. */
+  private pendingSentMessages: HTMLDivElement;
+  /** The last snapshot drawn, used to reconcile a just-sent attachment. */
+  private snapshot: ConversationSnapshot | null = null;
   /** Guards `flush` against re-entry while a delivery is in flight. */
   private flushing = false;
   private session: SessionSnapshot;
@@ -351,6 +364,9 @@ export class ChatPane {
 
     this.queuedMessages = document.createElement('div');
     this.queuedMessages.className = 'chat-queued-messages';
+
+    this.pendingSentMessages = document.createElement('div');
+    this.pendingSentMessages.className = 'chat-sent-attachment-messages';
 
     this.element.append(this.note, this.scroll, this.approvals.element, composer);
     this.applySession(session);
@@ -925,7 +941,7 @@ export class ChatPane {
         this.say(`Message was not sent: ${String(error)}`);
         return false;
       } finally { this.submitting = false; }
-      this.say('Sent — it appears here once the agent records it.');
+      this.say('Sent.');
     } else {
       const message = promptWithAttachments(text, attachments);
       api.write(
@@ -933,7 +949,16 @@ export class ChatPane {
         message.includes('\n') ? `\x1b[200~${message}\x1b[201~` : message,
       );
       setTimeout(() => api.write(id, '\r'), 150);
-      this.say('Sent to the terminal — it appears here once the agent records it.');
+      this.say('Sent to the terminal.');
+    }
+    if (attachments.length) {
+      this.sentAttachmentMessages.push({
+        id: ++this.nextQueueId,
+        text,
+        attachments,
+        afterUserKey: lastUserMessageKey(this.snapshot),
+      });
+      this.paintPendingSentMessages();
     }
     return true;
   }
@@ -976,6 +1001,19 @@ export class ChatPane {
       ),
     );
     if (scrollToTail || nearBottom) this.scrollToTail();
+  }
+
+  /** Keep a sent attachment visible while its transcript record catches up. */
+  private paintPendingSentMessages(): void {
+    const nearBottom = this.isNearBottom();
+    const { unmatched } = matchSentAttachmentMessages(
+      this.snapshot,
+      this.sentAttachmentMessages,
+    );
+    this.pendingSentMessages.replaceChildren(
+      ...unmatched.map((entry) => renderSentAttachmentMessage(entry.text, entry.attachments)),
+    );
+    if (nearBottom) this.scrollToTail();
   }
 
   private async refresh(): Promise<void> {
@@ -1026,12 +1064,25 @@ export class ChatPane {
   private render(snapshot: ConversationSnapshot): void {
     const nearBottom = this.isNearBottom();
     const wasAt = this.scroll.scrollTop;
+    this.snapshot = snapshot;
+
+    const matched = matchSentAttachmentMessages(snapshot, this.sentAttachmentMessages);
+    this.pendingSentMessages.replaceChildren(
+      ...matched.unmatched.map((entry) =>
+        renderSentAttachmentMessage(entry.text, entry.attachments),
+      ),
+    );
 
     if (snapshot.items.length === 0) {
       this.note.hidden = true;
       // The welcome card is centred by `margin: auto`, so the waiting bubble
       // rides along beneath it rather than being dropped for a first turn.
-      this.scroll.replaceChildren(renderWelcome(this.session), this.queuedMessages, this.waiting);
+      this.scroll.replaceChildren(
+        renderWelcome(this.session),
+        this.pendingSentMessages,
+        this.queuedMessages,
+        this.waiting,
+      );
       return;
     }
     this.note.textContent = snapshot.truncated
@@ -1042,9 +1093,21 @@ export class ChatPane {
     const nodes = snapshot.items.map((item) =>
       renderItem(item, this.formatChoice, this.session.cwd),
     );
+    for (const [itemIndex, entries] of matched.byItem) {
+      const bubble = nodes[itemIndex]?.querySelector<HTMLElement>('.chat-bubble');
+      if (!bubble) continue;
+      for (const entry of entries) {
+        bubble.append(renderAttachmentGroup(entry.attachments));
+      }
+    }
     // The bubble is one long-lived element rather than one per repaint, so
     // its animation does not restart every time the transcript poll lands.
-    this.scroll.replaceChildren(...nodes, this.queuedMessages, this.waiting);
+    this.scroll.replaceChildren(
+      ...nodes,
+      this.pendingSentMessages,
+      this.queuedMessages,
+      this.waiting,
+    );
     if (nearBottom) this.scrollToTail();
     else this.scroll.scrollTop = wasAt;
   }
@@ -1266,17 +1329,7 @@ function renderQueuedMessage(
   const copy = document.createElement('div');
   copy.textContent = text || 'Attachments';
   bubble.append(copy);
-  if (attachments.length) {
-    const files = document.createElement('div');
-    files.className = 'chat-queued-attachments';
-    for (const attachment of attachments) {
-      const label = document.createElement('span');
-      label.textContent = `${attachment.kind === 'image' ? 'Image' : 'File'} · ${attachment.name}`;
-      label.title = attachment.path;
-      files.append(label);
-    }
-    bubble.append(files);
-  }
+  if (attachments.length) bubble.append(renderAttachmentGroup(attachments));
 
   const button = document.createElement('button');
   button.type = 'button';
@@ -1294,29 +1347,192 @@ function renderQueuedMessage(
   return wrap;
 }
 
-/** One file in the unsent draft. */
+/** A successfully delivered attachment waiting for the transcript to land. */
+function renderSentAttachmentMessage(
+  text: string,
+  attachments: ChatAttachment[],
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-item chat-user chat-sent-attachment-message';
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  const copy = document.createElement('div');
+  copy.textContent = text || 'Attachments';
+  bubble.append(copy, renderAttachmentGroup(attachments));
+  wrap.append(bubble);
+  return wrap;
+}
+
+/** One file in the unsent draft (wireframe B3). */
 function renderAttachment(
   attachment: ChatAttachment,
   remove: () => void,
 ): HTMLElement {
-  const chip = document.createElement('span');
-  chip.className = 'chat-attachment';
-  chip.title = `${attachment.path} · ${fileSize(attachment.size)}`;
-
-  const kind = document.createElement('span');
-  kind.className = 'chat-attachment-kind';
-  kind.textContent = attachment.kind === 'image' ? 'Image' : 'File';
-  const name = document.createElement('span');
-  name.className = 'chat-attachment-name';
-  name.textContent = attachment.name;
+  const card = renderAttachmentPreview(attachment);
+  card.classList.add('is-removable');
   const button = document.createElement('button');
   button.type = 'button';
+  button.className = 'chat-attachment-remove';
   button.textContent = '×';
   button.title = `Remove ${attachment.name}`;
   button.setAttribute('aria-label', `Remove attachment ${attachment.name}`);
   button.onclick = remove;
-  chip.append(kind, name, button);
-  return chip;
+  card.append(button);
+  return card;
+}
+
+/** The same preview treatment in queued and sent user bubbles. */
+function renderAttachmentGroup(attachments: readonly ChatAttachment[]): HTMLElement {
+  const group = document.createElement('div');
+  group.className = 'chat-attachment-previews';
+  group.append(...attachments.map((attachment) => renderAttachmentPreview(attachment)));
+  return group;
+}
+
+/** A bounded image thumbnail or a file placeholder, with inert text leaves. */
+function renderAttachmentPreview(attachment: ChatAttachment): HTMLElement {
+  const card = document.createElement('div');
+  card.className = `chat-attachment is-${attachment.kind}`;
+  card.title = `${attachment.path} · ${fileSize(attachment.size)}`;
+
+  const visual = document.createElement('div');
+  visual.className = 'chat-attachment-visual';
+  const icon = attachmentPreviewIcon(attachment.kind);
+  visual.append(icon);
+  if (attachment.kind === 'image') {
+    const image = document.createElement('img');
+    image.alt = `${attachment.name} preview`;
+    image.hidden = true;
+    visual.append(image);
+    void attachmentPreview(attachment).then((src) => {
+      if (!src) return;
+      image.src = src;
+      image.hidden = false;
+      icon.style.display = 'none';
+    });
+  }
+
+  const copy = document.createElement('div');
+  copy.className = 'chat-attachment-copy';
+  const name = document.createElement('span');
+  name.className = 'chat-attachment-name';
+  name.textContent = attachment.name;
+  const meta = document.createElement('span');
+  meta.className = 'chat-attachment-meta';
+  meta.textContent = `${attachment.kind === 'image' ? 'Image' : 'File'} · ${fileSize(attachment.size)}`;
+  copy.append(name, meta);
+  card.append(visual, copy);
+  return card;
+}
+
+const attachmentPreviewCache = new Map<string, Promise<string | null>>();
+const ATTACHMENT_PREVIEW_CACHE_MAX = 100;
+
+function attachmentPreview(attachment: ChatAttachment): Promise<string | null> {
+  const key = `${attachment.path}\u0000${attachment.size}`;
+  let preview = attachmentPreviewCache.get(key);
+  if (!preview) {
+    preview = api.readChatAttachmentPreview(attachment).catch(() => null);
+    if (attachmentPreviewCache.size >= ATTACHMENT_PREVIEW_CACHE_MAX) {
+      attachmentPreviewCache.delete(
+        attachmentPreviewCache.keys().next().value as string,
+      );
+    }
+    attachmentPreviewCache.set(key, preview);
+  }
+  return preview;
+}
+
+function attachmentPreviewIcon(kind: ChatAttachment['kind']): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'chat-attachment-placeholder');
+  svg.setAttribute('viewBox', '0 0 32 32');
+  svg.setAttribute('aria-hidden', 'true');
+  const outline = document.createElementNS(ns, 'path');
+  outline.setAttribute('d', 'M8 3.5h10l6 6V28.5H8z M18 3.5v6h6');
+  svg.append(outline);
+  if (kind === 'image') {
+    const picture = document.createElementNS(ns, 'path');
+    picture.setAttribute('d', 'm11 23 4.2-5 3 3 2-2.3 2.8 3.5 M13 13.5h.01');
+    svg.append(picture);
+  } else {
+    for (const d of ['M11.5 15.5h9', 'M11.5 19.5h9', 'M11.5 23.5h6']) {
+      const line = document.createElementNS(ns, 'path');
+      line.setAttribute('d', d);
+      svg.append(line);
+    }
+  }
+  return svg;
+}
+
+function lastUserMessageKey(snapshot: ConversationSnapshot | null): string | null {
+  if (!snapshot) return null;
+  for (let index = snapshot.items.length - 1; index >= 0; index -= 1) {
+    const item = snapshot.items[index];
+    if (item?.kind === 'message' && item.role === 'user') return formatKey(item);
+  }
+  return null;
+}
+
+/** Pair locally sent descriptors with the user record the transcript wrote. */
+function matchSentAttachmentMessages(
+  snapshot: ConversationSnapshot | null,
+  sent: readonly SentAttachmentMessage[],
+): {
+  byItem: Map<number, SentAttachmentMessage[]>;
+  unmatched: SentAttachmentMessage[];
+} {
+  const byItem = new Map<number, SentAttachmentMessage[]>();
+  const unmatched: SentAttachmentMessage[] = [];
+  if (!snapshot) return { byItem, unmatched: [...sent] };
+
+  const userItems = snapshot.items
+    .map((item, itemIndex) => ({ item, itemIndex }))
+    .filter((entry): entry is {
+      item: ChatItem & { kind: 'message'; role: 'user' };
+      itemIndex: number;
+    } => entry.item.kind === 'message' && entry.item.role === 'user');
+  let beforeOrdinal = userItems.length;
+  for (let sentIndex = sent.length - 1; sentIndex >= 0; sentIndex -= 1) {
+    const entry = sent[sentIndex];
+    if (!entry) continue;
+    const body = entry.text.trim() || promptWithAttachments('', entry.attachments).split('\n')[0] || '';
+    const boundary = entry.afterUserKey
+      ? userItems.findLastIndex(({ item }) => formatKey(item) === entry.afterUserKey) + 1
+      : 0;
+    let found = -1;
+    for (
+      let ordinal = beforeOrdinal - 1;
+      ordinal >= boundary;
+      ordinal -= 1
+    ) {
+      const candidate = userItems[ordinal];
+      if (!candidate) continue;
+      const candidateKey = formatKey(candidate.item);
+      if (entry.transcriptKey
+        ? candidateKey === entry.transcriptKey
+        : candidate.item.text === body || candidate.item.text.startsWith(`${body}\n`)) {
+        found = ordinal;
+        break;
+      }
+    }
+    if (found === -1) {
+      // Once acknowledged, a record that is no longer in the bounded
+      // transcript window belongs off-screen rather than resurfacing at the
+      // tail as a fresh optimistic message.
+      if (!entry.transcriptKey) unmatched.unshift(entry);
+      continue;
+    }
+    beforeOrdinal = found;
+    entry.transcriptKey ??= formatKey(userItems[found]!.item);
+    const itemIndex = userItems[found]?.itemIndex;
+    if (itemIndex === undefined) continue;
+    const messages = byItem.get(itemIndex) ?? [];
+    messages.unshift(entry);
+    byItem.set(itemIndex, messages);
+  }
+  return { byItem, unmatched };
 }
 
 function fileSize(bytes: number): string {

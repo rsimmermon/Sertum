@@ -213,10 +213,19 @@ survive, at the cost of a protocol change and a snapshot field.
 Attachments follow the same draft and queue lifetime. A paperclip opens a
 native multi-file picker; pasting a clipboard bitmap or files into the
 textarea adds them without turning their paths into editable prompt text.
-Every attachment is a removable chip before send and remains visible on a
-queued message. Ten files is the per-message bound. Clipboard bitmap bytes are
-spilled under the OS temp directory and swept after a day, while files picked
-from disk stay where the reader selected them.
+Every image is a bounded thumbnail and every other attachment is a file
+placeholder above the input; both are removable before send and remain visible
+on queued and sent user messages. Sent previews are reconciled with the user
+record when it reaches the transcript, so the optimistic bubble does not
+duplicate the recorded one. Ten files is the per-message bound. Clipboard
+bitmap bytes are spilled under the OS temp directory and swept after a day,
+while files picked from disk stay where the reader selected them.
+
+The draft still carries only `{path, name, size, kind}`. A preview is requested
+separately from the GUI main process, which re-stats the path, verifies image
+magic bytes, refuses an image over the native-input limit, and returns a PNG
+no larger than 320 × 200. The original file bytes therefore do not enter the
+renderer's attachment model or cross the GUI/daemon socket.
 
 The renderer carries only `{path, name, size, kind}` descriptors. `sertumd`
 re-stats each path, determines image kind from magic bytes, rejects a missing
