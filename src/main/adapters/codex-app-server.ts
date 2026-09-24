@@ -5,7 +5,12 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
+import {
+  firstExecutable,
+  resolveOnLoginPath,
+  resolveOnWindowsPath,
+} from './binary-resolve';
+import { sessionEnv } from '../login-env';
 
 const run = promisify(execFile);
 
@@ -106,6 +111,10 @@ export class CodexAppServer extends EventEmitter {
       process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.binary);
     this.child = spawn(this.binary, ['app-server', '--listen', this.remoteUrl], {
       stdio: ['ignore', 'ignore', 'pipe'],
+      // The login shell's environment, not ours: an npm-installed codex is a
+      // `#!/usr/bin/env node` script, and under nvm that `node` is only on
+      // the PATH the shell profile builds.
+      env: sessionEnv(),
       // npm on Windows installs `codex` as a `codex.cmd` shim, and Node has
       // refused to spawn .cmd/.bat directly since the CVE-2024-27980 fix --
       // it throws EINVAL synchronously instead of failing async via the
@@ -568,6 +577,8 @@ export function resolveCodexBinary(): string {
       '/usr/local/bin/codex',
       path.join(home, '.volta', 'bin', 'codex'),
     ]) ??
+    // Anywhere else the login shell would find it -- an nvm install, say.
+    resolveOnLoginPath('codex') ??
     // Last resort: let PATH decide, which is correct when launched from a shell.
     'codex'
   );

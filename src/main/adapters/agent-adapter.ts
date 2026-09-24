@@ -8,7 +8,11 @@ import type {
   EffortChangeResult,
   ModelChangeResult,
 } from '../../shared/types';
-import { firstExecutable, resolveOnWindowsPath } from './binary-resolve';
+import {
+  firstExecutable,
+  resolveOnLoginPath,
+  resolveOnWindowsPath,
+} from './binary-resolve';
 import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 import type { ClaudeChatHost } from './claude-chat';
 import type { CodexChatHost } from './codex-chat';
@@ -574,7 +578,9 @@ class ClaudeAdapter extends InertAgentAdapter {
         '/opt/homebrew/bin/claude',
         '/usr/local/bin/claude',
         path.join(home, '.volta', 'bin', 'claude'),
-      ]) ?? 'claude'
+      ]) ??
+      resolveOnLoginPath('claude') ??
+      'claude'
     );
   }
 }
@@ -738,7 +744,9 @@ class GrokAdapter extends InertAgentAdapter {
         path.join(home, '.local', 'bin', 'grok'),
         '/opt/homebrew/bin/grok',
         '/usr/local/bin/grok',
-      ]) ?? 'grok'
+      ]) ??
+      resolveOnLoginPath('grok') ??
+      'grok'
     );
   }
 }

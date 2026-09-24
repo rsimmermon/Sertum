@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { sessionEnv } from '../login-env';
 
 /**
  * Real, existence-checked agent binary resolution, shared by every adapter
@@ -49,4 +50,19 @@ export function resolveOnWindowsPath(name: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * macOS/Linux: walks the login shell's PATH, X_OK-checking each candidate.
+ *
+ * The fixed install locations each resolver lists cannot cover version
+ * managers -- nvm puts a CLI under ~/.nvm/versions/node/<version>/bin, which
+ * only exists on PATH once the user's shell profile has run. A GUI launched
+ * from a desktop menu never ran that profile, so a bare command name spawned
+ * from it searches a PATH without the directory. `sessionEnv()` is the PATH
+ * the login shell reported, so searching it here finds what a terminal would.
+ */
+export function resolveOnLoginPath(name: string): string | null {
+  const dirs = (sessionEnv().PATH ?? '').split(path.delimiter).filter(Boolean);
+  return firstExecutable(dirs.map((dir) => path.join(dir, name)));
 }

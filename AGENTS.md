@@ -1316,6 +1316,12 @@ maker shares those options (`linuxPackageOptions`); `--targets rpm` needs
 `rpmbuild`, and so does a bare `make`, which fails without it. node-pty has no Linux prebuild, so
 `npm install` compiles it (needs `build-essential` and `python3`); Linux
 PTYs use `forkpty`, so the macOS spawn-helper problems do not apply.
+A .deb launched from the desktop menu inherits no shell profile, so an
+nvm-installed agent (`~/.nvm/versions/node/<v>/bin/codex`, a `#!/usr/bin/env
+node` script) is on neither the daemon's PATH nor any fixed install location.
+Each POSIX resolver therefore falls back to `resolveOnLoginPath`, which
+searches the login shell's PATH from `sessionEnv()`, and the Codex app server
+is spawned with that environment so `node` resolves too.
 
 Packaging and rebuild config, icons and the installer image, ConPTY's benign
 `kill()` throw, the process scan's reject rules, the codex app-server pid,
