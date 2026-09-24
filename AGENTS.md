@@ -1259,6 +1259,16 @@ that have cost this project real time. The load-bearing ones:
 - **`npm install` needs an `allowScripts` block** under npm 11, or `node-pty`
   ends up with no native binary at all.
 
+**Linux (.deb).** `npx electron-forge make --targets deb` on Ubuntu 26.04
+produces `out/make/deb/x64/sertum_<version>_amd64.deb`; verified launching on
+KDE Plasma (Wayland), spawning `sertumd` and opening a PTY. Name the target
+by its short name: `--targets @electron-forge/maker-deb` builds a *fresh*
+maker with none of `forge.config.ts`'s options (default icon, `bin: sertum`,
+which does not exist because Packager names the executable `Sertum`). A bare
+`make` fails without `rpmbuild` installed. node-pty has no Linux prebuild, so
+`npm install` compiles it (needs `build-essential` and `python3`); Linux
+PTYs use `forkpty`, so the macOS spawn-helper problems do not apply.
+
 Packaging and rebuild config, icons and the installer image, ConPTY's benign
 `kill()` throw, the process scan's reject rules, the codex app-server pid,
 and what is deliberately a no-op on this platform:

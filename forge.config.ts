@@ -167,7 +167,8 @@ async function verifyPackagedDaemon(
       : path.join(dir, 'resources');
     const executable = platform === 'darwin'
       ? path.join(dir, 'Sertum.app')
-      : path.join(dir, platform === 'win32' ? 'Sertum.exe' : 'sertum');
+      // Packager names the Linux executable after productName, not name.
+      : path.join(dir, platform === 'win32' ? 'Sertum.exe' : 'Sertum');
     const daemon = path.join(
       resources,
       'app.asar.unpacked',
@@ -278,7 +279,16 @@ const config: ForgeConfig = {
     }),
     new MakerZIP({}, ['darwin']),
     new MakerRpm({ options: { icon: 'assets/icon.png' } }),
-    new MakerDeb({ options: { icon: 'assets/icon.png' } }),
+    new MakerDeb({
+      options: {
+        // electron-installer-debian defaults to package.json's lowercase name;
+        // Packager named the executable after productName.
+        bin: 'Sertum',
+        icon: 'assets/icon.png',
+        categories: ['Development'],
+        genericName: 'Coding agent manager',
+      },
+    }),
   ],
   hooks: {
     postPackage: async (_forgeConfig, { platform, outputPaths }) => {
