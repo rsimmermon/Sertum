@@ -582,6 +582,7 @@ textarea.field:focus { outline: none; border-color: var(--accent); }
 .remote-control-copy { display: flex; flex-direction: column; gap: 2px; }
 .remote-control-title { font-size: 13px; font-weight: 600; color: var(--ink); }
 .remote-control-note { font-size: 11px; line-height: 1.4; color: var(--muted); }
+.remote-control-note[hidden] { display: none; }
 
 .note { font-size: 12px; line-height: 1.5; min-height: 14px; }
 .note.ok { color: var(--ok); }

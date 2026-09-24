@@ -87,6 +87,7 @@ import {
   type SessionDiagnostics,
   type SessionSpec,
   type SessionStatus,
+  type SessionTransport,
 } from '../shared/types';
 
 /** What the session's activity line reads once a held call is answered. */
@@ -151,6 +152,13 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   const sessionAllows = new Map<string, Set<string>>();
 
   /**
+   * Sessions whose agent is asking on a card only its own TUI can draw, by the
+   * tool that asked. PTY-backed sessions only: a structured one is asked in the
+   * app, on its control channel.
+   */
+  const agentOwnedAsks = new Map<string, string>();
+
+  /**
    * The stored answer for one tool call, or null when nothing has an opinion.
    *
    * Shared by both places a permission question can arrive: Claude's
@@ -187,6 +195,15 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
 
   hooks.evaluatePermission = decidePermission;
   hooks.onApprovalGone = (id) => emit('approval:gone', id);
+  // Which tools carry their own card is adapter knowledge, so the hook server
+  // is told rather than made to import it.
+  hooks.ownsItsOwnDialog = (payload) =>
+    Boolean(
+      approvalCardFor(
+        String(payload.tool_name ?? ''),
+        (payload.tool_input as Record<string, unknown> | undefined) ?? {},
+      ),
+    );
 
   /**
    * Puts one call on B5's bar, whichever channel it arrived on.
@@ -690,7 +707,31 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   codex.on('log', (line: string) => console.warn('[codex]', line));
 
   hooks.on('hook', ({ sessionId, event, payload }) => {
+    // A question the agent's own TUI is drawing gets no bar here (see
+    // `ownsItsOwnDialog`), so the activity line is the only thing that can say
+    // where it *can* be answered. Still plane 2 speaking: the agent fired the
+    // event that says a dialog is up.
+    //
+    // Remembered rather than written once, because the idle nudge that follows
+    // a permission dialog about a second later is mapped to "Claude needs your
+    // permission" and would otherwise replace this with a sentence that names
+    // no surface. Cleared the moment the call resolves.
+    if (event === 'PermissionRequest' && hooks.ownsItsOwnDialog?.(payload)) {
+      const session = ptys.get(sessionId);
+      if (session && !hasStructuredTransport(session)) {
+        agentOwnedAsks.set(sessionId, String(payload.tool_name ?? 'The agent'));
+      }
+    }
+    if (event === 'PostToolUse' || event === 'Stop' || event === 'SessionEnd') {
+      agentOwnedAsks.delete(sessionId);
+    }
+
     const update = mapClaudeHook(event, payload);
+    const asking = agentOwnedAsks.get(sessionId);
+    if (asking) {
+      update.status = 'needs-input';
+      update.activity = `${asking} is asking — answer it in the Terminal view`;
+    }
     if (update.status || update.activity) ptys.applyUpdate(sessionId, update);
 
     const transcript = payload.transcript_path;
@@ -712,6 +753,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       if (sessionId === e.id) threadToSession.delete(threadId);
     }
     sessionAllows.delete(e.id);
+    agentOwnedAsks.delete(e.id);
     // A dead process is holding nothing, so every bar asking about it comes
     // down rather than waiting for an answer that can no longer land.
     for (const [askId, ask] of controlAsks) {
@@ -821,8 +863,36 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
 
   // ------------------------------------------------------------ requests
 
+  /**
+   * How a session asked for without naming a transport is carried.
+   *
+   * The decision belongs here because the answers do: this process owns the
+   * adapters, so it always knows which agents have a structured conversation
+   * protocol and cannot be asked before it does. The renderer used to decide,
+   * reading the capability record it had fetched at start-up -- and a record
+   * that had not arrived, or whose one fetch failed, answered this question
+   * with a silent `'pty'`. What that produced was a Claude session with no
+   * control channel: its model, thinking and permission chips all declined,
+   * its questions were drawn only in a TUI, and nothing anywhere reported a
+   * failure. A client that names a transport is still honoured, so a caller
+   * that genuinely wants a terminal says so.
+   */
+  function resolveTransport(spec: Partial<SessionSpec>): SessionTransport {
+    if (spec.transport) return spec.transport;
+    // Both need the agent's *interactive* process, so neither can be a
+    // stream: `--remote-control` starts an interactive session by definition,
+    // and the background host is a daemon of the agent's own with an attach
+    // client for a terminal.
+    if (spec.background || spec.remoteControl) return 'pty';
+    const agent = spec.agent ?? 'claude';
+    return agentAdapters.get(agent)?.capabilities['structured-conversation'].ok
+      ? 'stream'
+      : 'pty';
+  }
+
   function createSession(spec: Partial<SessionSpec>) {
-    if (spec.transport === 'stream') {
+    const transport = resolveTransport(spec);
+    if (transport === 'stream') {
       const agent = spec.agent ?? 'claude';
       const answer =
         agentAdapters.get(agent)?.capabilities['structured-conversation'];
@@ -831,6 +901,21 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
           answer && !answer.ok
             ? answer.reason
             : `${agent} has no structured conversation protocol`,
+        );
+      }
+      // Only reachable when a client asked for `stream` *and* one of these,
+      // since `resolveTransport` never chooses it for them. Refused rather
+      // than half-honoured: the stream hosts build their own arguments, so
+      // publishing would be dropped and the background flag ignored while the
+      // snapshot went on claiming both.
+      if (spec.remoteControl) {
+        throw new Error(
+          'Remote Control publishes an interactive session, so it cannot run on a structured conversation transport.',
+        );
+      }
+      if (spec.background) {
+        throw new Error(
+          'A background-hosted session is carried by the agent’s own daemon, not by a structured conversation transport.',
         );
       }
       return agent === 'codex' ? createCodexConversationSession(spec) : createConversationSession(spec);
@@ -849,6 +934,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     }
     const snapshot = ptys.create({
       ...spec,
+      transport,
       command: resolvedCommand(spec.agent, spec.command),
     });
     if (mintedGrokSession?.sessionId === snapshot.id) {

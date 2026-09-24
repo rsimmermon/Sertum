@@ -181,10 +181,21 @@ export function openNewSessionDialog(
     const remoteNote = el('span', 'remote-control-note');
     remoteNote.textContent =
       'Steer this session from claude.ai or the Claude app. Its transcript is stored on Anthropic’s servers while connected.';
-    remoteCopy.append(remoteTitle, remoteNote);
+    // `--remote-control` starts an *interactive* session by definition, so a
+    // published session is PTY-backed: the agent's own TUI owns the control
+    // channel the chips and the in-app question cards ride on. That is a real
+    // trade rather than a detail, and it is stated before the box is ticked —
+    // it was found the other way round, by a session whose first question was
+    // only answerable in a terminal the reader had no way to reach.
+    const remoteCost = el('span', 'remote-control-note');
+    remoteCost.textContent =
+      'Published sessions run the agent’s own terminal: questions and plan cards are answered in its Terminal view, and the model, thinking and permission chips defer to it.';
+    remoteCost.hidden = true;
+    remoteCopy.append(remoteTitle, remoteNote, remoteCost);
     remoteWrap.append(remoteBox, remoteCopy);
     remoteBox.onchange = () => {
       remoteControl = remoteBox.checked;
+      remoteCost.hidden = !remoteControl;
     };
 
     function syncRemoteControl(): void {
@@ -197,6 +208,7 @@ export function openNewSessionDialog(
       if (!supported) {
         remoteBox.checked = false;
         remoteControl = false;
+        remoteCost.hidden = true;
       }
     }
     syncRemoteControl();
@@ -447,17 +459,12 @@ export function openNewSessionDialog(
           label: labelInput.value.trim() || suggestLabel(),
           cwd: chosen,
           args: AGENT_ARGS[agent],
-          // Chat is the product surface for every agent. Prefer a real
-          // structured transport where the adapter has one; otherwise keep
-          // the agent's PTY underneath its transcript-backed chat view.
-          // Shell alone remains a visible terminal.
-          transport:
-            agent !== 'shell' &&
-            capabilities?.[agent]['structured-conversation'].ok === true &&
-            !background &&
-            !remoteControl
-              ? 'stream'
-              : 'pty',
+          // No transport is named, deliberately: the daemon owns the adapters
+          // and therefore the answer, and it cannot be asked before it knows.
+          // This dialog used to decide from the capability record the window
+          // had fetched at start-up, which meant a record that had not landed
+          // silently started a PTY-backed session whose chips and question
+          // cards then all declined, with nothing reporting why.
           background,
           remoteControl,
         });

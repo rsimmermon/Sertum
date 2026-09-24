@@ -1197,6 +1197,14 @@ export interface ChatAttachment {
 
 /** The surface exposed to the renderer through the preload bridge. */
 export interface SertumApi {
+  /**
+   * Starts a session. Leave `transport` unset unless a terminal is genuinely
+   * what is wanted: the daemon owns the adapters, so it resolves the
+   * transport from the agent's declared `structured-conversation` answer and
+   * from `background`/`remoteControl`, both of which need an interactive
+   * process. A named transport is honoured, and an impossible combination is
+   * refused with a reason rather than half-applied.
+   */
   createSession(spec: Partial<SessionSpec>): Promise<SessionSnapshot>;
   listSessions(): Promise<SessionSnapshot[]>;
   sessionDiagnostics(id: string): Promise<SessionDiagnostics>;

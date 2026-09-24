@@ -100,6 +100,13 @@ export class HookServer extends EventEmitter {
     | null;
 
   /**
+   * Whether this call's own card *is* the question -- `AskUserQuestion`,
+   * `ExitPlanMode`. Injected for the same reason `evaluatePermission` is: the
+   * hook server knows hook shapes, not which tools carry their own dialog.
+   */
+  ownsItsOwnDialog?: (payload: Record<string, unknown>) => boolean;
+
+  /**
    * Announces a permission dialog waiting on B5's approval bar. Absent means
    * in-app approval is off, and the question stays where Claude put it.
    */
@@ -423,6 +430,19 @@ export class HookServer extends EventEmitter {
     // The same call is already held open on this session's own control
     // channel, where it is being answered once.
     if (this.hostAnswered.has(sessionId)) return null;
+
+    // A call whose card is itself the question is never an approve/deny here.
+    // This hook can carry `allow` or `deny` and nothing else, and for a
+    // question both are wrong: allowing runs the tool with no answer in it
+    // ("The user did not answer the questions"), denying cancels what the
+    // agent asked. A session reaching *this* hook is PTY-backed, which means
+    // its own TUI is drawing the real card with the options on it, so the
+    // honest move is to leave that card alone rather than stack a bar on top
+    // of it that cannot answer. Checked before the rules, exactly as the
+    // control channel's card path skips them: a rule is a policy about
+    // whether a call is safe to run, not an opinion on which option a person
+    // would pick.
+    if (this.ownsItsOwnDialog?.(payload)) return null;
 
     // A backstop, not the mechanism. A mode that means "do not ask" should
     // not produce a Sertum bar even if a dialog somehow reaches us, because a

@@ -315,6 +315,18 @@ chosen value lives on `SessionSpec`/`SessionSnapshot`, which lets both the
 single-pane and split-pane headers render the REMOTE chip without inspecting
 terminal output.
 
+**Publishing costs the structured transport, and C1 says so before the box is
+ticked.** `--remote-control` starts an *interactive* session by definition, so
+a published session is necessarily PTY-backed: its TUI owns the stream the
+control channel would ride, which means the model, thinking and permission
+chips all decline, and questions and plan cards are drawn by the agent itself
+rather than as in-app cards. That is a real trade, and it was found the wrong
+way round -- by a fresh install whose first session was published, whose three
+chips were therefore dead, and whose first `AskUserQuestion` was only
+answerable in a terminal the app had no way to show. Both halves are answered
+now: C1 states the cost, and the pane can show that terminal (see "The
+conversation view").
+
 Sertum does not enumerate Remote Control sessions running on other machines.
 Claude currently exposes that account roster only through an interactive slash
 command, so reading it would require parsing TUI pixels and violate the two
@@ -425,8 +437,17 @@ remains a terminal. What it reads is each agent's transcript on disk, the
 same class of source as a hook payload, so this does not touch the
 two-planes rule.
 
-Five rules constrain any change here:
+Seven rules constrain any change here:
 
+- **The conversation is the default surface, not the only one.** A PTY-backed
+  agent session can be switched to its terminal, from the pane header, its row
+  menu or the palette; a stream session has no terminal to offer and says so
+  instead. This exists because such a session's *own* dialogs are pixels --
+  Claude Code's folder-trust prompt on a fresh machine, its `AskUserQuestion`
+  card, its plan card -- and pixels Sertum never shows are a turn nobody can
+  answer. The terminal is built on the first switch and painted from the
+  daemon's ring through `pty/replay`, because a pane collecting bytes off
+  screen was measured serializing to nothing.
 - **Nothing is ever assembled as an HTML string.** Every node is created and
   every leaf filled through `textContent` or a text node, so a transcript
   can no more inject markup than before `renderer/message-text.ts` existed.
@@ -556,7 +577,25 @@ an id and answer every poll "Session not found." Protocol 5 adds attachments
 to `chat/send`; a protocol 4 daemon would otherwise accept the text while
 silently dropping the files. Protocol 6 replaces Codex's old single-policy
 mode ids with terminal-equivalent permission tuples; a protocol 5 daemon
-cannot safely interpret the new choices.
+cannot safely interpret the new choices. Protocol 7 gives the daemon the
+transport decision, so the GUI sends no `transport` at all; a protocol 6
+daemon reads that absence as "not stream" and quietly starts a PTY session
+instead.
+
+**The daemon decides how a session is carried.** `session/create` treats an
+absent `transport` as "you decide": stream where the agent declares
+`structured-conversation`, pty for `background` or `remoteControl` — both of
+which need the interactive process — and pty for anything that declined. A
+client that names a transport is honoured, and a combination that cannot exist
+(`stream` with either of those flags) is refused with a reason rather than
+half-applied. The decision sits here because the answers do: the renderer used
+to make it from the capability record fetched at start-up, so a record that had
+not arrived — or whose single fetch failed — answered it with a silent `'pty'`
+and produced a Claude session with no control channel, its chips declining and
+its questions drawn only in a TUI, with nothing reporting a failure. For the
+same reason the window now retries that fetch instead of caching a failure,
+and a stream session's pane is chosen from its snapshot rather than from a
+capability answer — it has no terminal, so no answer can make one.
 
 **Terminals come back.** The daemon keeps a per-session ring of recent raw
 output (512KB). A reopened GUI asks `pty/replay` when it first builds a
@@ -916,6 +955,14 @@ the reason **which event is held is the whole design**.
 - **A card that is itself the question** — `AskUserQuestion`, `ExitPlanMode`
   — is drawn as that card rather than an approve/deny bar, skips the rules
   and the session-scoped allows, and never writes a rule.
+- **And at the hook boundary it is not asked about at all.** The hook carries
+  `allow` or `deny` and nothing else, and for a question both are wrong:
+  allowing runs the tool with no answer in it, denying cancels what the agent
+  asked. A call reaching that boundary belongs to a PTY-backed session, whose
+  own TUI is already drawing the real card, so `ownsItsOwnDialog` declines to
+  hold it and the session's activity names the Terminal view as where it can
+  be answered — a pointer that has to outlive the idle nudge arriving a second
+  later, or it is replaced by a sentence naming no surface.
 - **The permission mode is read, never assumed.** `SessionSnapshot.permissionMode`
   is null until the agent has said. Claude reports one mode over
   `set_permission_mode`; Codex reports the effective permission profile,

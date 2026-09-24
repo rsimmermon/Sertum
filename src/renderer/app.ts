@@ -49,6 +49,7 @@ import {
   DEFAULT_SETTINGS,
   PANE_COUNT,
   type AgentCapabilities,
+  type CapabilityAnswer,
   type AgentKind,
   type MenuState,
   type PaneLayout,
@@ -139,6 +140,27 @@ export class App {
    */
   private chatPanes = new Map<string, ChatPane>();
   /**
+   * Sessions the reader has switched from their conversation to their
+   * terminal.
+   *
+   * Only a PTY-backed agent session can be in here, and the reason it must be
+   * reachable at all is that such a session's *own* dialogs live in pixels
+   * Sertum was drawing and never showing. A session published to Remote
+   * Control is the case that found this: `--remote-control` starts an
+   * interactive session by definition (`claude --help`, 2.1.281), so it is
+   * necessarily PTY-backed, and a PTY-backed Claude session has no control
+   * channel — its `AskUserQuestion` card is drawn by its own TUI, and its
+   * model, thinking and permission chips all decline with "use the agent's
+   * terminal controls for this session". With the terminal unreachable that
+   * was advice nobody could follow and a question nobody could answer.
+   *
+   * The conversation stays the default for every agent: this is an override
+   * the reader asks for, per session, and it is not remembered across
+   * launches. Both panes live at once either way, so switching costs a DOM
+   * move.
+   */
+  private terminalViews = new Set<string>();
+  /**
    * Sessions that predate this window — the daemon kept them alive across a
    * GUI restart. Their terminals are repainted from the daemon's replay
    * buffer, and live bytes are held back until the replay lands so nothing
@@ -204,6 +226,7 @@ export class App {
     openSettings: qs('#open-settings'),
     paneStop: qs('#pane-stop') as HTMLButtonElement,
     paneInfo: qs('#pane-info') as HTMLButtonElement,
+    paneSurface: qs('#pane-surface') as HTMLButtonElement,
     sidebarList: qs('#sidebar-list'),
     sidebarCount: qs('#sidebar-count'),
     sidebarHead: qs('#sidebar-head'),
@@ -264,6 +287,12 @@ export class App {
     this.el.openSettings.onclick = () => void this.promptSettings();
     this.el.paneStop.onclick = () => {
       if (this.activeId) void api.killSession(this.activeId);
+    };
+    this.el.paneSurface.onclick = () => {
+      const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
+      if (active && this.canShowTerminal(active).ok) {
+        this.setTerminalView(active.id, !this.terminalViews.has(active.id));
+      }
     };
     this.el.paneInfo.onclick = () => {
       const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
@@ -382,15 +411,17 @@ export class App {
       }
     };
     void pollAdapters();
-    setInterval(() => void pollAdapters(), 4000);
+    setInterval(() => {
+      void pollAdapters();
+      if (!this.capabilities) void this.readCapabilities().then(() => this.render());
+    }, 4000);
 
     // Capabilities are declared by the adapters and fixed for the app's life,
-    // unlike adapter health above, so one read is enough.
-    try {
-      this.capabilities = await api.agentCapabilities();
-    } catch {
-      this.capabilities = null;
-    }
+    // so one *successful* read is enough -- but a read is a round trip to the
+    // daemon and can fail, and the answers decide what every session control
+    // is allowed to do. So a failure is retried on the adapter poll above
+    // rather than cached as "nothing is possible" for the life of the window.
+    await this.readCapabilities();
 
     for (const s of await api.listSessions()) {
       this.sessions.set(s.id, s);
@@ -413,6 +444,24 @@ export class App {
     // empty state renders on top of tabs that already exist.
     if (!this.activeId) this.activeId = [...this.sessions.keys()][0] ?? null;
     this.render();
+  }
+
+  /**
+   * Reads the adapter capability answers, leaving the last good ones in place
+   * on failure.
+   *
+   * Nulling them on a failed read is what made a transient daemon round trip
+   * look like an agent that can do nothing: every chip disabled, and -- back
+   * when the renderer chose the transport -- the next session started as a
+   * PTY. The daemon owns that choice now, and this keeps asking until it has
+   * an answer.
+   */
+  private async readCapabilities(): Promise<void> {
+    try {
+      this.capabilities = await api.agentCapabilities();
+    } catch {
+      // Left as it was: absent stays absent, and present stays present.
+    }
   }
 
   /**
@@ -915,6 +964,7 @@ export class App {
     this.panes.delete(id);
     this.chatPanes.get(id)?.dispose();
     this.chatPanes.delete(id);
+    this.terminalViews.delete(id);
     this.sessions.delete(id);
     // Ending a session vacates whatever pane held it. Backfilling only makes
     // sense in a single-pane window: with a split, an empty pane is a drop
@@ -1382,6 +1432,7 @@ export class App {
     const modeAvailable = permissionModeAvailability(s, this.capabilities);
     const modelAvailable = modelAvailability(s, this.capabilities);
     const effortAvailable = effortAvailability(s, this.capabilities);
+    const terminalView = this.canShowTerminal(s);
     openSessionMenu(x, y, s.label, [
       { label: 'Focus tab', accel: '⏎', onSelect: () => this.select(s.id) },
       { label: 'Rename…', onSelect: () => this.beginRename(s.id) },
@@ -1397,6 +1448,16 @@ export class App {
           this.splitTarget('right') !== null
             ? () => this.openInNewPane(s.id)
             : undefined,
+      },
+      {
+        // A PTY-backed session's own dialogs are pixels, so the terminal is
+        // the only place some of them can be answered. Declined with a reason
+        // where there is no terminal to show, exactly as the chips below are.
+        label: this.terminalViews.has(s.id) ? 'Show conversation' : 'Show terminal',
+        note: terminalView.ok ? undefined : terminalView.reason,
+        onSelect: terminalView.ok
+          ? () => this.setTerminalView(s.id, !this.terminalViews.has(s.id))
+          : undefined,
       },
       // Two views onto one PTY is design G8, which is not built.
       { label: 'Mirror in new pane', accel: '⌘⌥M' },
@@ -1763,6 +1824,17 @@ export class App {
             : undefined,
       },
       {
+        glyph: '▭',
+        label:
+          active && this.terminalViews.has(active.id)
+            ? 'Show focused session’s conversation'
+            : 'Show focused session’s terminal',
+        run:
+          active && this.canShowTerminal(active).ok
+            ? () => this.setTerminalView(active.id, !this.terminalViews.has(active.id))
+            : undefined,
+      },
+      {
         glyph: '⚙',
         label: 'Settings…',
         accel: '⌘,',
@@ -2089,7 +2161,11 @@ export class App {
    * and out of any open dialog, since both leave the pane grid mounted.
    */
   private focusActivePane(): void {
-    const key = `${this.layout}:${this.maximised}:${this.focusedSlot}:${this.activeId}`;
+    // The surface is part of the key: switching a session between its
+    // conversation and its terminal changes which element the caret belongs
+    // in, without changing the pane it belongs to.
+    const surface = this.activeId && this.showsChat(this.activeId) ? 'chat' : 'term';
+    const key = `${this.layout}:${this.maximised}:${this.focusedSlot}:${this.activeId}:${surface}`;
     if (key === this.focusKey) return;
     this.focusKey = key;
     if (!this.activeId) return;
@@ -2127,31 +2203,33 @@ export class App {
     // from the transcript on disk, which is why a monitored session can have
     // one when it cannot have a terminal.
     if (this.showsChat(session.id)) {
-      // The terminal keeps collecting the PTY's bytes while the chat view is
-      // up (xterm buffers writes before open), so switching back shows the
-      // scrollback the pixels produced in the meantime. A stream session has
-      // no bytes to collect and never gets one.
-      if (
-        session.origin !== 'monitored' &&
-        !hasStructuredTransport(session) &&
-        !this.panes.has(session.id)
-      ) {
-        this.panes.set(session.id, new TerminalPane(session, this.settings));
-        if (this.needsReplay.has(session.id)) void api.replayPty(session.id);
-      }
+      // No terminal is built while the conversation is up. It used to be,
+      // on the assumption that xterm buffers writes made before `open()` --
+      // measured against a live PTY session, it does not: a pane that had
+      // been collecting bytes off screen serialized to zero characters, and
+      // the reader who switched to it saw a blank screen. The daemon's ring
+      // is the authority on what that PTY has printed, so the terminal is
+      // built on the first switch and painted from `pty/replay`, which is the
+      // same path a session that predates this window already takes.
+      const interrupt: CapabilityAnswer = this.capabilities?.[session.agent][
+        'turn-interrupt'
+      ] ?? { ok: false, reason: 'Agent capabilities are still loading.' };
       let chat = this.chatPanes.get(session.id);
       if (!chat) {
         chat = new ChatPane(
           session,
-          this.capabilities?.[session.agent]['turn-interrupt'] ?? {
-            ok: false,
-            reason: 'Agent capabilities are still loading.',
-          },
+          interrupt,
           (askId) => this.answeredApproval(askId),
           this.capabilities,
         );
         this.chatPanes.set(session.id, chat);
       }
+      // Restated on every render rather than trusted from construction: a
+      // stream session's pane is built from its snapshot alone (see
+      // `showsChat`), so it can exist before the capability answers do, and a
+      // pane holding the copy it was born with would draw every chip disabled
+      // reading "still loading" for the life of the window.
+      chat.setCapabilities(this.capabilities, interrupt);
       chat.update(session);
       chat.setApprovals(this.approvalsFor(session.id));
       return {
@@ -2187,12 +2265,75 @@ export class App {
     };
   }
 
-  /** Agents are always chat; a shell is always its terminal. */
+  /**
+   * Agents are chat by default; a shell is always its terminal.
+   *
+   * The one exception is a PTY-backed agent session whose reader has asked
+   * for its terminal — see `terminalViews`. The override is re-checked
+   * against the session rather than trusted, so a stream session that somehow
+   * ended up in that set is still drawn as the conversation it is.
+   */
   private showsChat(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
     if (session.agent === 'shell') return false;
-    return Boolean(this.capabilities?.[session.agent]['conversation-view'].ok);
+    // A stream session has no terminal at all, so the conversation is its only
+    // possible surface and no capability answer can change that. Read from the
+    // snapshot rather than from the answers because the answers are a round
+    // trip that can be slow or fail: while they were missing, this fell
+    // through to the terminal branch and built an xterm for a session with no
+    // PTY behind it -- a pane that could only ever stay empty.
+    if (hasStructuredTransport(session)) return true;
+    if (!this.capabilities?.[session.agent]['conversation-view'].ok) return false;
+    return !(this.terminalViews.has(id) && this.canShowTerminal(session).ok);
+  }
+
+  /**
+   * Whether this session has a terminal of its own to show, or the reason it
+   * does not — the same "declined is an answer" shape every other control
+   * here uses, so the menu and the header can both state it.
+   */
+  private canShowTerminal(
+    s: SessionSnapshot,
+  ): { ok: true } | { ok: false; reason: string } {
+    if (s.agent === 'shell') return { ok: false, reason: 'A shell is already its terminal.' };
+    if (s.origin !== 'owned') {
+      return {
+        ok: false,
+        reason:
+          'A session started elsewhere owns its own PTY; no OS lets Sertum draw it here.',
+      };
+    }
+    if (hasStructuredTransport(s)) {
+      return {
+        ok: false,
+        reason: 'This session is a structured conversation — it has no terminal at all.',
+      };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Switches one session between its conversation and its terminal.
+   *
+   * Nothing is started, stopped or re-bound: both panes already exist and the
+   * PTY has been collecting bytes the whole time, so this is a DOM move and a
+   * refit. The caret follows, because a TUI dialog is answered with arrow
+   * keys and a terminal nobody is typing into is no better than a hidden one.
+   */
+  private setTerminalView(id: string, terminal: boolean): void {
+    if (terminal) {
+      this.terminalViews.add(id);
+      // First switch: there is no xterm yet, and everything this PTY has
+      // printed is in the daemon's ring. Marking it for replay holds live
+      // bytes back until that history lands, so the two cannot interleave --
+      // exactly what a GUI restart does for a session it inherited.
+      if (!this.panes.has(id)) this.needsReplay.add(id);
+    } else {
+      this.terminalViews.delete(id);
+    }
+    this.focusSession(id);
+    this.render();
   }
 
   /**
@@ -2359,6 +2500,19 @@ export class App {
     // Ends the process and keeps the row, exactly as Session > Stop Session
     // and the row menu do. Enabled only while there is a process to end, so
     // the button reports whether it can act rather than failing silently.
+    // Offered only where there are two surfaces to move between, and hidden
+    // rather than disabled: a stream session has no terminal at all, so a
+    // greyed-out Terminal button would be inviting the reader to look for one.
+    const twoSurfaces = Boolean(active && this.canShowTerminal(active).ok);
+    const onTerminal = Boolean(active && this.terminalViews.has(active.id));
+    this.el.paneSurface.hidden = !twoSurfaces;
+    if (twoSurfaces && active) {
+      this.el.paneSurface.textContent = onTerminal ? 'Conversation' : 'Terminal';
+      this.el.paneSurface.title = onTerminal
+        ? `Back to ${active.label}’s conversation`
+        : `Show ${active.label}’s terminal — where this agent draws its own questions and plan cards`;
+    }
+
     const running = Boolean(active && active.pid !== null);
     this.el.paneInfo.disabled = !active;
     this.el.paneInfo.title = active

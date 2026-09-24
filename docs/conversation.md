@@ -7,9 +7,10 @@ there.
 The truth plane extends from status to content without a new channel. Every
 Claude, Codex and Grok pane renders the transcript as a conversation — user
 and assistant messages, collapsed thinking, and tool calls paired with their
-results. When the adapter still needs a PTY, it keeps running underneath and
-collecting bytes, but there is no terminal/chat choice in the product UI.
-Shell declines the conversation capability and remains a normal terminal.
+results. When the adapter still needs a PTY it keeps running underneath, and
+the reader can switch that pane to it — see "A PTY-backed session's terminal
+has to be reachable" below. Shell declines the conversation capability and
+remains a normal terminal.
 
 What it reads is each agent's own transcript on disk, through
 `main/adapters/conversation.ts` — the same class of source as a hook payload,
@@ -109,6 +110,55 @@ up.
 What stage 1 deliberately does not do: no synthetic "pending" messages (a
 sent message is acknowledged under the composer until the agent records it),
 and no structured input channel — that is stage 2, below.
+
+## A PTY-backed session's terminal has to be reachable
+
+The conversation is every agent's default surface, and for a stream session it
+is the only one there is. A **PTY-backed** agent session is different, and the
+difference is not cosmetic: that session's own dialogs are drawn in pixels,
+and a pixel Sertum never shows is a turn nobody can answer.
+
+What is drawn there, all of it verified on Claude Code 2.1.281 by driving a
+real PTY-backed session:
+
+- **The folder-trust prompt.** A first run in an untrusted folder opens with
+  *Quick safety check: Is this a project you created or one you trust?* and
+  `❯ No, exit / Yes, I trust this folder`. A fresh machine has trusted nothing,
+  so this is the first thing such a session shows — and until the terminal was
+  reachable it was also the last: the conversation view sat empty behind a TUI
+  waiting on an arrow key.
+- **`AskUserQuestion`.** `☐ Indentation / Do you prefer tabs or spaces for
+  indentation? / ❯ 1. Tabs … Enter to select · ↑/↓ to navigate`.
+- **`ExitPlanMode`**, for the same reason: the plan card is the consent
+  surface.
+
+How a session comes to be PTY-backed at all, when Claude declares
+`structured-conversation`: Remote Control. `--remote-control` is documented as
+"Start an interactive session with Remote Control enabled", so publishing and
+a structured stream are mutually exclusive, and C1's toggle therefore selects
+`transport: 'pty'`. Claude's `--bg` background host is the other route, and
+Grok is PTY-backed always.
+
+**The terminal is painted from the daemon's ring, not from bytes the pane
+collected.** The pane used to be built while the conversation was up, on the
+assumption that xterm buffers writes made before `open()`. Measured against a
+live PTY session, it does not: `SerializeAddon` returned **0 characters** from
+a pane that had been receiving the TUI's output off screen for minutes, and
+the reader who switched to it got a blank screen — while an explicit
+`pty/replay` on the same pane returned 970 characters containing the whole
+trust prompt. So the terminal is now built on the first switch and the session
+is marked `needsReplay`, which is the mechanism a GUI restart already uses:
+live bytes are held until the replayed history lands, so the two cannot
+interleave.
+
+**A question's tool line reads as the question.** `claudeToolDetail` picks the
+one field a person would read, and `AskUserQuestion` has none of the keys it
+looks for, so the line used to be the raw input — `{"questions":[{"question":
+…` across the pane, which is what an unanswerable question looked like on
+screen. Its `questions[].question` values are joined instead, shape-checked so
+a record in another shape falls back to the JSON dump rather than to a wrong
+summary. The card above the composer is still where a stream session's
+question is *answered*; this line is only the transcript's record of it.
 
 ## A poll carries a version, not the conversation
 

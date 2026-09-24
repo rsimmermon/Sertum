@@ -296,6 +296,44 @@ does not know, so it keeps the honest refusal naming that limitation. The
 plan is rendered by `appendMessageText`, the transcript's own renderer, under
 the same promise: nothing is assembled as an HTML string.
 
+Re-verified on Claude Code 2.1.281, since this whole path depends on a
+generated protocol rather than a documented contract: a stream host declaring
+`--permission-prompt-tool stdio` received `can_use_tool` for `AskUserQuestion`
+2.4s into the turn, carrying `requires_user_interaction: true` and the
+complete `questions[]` with both options and their descriptions;
+`approvalCardFor` built the `questions` card from it, the deny-channel answer
+was accepted, and the turn finished 3s later.
+
+### A card is not asked about at the hook boundary
+
+`PermissionRequest` also fires for these calls, and for a **PTY-backed**
+session -- which is the only kind that reaches this hook, since a stream
+session is marked `hostAnswered` and skipped -- it used to raise an ordinary
+approve/deny bar: `{tool: 'AskUserQuestion', card: null}`, captured from the
+running app. Every answer that bar could give is wrong. `allow` runs the tool
+with nothing in it and the model reads "The user did not answer the
+questions"; `deny` cancels what the agent asked. Meanwhile the session's own
+TUI is drawing the real card, with the options on it, four lines further down
+the same pane the reader could not see.
+
+So `HookServer.ownsItsOwnDialog` -- injected by the fabric, because which
+tools carry their own card is adapter knowledge and the hook server knows only
+hook shapes -- declines to hold such a call at all, before the rules, for the
+same reason the control channel's card path skips them. Claude's own dialog
+then stands, and it is answerable because that terminal is now reachable (see
+[conversation.md](conversation.md)).
+
+The pointer to it is the activity line, and it has to be *remembered* rather
+than written once. The event order for one real question was `PreToolUse` →
+`PermissionRequest` → `Notification`, and that last one maps to "Claude needs
+your permission" — so an activity written at `PermissionRequest` was replaced
+about a second later by a sentence naming no surface. `agentOwnedAsks` holds
+the asking tool's name until `PostToolUse`, `Stop`, `SessionEnd` or process
+exit, and every mapped update in between reads "AskUserQuestion is asking —
+answer it in the Terminal view". Verified end to end: the line held while the
+TUI card was up, the question was answered with ↓ and Enter from the Terminal
+view, and `PostToolUse` cleared it back to the agent's own activity.
+
 ### The permission mode is a setting, and it is set beside the composer
 
 How much of a session you are asked about at all is decided before any of the

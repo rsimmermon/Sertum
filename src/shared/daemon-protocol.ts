@@ -19,6 +19,13 @@ import path from 'node:path';
 /**
  * Bumped on any incompatible change to methods, params or events.
  *
+ * Protocol 7 moves the transport decision into the daemon: `session/create`
+ * now treats an absent `transport` as "you decide", and the GUI stopped
+ * sending one. A protocol 6 daemon reads that absence as "not stream" and
+ * starts a PTY-backed session instead -- which is the precise failure this
+ * change exists to remove, and silent, so it must be refused at the
+ * handshake rather than discovered by a reader whose chips have gone grey.
+ *
  * Protocol 6 replaces Codex's approval-policy-only mode ids with the four
  * permission presets reported by Codex 0.154. An older client could otherwise
  * send a retired `codex-untrusted` value to a daemon that now expects a full
@@ -33,7 +40,7 @@ import path from 'node:path';
  * poll "Session not found." -- which is exactly why the handshake refuses
  * rather than trying.
  */
-export const DAEMON_PROTOCOL = 6;
+export const DAEMON_PROTOCOL = 7;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }

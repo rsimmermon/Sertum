@@ -9,7 +9,28 @@ An agent can use a structured stream rather than a PTY.
 a stream session has no terminal — not hidden, nonexistent. C1 no longer asks
 the user to choose a transport: Claude declares `structured-conversation` and
 therefore starts as a stream unless Remote Control or background hosting needs
-its interactive process; the surface remains chat either way. Codex also declares this capability and
+its interactive process; the surface remains chat either way, and a session
+that kept its PTY can be switched to it (see
+[conversation.md](conversation.md)).
+
+Which of the two a new session gets is resolved in `sertumd`, not in the
+window: `session/create` reads an absent `transport` as "you decide" and
+answers it from the agent's own declared `structured-conversation` capability
+(protocol 7). The renderer decided this until a fresh install showed what that
+costs -- the capability record is a round trip, and a window that had not
+completed it answered "pty", starting a Claude session with no control channel
+and no error. An explicitly named transport is still honoured, and `stream`
+asked for together with `remoteControl` or `background` is refused with its
+reason instead of silently dropping the flag the stream hosts cannot carry.
+
+Remote Control is not a preference among those two -- it is exclusive with the
+stream, and the flag says so: `--remote-control [name]` is documented as
+"Start an interactive session with Remote Control enabled" (`claude --help`,
+2.1.281). So a published session is PTY-backed, its TUI owns the pipe a
+control channel would need, and every capability declaring `requires:
+'structured-conversation'` correctly declines for it. C1 states that cost
+beside the toggle rather than leaving it to be discovered by a reader whose
+chips have all gone grey. Codex also declares this capability and
 starts an owned app-server thread, without a TUI. Grok declines (no input
 channel) and retains a PTY beneath the same chat UI. A shell declines
 and is the one session kind whose PTY is shown.

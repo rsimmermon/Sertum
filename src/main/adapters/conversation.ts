@@ -222,12 +222,39 @@ function claudeToolDetail(input: unknown): string | null {
   for (const key of ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt']) {
     if (typeof o[key] === 'string' && o[key]) return cap(o[key] as string, TOOL_CAP);
   }
+  // A question's input has none of those keys, so it used to fall through to
+  // the JSON dump below -- which is what an unanswerable question looked like
+  // on screen: a wall of `{"questions":[{"question":...` where the reader
+  // expected to be asked something. The card above the composer is still
+  // where it is *answered*; this line is the transcript's record of it, and it
+  // reads as the question either way.
+  const asked = questionText(o.questions);
+  if (asked) return cap(asked, TOOL_CAP);
   try {
     const json = JSON.stringify(input);
     return json === '{}' ? null : cap(json, TOOL_CAP);
   } catch {
     return null;
   }
+}
+
+/**
+ * `AskUserQuestion`'s input, read as the questions it asks.
+ *
+ * Shape-checked rather than trusted: a transcript is data, and a record whose
+ * `questions` is not the expected array falls back to the JSON dump rather
+ * than to a wrong summary.
+ */
+function questionText(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  const asked = value
+    .map((q) =>
+      q && typeof q === 'object' && typeof (q as Record<string, unknown>).question === 'string'
+        ? ((q as Record<string, unknown>).question as string).trim()
+        : '',
+    )
+    .filter(Boolean);
+  return asked.length ? asked.join(' · ') : null;
 }
 
 // ------------------------------------------------------------------- Codex

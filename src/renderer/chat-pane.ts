@@ -378,6 +378,28 @@ export class ChatPane {
     this.applySession(session);
   }
 
+  /**
+   * Re-reads the adapter answers this pane draws its controls from.
+   *
+   * They were a constructor argument alone, on the reasoning that capabilities
+   * are fixed for the app's life -- true of the answers, not of whether this
+   * window has them yet. A stream session's pane is built from its snapshot
+   * without consulting them, so it can exist first, and a pane keeping the
+   * copy it was born with would draw every chip disabled reading "Agent
+   * capabilities are still loading" for as long as the window lived. The app
+   * restates them on every render instead, so the pane converges on the real
+   * answers whenever they arrive.
+   */
+  setCapabilities(
+    capabilities: Record<AgentKind, AgentCapabilities> | null,
+    interruptCapability: CapabilityAnswer,
+  ): void {
+    if (this.capabilities === capabilities) return;
+    this.capabilities = capabilities;
+    this.interruptCapability = interruptCapability;
+    this.applySession(this.session);
+  }
+
   /** The calls this session is holding open, oldest first. */
   setApprovals(requests: PendingApproval[]): void {
     this.approvals.setRequests(requests);

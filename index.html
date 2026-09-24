@@ -90,6 +90,15 @@
                 aria-haspopup="dialog"
                 title="Pane layout  (⌘⌥L)"
               >▢ Single</button>
+              <!-- A PTY-backed agent session draws its own dialogs in pixels,
+                   so its terminal has to be reachable; hidden entirely for a
+                   session that has no terminal of its own. -->
+              <button
+                class="btn ghost"
+                id="pane-surface"
+                type="button"
+                hidden
+              >Terminal</button>
               <button class="btn ghost" id="pane-info" type="button">Info</button>
               <button class="btn ghost" disabled>Diff</button>
               <button class="btn ghost" id="pane-stop" type="button">Stop</button>
