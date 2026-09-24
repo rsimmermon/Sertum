@@ -218,6 +218,19 @@ async function verifyPackagedDaemon(
   }
 }
 
+/**
+ * Shared by the deb and rpm makers. Both installers default `bin` to
+ * package.json's lowercase name, but Packager named the executable after
+ * productName, so without it each fails looking for a `sertum` that is not
+ * there.
+ */
+const linuxPackageOptions = {
+  bin: 'Sertum',
+  icon: 'assets/icon.png',
+  categories: ['Development' as const],
+  genericName: 'Coding agent manager',
+};
+
 const config: ForgeConfig = {
   packagerConfig: {
     // node-pty also ships plain executables it exec()s — spawn-helper on
@@ -278,17 +291,8 @@ const config: ForgeConfig = {
       loadingGif: 'assets/install-spinner.gif',
     }),
     new MakerZIP({}, ['darwin']),
-    new MakerRpm({ options: { icon: 'assets/icon.png' } }),
-    new MakerDeb({
-      options: {
-        // electron-installer-debian defaults to package.json's lowercase name;
-        // Packager named the executable after productName.
-        bin: 'Sertum',
-        icon: 'assets/icon.png',
-        categories: ['Development'],
-        genericName: 'Coding agent manager',
-      },
-    }),
+    new MakerRpm({ options: linuxPackageOptions }),
+    new MakerDeb({ options: linuxPackageOptions }),
   ],
   hooks: {
     postPackage: async (_forgeConfig, { platform, outputPaths }) => {

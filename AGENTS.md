@@ -1264,8 +1264,9 @@ produces `out/make/deb/x64/sertum_<version>_amd64.deb`; verified launching on
 KDE Plasma (Wayland), spawning `sertumd` and opening a PTY. Name the target
 by its short name: `--targets @electron-forge/maker-deb` builds a *fresh*
 maker with none of `forge.config.ts`'s options (default icon, `bin: sertum`,
-which does not exist because Packager names the executable `Sertum`). A bare
-`make` fails without `rpmbuild` installed. node-pty has no Linux prebuild, so
+which does not exist because Packager names the executable `Sertum`). The rpm
+maker shares those options (`linuxPackageOptions`); `--targets rpm` needs
+`rpmbuild`, and so does a bare `make`, which fails without it. node-pty has no Linux prebuild, so
 `npm install` compiles it (needs `build-essential` and `python3`); Linux
 PTYs use `forkpty`, so the macOS spawn-helper problems do not apply.
 
