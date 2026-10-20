@@ -1305,6 +1305,11 @@ that have cost this project real time. The load-bearing ones:
   single-instance launches.
 - **`npm install` needs an `allowScripts` block** under npm 11, or `node-pty`
   ends up with no native binary at all.
+- **nvm for Windows' module firewall blocks Codex after every update**, and
+  under the headless daemon it does so silently, waiting on a `[y/N]` with no
+  console. A failed app-server start keeps its stderr, detects that waiting
+  prompt from the process table, and offers Retry and an explicit Trust and
+  retry from the status bar and C1 -- never an automatic trust.
 
 **Linux (.deb).** `npx electron-forge make --targets deb` on Ubuntu 26.04
 produces `out/make/deb/x64/sertum_<version>_amd64.deb`; verified launching on

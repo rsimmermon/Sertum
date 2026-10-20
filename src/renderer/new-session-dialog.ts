@@ -8,6 +8,7 @@ import type {
 import { openAgentPicker } from './agent-picker';
 import { agentIcon } from './agent-icon';
 import { agentName } from './chips';
+import { openCodexRecovery } from './codex-recovery';
 
 type Isolation = 'main' | 'new' | 'existing';
 
@@ -278,6 +279,19 @@ export function openNewSessionDialog(
     // found. Separate from folderNote/isoNote so a spawn failure never
     // overwrites folder-validity or worktree feedback the user still needs.
     const createNote = el('div', 'note');
+    // Offered only when Codex failed because its app server is down: the
+    // recovery shows the refusal in full and can retry or repair it, and a
+    // server that comes back finishes the create the user already asked for.
+    const recover = btn('Fix Codex app server…', 'small', () => void recoverCodex());
+    recover.hidden = true;
+    async function recoverCodex(): Promise<void> {
+      const status = await api.adapterStatus().catch(() => null);
+      if (!status) return;
+      if (status.codex.connected || (await openCodexRecovery(status.codex))) {
+        recover.hidden = true;
+        void done();
+      }
+    }
 
     dlg.append(
       title,
@@ -298,6 +312,7 @@ export function openNewSessionDialog(
       labelEl('TAB LABEL'),
       labelInput,
       createNote,
+      recover,
       footer,
     );
 
@@ -473,14 +488,21 @@ export function openNewSessionDialog(
         create.toggleAttribute('disabled', false);
         cancel.toggleAttribute('disabled', false);
         create.textContent = CREATE_LABEL;
+        // A Codex whose binary was found but whose app server refused to run
+        // is not a location problem -- Detect would find the binary and
+        // contradict the advice. Its own reason is already in the message.
+        const serverDown =
+          agent === 'codex' &&
+          (await api.adapterStatus().then((s) => !s.codex.connected, () => false));
+        recover.hidden = !serverDown;
         // Settings > Agents holds a path per *managed* agent, so pointing a
         // failed Shell at it sends the reader looking for a control that is
         // not there -- which is what happened when node-pty's own helper lost
         // its executable bit and Shell was the only session that could fail.
         setCreateNote(
           'error',
-          `Could not start ${agentLabel(agent)}: ${errorMessage(err)}.` +
-            (agent === 'shell' ? '' : ' Check its location in Settings → Agents.'),
+          `Could not start ${agentLabel(agent)}: ${errorMessage(err)}` +
+            (agent === 'shell' || serverDown ? '' : ' Check its location in Settings → Agents.'),
         );
         return;
       }
@@ -540,7 +562,13 @@ function agentLabel(agent: AgentKind): string {
   return agentName(agent);
 }
 function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const message = err instanceof Error ? err.message : String(err);
+  // Electron wraps a rejected invoke as "Error invoking remote method 'x':
+  // Error: <message>"; only the message is the daemon's answer.
+  const bare = message
+    .replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
+    .trim();
+  return /[.!?:]$/.test(bare) ? bare : `${bare}.`;
 }
 function loadRecents(): string[] {
   try {

@@ -29,6 +29,7 @@ import {
   recordAppServer,
   resolveCodexBinary,
 } from '../main/adapters/codex-app-server';
+import { nvmFirewallRepair, runNvmRepair } from '../main/adapters/nvm-firewall';
 import { discoverSessions } from '../main/adapters/discovery';
 import { mapGrokEvent } from '../main/adapters/grok';
 import {
@@ -72,6 +73,7 @@ import {
   type ApprovalAnswer,
   type BinaryDetection,
   type ChatAttachment,
+  type CodexRecovery,
   type ConversationRead,
   type DiscoveredSession,
   type ManagedAgent,
@@ -861,6 +863,29 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   const appServerRecordFile = () =>
     path.join(userDataDir, 'codex-app-server.json');
 
+  /**
+   * Starts (or restarts) the Codex app server and records it for the reaper.
+   * Shared by start-up and the UI's retry, so a server brought up by the
+   * retry is reaped after a crash exactly like one started at launch.
+   */
+  async function bringUpCodex(restart: boolean): Promise<CodexRecovery> {
+    const up = restart ? await codex.restart() : await codex.start();
+    console.log(
+      up
+        ? `[sertumd] codex app server on ${codex.remoteUrl}`
+        : `[sertumd] codex not available; codex sessions run unmonitored` +
+            (codex.lastError ? `\n${codex.lastError}` : ''),
+    );
+    if (up && codex.serverPid !== null) {
+      recordAppServer(appServerRecordFile(), {
+        ownerPid: process.pid,
+        serverPid: codex.serverPid,
+        port: codex.port,
+      });
+    }
+    return up ? { ok: true } : { ok: false, reason: codex.unavailableReason };
+  }
+
   // ------------------------------------------------------------ requests
 
   /**
@@ -1219,6 +1244,8 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         url: codex.connected ? codex.remoteUrl : '',
         events: codex.eventCount,
         binaryFound: binaryFound('codex'),
+        error: codex.lastError,
+        repair: nvmFirewallRepair(codex.lastError),
       },
       grok: {
         watching: grokEvents.watching,
@@ -1226,6 +1253,27 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         binaryFound: binaryFound('grok'),
       },
     }),
+
+    'codex/restart': () => bringUpCodex(true),
+    /**
+     * Runs the repair the status readout offered, then restarts. The repair
+     * is re-derived from the server's current error rather than taken from
+     * the request, so a client can only ever trigger the fix for the refusal
+     * that is actually standing -- never name a module or command of its own.
+     */
+    'codex/repair': async (): Promise<CodexRecovery> => {
+      const error = codex.lastError;
+      const repair = nvmFirewallRepair(error);
+      if (!error || !repair) {
+        return codex.connected
+          ? { ok: true }
+          : { ok: false, reason: 'There is no known repair for this failure.' };
+      }
+      console.log(`[sertumd] running ${repair.commands.join(' && ')}`);
+      const fixed = await runNvmRepair(repair, error);
+      if (!fixed.ok) return fixed;
+      return bringUpCodex(true);
+    },
 
     'rules/get': () => getRules(),
     'rules/add': (rule: Omit<PermissionRule, 'id'>) => addRule(rule),
@@ -1446,19 +1494,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         if (reaped) {
           console.log(`[sertumd] reaped ${reaped} orphaned codex app server(s)`);
         }
-        const up = await codex.start();
-        console.log(
-          up
-            ? `[sertumd] codex app server on ${codex.remoteUrl}`
-            : '[sertumd] codex not available; codex sessions run unmonitored',
-        );
-        if (up && codex.serverPid !== null) {
-          recordAppServer(appServerRecordFile(), {
-            ownerPid: process.pid,
-            serverPid: codex.serverPid,
-            port: codex.port,
-          });
-        }
+        await bringUpCodex(false);
       } catch (err) {
         console.error('[sertumd] codex app server failed to start:', err);
       }

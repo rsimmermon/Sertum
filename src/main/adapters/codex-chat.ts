@@ -101,7 +101,7 @@ export class CodexChatHost extends EventEmitter {
   }
 
   async start(id: string, cwd: string): Promise<{ threadId: string; model: string; path: string; cwd: string; mode: PermissionMode | null }> {
-    if (!this.server.connected) throw new Error('Codex app server is unavailable.');
+    if (!this.server.connected) throw new Error(this.server.unavailableReason);
     const result = object(await this.server.request('thread/start', {
       // The terminal's ordinary "Ask for approval" preset. The other three
       // presets are available immediately from the composer once the thread
@@ -140,7 +140,7 @@ export class CodexChatHost extends EventEmitter {
    * is the thread's own, never overridden here.
    */
   async resume(id: string, threadId: string): Promise<{ threadId: string; model: string; path: string; cwd: string; mode: PermissionMode | null }> {
-    if (!this.server.connected) throw new Error('Codex app server is unavailable.');
+    if (!this.server.connected) throw new Error(this.server.unavailableReason);
     const result = object(await this.server.request('thread/resume', { threadId }));
     const thread = object(result.thread);
     const resumedId = string(thread.id) || threadId;
@@ -312,7 +312,7 @@ export class CodexChatHost extends EventEmitter {
    * they stay out of ours.
    */
   async listModels(): Promise<AgentModelList> {
-    if (!this.server.connected) return { ok: false, reason: 'Codex app server is unavailable.' };
+    if (!this.server.connected) return { ok: false, reason: this.server.unavailableReason };
     const models: AgentModel[] = [];
     let cursor: string | undefined;
     try {
@@ -367,7 +367,7 @@ export class CodexChatHost extends EventEmitter {
    * `isDefault`, which is what a thread with no override actually starts on.
    */
   async listEfforts(id: string, model: string | null): Promise<AgentEffortList> {
-    if (!this.server.connected) return { ok: false, reason: 'Codex app server is unavailable.' };
+    if (!this.server.connected) return { ok: false, reason: this.server.unavailableReason };
     const wanted = this.sessions.get(id)?.model ?? model;
     let fallback: { efforts: AgentEffort[]; current: string | null } | null = null;
     let cursor: string | undefined;

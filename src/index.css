@@ -584,7 +584,7 @@ textarea.field:focus { outline: none; border-color: var(--accent); }
 .remote-control-note { font-size: 11px; line-height: 1.4; color: var(--muted); }
 .remote-control-note[hidden] { display: none; }
 
-.note { font-size: 12px; line-height: 1.5; min-height: 14px; }
+.note { font-size: 12px; line-height: 1.5; min-height: 14px; white-space: pre-line; overflow-wrap: anywhere; }
 .note.ok { color: var(--ok); }
 .note.warn { color: var(--warn); }
 .note.error { color: var(--err); }
@@ -1119,6 +1119,34 @@ textarea.field:focus { outline: none; border-color: var(--accent); }
 }
 .btn.danger:hover { filter: brightness(1.08); }
 .btn.danger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ------------------------------------------------- codex app server recovery */
+
+.codex-recovery { width: 560px; max-width: calc(100vw - 32px); font-size: var(--size-ui); }
+.codex-recovery-error {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--err-soft);
+  color: var(--err);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.codex-recovery-commands {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  user-select: text;
+}
+.status-recover { cursor: pointer; text-decoration: underline dotted; }
 
 /* ---------- session context menu (wireframe C5) ---------- */
 .ctx-menu {

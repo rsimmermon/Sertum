@@ -133,6 +133,8 @@ const api: SertumApi = {
   sendChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
     ipcRenderer.invoke('chat:send', { id, text, attachments }),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),
+  restartCodexServer: () => ipcRenderer.invoke('codex:restart'),
+  repairCodexServer: () => ipcRenderer.invoke('codex:repair'),
   discoverSessions: () => ipcRenderer.invoke('discovery:list'),
   attachSession: (d) => ipcRenderer.invoke('discovery:attach', d),
   monitorSession: (d) => ipcRenderer.invoke('discovery:monitor', d),

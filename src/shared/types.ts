@@ -551,9 +551,39 @@ export interface FocusOutcome {
   needsPermission?: boolean;
 }
 
+/**
+ * A fix Sertum knows how to run for a Codex app server that refused to start,
+ * offered only behind an explicit confirmation.
+ *
+ * `nvm-trust`: nvm for Windows' firewall refused a `codex.cmd` shim that an
+ * update rewrote. `commands` is exactly what will run, for the confirmation
+ * to show.
+ */
+export interface CodexRepair {
+  kind: 'nvm-trust';
+  module: string;
+  commands: string[];
+}
+
+/** Outcome of retrying or repairing the Codex app server. */
+export interface CodexRecovery {
+  ok: boolean;
+  /** Why it is still down, in the words of whatever refused it. */
+  reason?: string;
+}
+
 export interface AdapterStatus {
   claude: { connected: boolean; port: number; events: number; binaryFound: boolean };
-  codex: { connected: boolean; url: string; events: number; binaryFound: boolean };
+  codex: {
+    connected: boolean;
+    url: string;
+    events: number;
+    binaryFound: boolean;
+    /** Why the app server is down, from its own stderr; null while it is up. */
+    error: string | null;
+    /** A repair for that particular refusal, when one is known. */
+    repair: CodexRepair | null;
+  };
   /**
    * Grok has nothing to connect to. Its status comes from tailing each
    * session's own event log, so the only thing that can be missing is the CLI
@@ -1410,6 +1440,10 @@ export interface SertumApi {
   ): Promise<boolean>;
   /** Health of the plane 2 adapters. */
   adapterStatus(): Promise<AdapterStatus>;
+  /** Stops and restarts the Codex app server; the retry after a fix outside Sertum. */
+  restartCodexServer(): Promise<CodexRecovery>;
+  /** Runs the `repair` the last status offered, then restarts the server. */
+  repairCodexServer(): Promise<CodexRecovery>;
   /** Agent sessions running outside this app. */
   discoverSessions(): Promise<DiscoveredSession[]>;
   /** Open a terminal onto a daemon-hosted session. */

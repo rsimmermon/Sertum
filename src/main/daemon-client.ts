@@ -76,7 +76,11 @@ export class DaemonClient extends EventEmitter {
     throw new Error('sertumd did not come up; see ~/.sertum/sertumd.log');
   }
 
-  request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
     if (!this.socket || !this.greeted) {
       return Promise.reject(new Error('not connected to sertumd'));
     }
@@ -86,7 +90,7 @@ export class DaemonClient extends EventEmitter {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`sertumd request timed out: ${method}`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: resolve as (v: unknown) => void,
         reject,

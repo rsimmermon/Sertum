@@ -187,3 +187,40 @@ privilege mismatch; the user verified Print Screen works with Sertum focused
 after that relaunch. An elevated
 launcher can pass elevation through a `Shell.Application` launch too, so verify
 the resulting process tokens rather than assuming that route de-elevates them.
+
+## The Codex app server behind nvm's module firewall
+
+nvm for Windows (`...\Author Software\nvm`) fingerprints each global package's
+shim when it is trusted and refuses one that has changed since -- and
+`npm i -g @openai/codex` rewrites `codex.cmd` on every update. After an update
+the app server therefore never starts, in one of two shapes, observed
+2026-10-20 against nvm's `.nodejs\codex.exe` shim:
+
+- **With a console**, the shim prints the refusal and exits 1:
+  `NVM Firewall: Untrusted module 'codex' changed after running ... Event code:
+  NVM4306`, with nvm's suggested fix.
+- **Without one** -- sertumd is detached -- the shim starts
+  `nvm.exe firewall prompt-trust codex`, which waits for a `[y/N]` in a console
+  nobody has. No output, no exit; the readiness wait used to run its full 15s
+  and report nothing. Reproduced by spawning the shim from Node with piped
+  stdio: `--version` hangs with `nvm.exe firewall prompt-trust codex ""` as
+  its child, whatever stdin is given.
+
+`CodexAppServer` keeps the child's stderr and, on Windows, looks for that
+waiting `prompt-trust` process in its tree three seconds into the wait
+(`nvmTrustPromptUnder`), so both shapes fail fast with the reason. The status
+bar's "Codex app server offline" and C1's failed Codex start open a recovery
+dialog showing it, with Retry (`codex/restart`) and, for this refusal only,
+Trust and retry (`codex/repair`), which runs `nvm firewall trust module add
+codex` then `nvm reshim` -- nvm's message says `trust module codex`, which its
+CLI does not accept. The daemon re-derives the repair from the standing error,
+so a client cannot name a module or command. `trust module add` puts the
+module on nvm's self-update auto-reshim list, which is what stops the next
+update repeating this; the dialog says so before it runs. The repair commands
+themselves have not yet been run end to end from the dialog.
+
+The same investigation found `.cmd` shims under a path with a space ("Author
+Software") failing outright through `shell: true`, which cmd.exe split at the
+space; the shim path is now quoted. Calling the installed `codex.cmd` directly
+starts the app server without consulting the firewall at all, which is the
+`.exe` shim's job -- so the fix is to trust, not to route around it.

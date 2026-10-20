@@ -7,6 +7,7 @@ import { openAdoptDialog } from './adopt-dialog';
 import { openResumeDialog } from './resume-dialog';
 import { openSettingsDialog } from './settings-dialog';
 import { openConfirmDialog } from './confirm-dialog';
+import { openCodexRecovery } from './codex-recovery';
 import { agentName, effortChip, modelChip } from './chips';
 import { openSessionMenu, SEPARATOR } from './session-menu';
 import {
@@ -398,21 +399,9 @@ export class App {
 
     // Adapter health is polled: it is a property of the app, not of a turn,
     // so it does not belong on the event stream.
-    const pollAdapters = async () => {
-      try {
-        this.adapters = await api.adapterStatus();
-        // The picker lists what this machine can run, and has to be right on
-        // its first paint -- so it reads this poll's answer rather than
-        // starting its own round trip when it opens.
-        noteAgentAvailability(this.adapters);
-        this.renderStatus();
-      } catch {
-        this.adapters = null;
-      }
-    };
-    void pollAdapters();
+    void this.refreshAdapters();
     setInterval(() => {
-      void pollAdapters();
+      void this.refreshAdapters();
       if (!this.capabilities) void this.readCapabilities().then(() => this.render());
     }, 4000);
 
@@ -2586,6 +2575,20 @@ export class App {
       : 'Sertum';
   }
 
+  /** Adapter health is polled: it is a property of the app, not of a turn. */
+  private async refreshAdapters(): Promise<void> {
+    try {
+      this.adapters = await api.adapterStatus();
+      // The picker lists what this machine can run, and has to be right on
+      // its first paint -- so it reads this poll's answer rather than
+      // starting its own round trip when it opens.
+      noteAgentAvailability(this.adapters);
+      this.renderStatus();
+    } catch {
+      this.adapters = null;
+    }
+  }
+
   renderStatus(): void {
     const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
     this.el.statusLeft.replaceChildren();
@@ -2689,11 +2692,23 @@ export class App {
     const label = down.length === 0 ? 'adapters ok' : `${down.join(' + ')} offline`;
     const readout = text('span', label, 'mono');
     const events = (n: number) => `${n} event${n === 1 ? '' : 's'}`;
+    // A down app server is something to act on, so the readout opens its
+    // recovery: the refusal itself, a retry, and a known repair if one fits.
+    const codexDown = !a.codex.connected && a.codex.binaryFound;
+    if (codexDown) {
+      readout.classList.add('status-recover');
+      readout.onclick = () =>
+        void openCodexRecovery(a.codex).then((up) => {
+          if (up) void this.refreshAdapters();
+        });
+    }
     readout.title =
       `Claude hooks: ${a.claude.connected ? `listening on 127.0.0.1:${a.claude.port}` : 'offline'}` +
       ` · ${events(a.claude.events)}\n` +
       `Codex app server: ${a.codex.connected ? a.codex.url : 'offline'}` +
-      ` · ${events(a.codex.events)}\n` +
+      ` · ${events(a.codex.events)}` +
+      (codexDown ? ' — click for the reason and a retry' : '') +
+      '\n' +
       `Claude Code CLI: ${a.claude.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
       `Codex CLI: ${a.codex.binaryFound ? 'found' : 'not found — set it in Settings → Agents'}\n` +
       `Grok event log: following ${a.grok.watching} session${a.grok.watching === 1 ? '' : 's'}` +

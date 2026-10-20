@@ -763,6 +763,14 @@ ipcMain.handle('agent:capabilities', () =>
   daemon.request('agent/capabilities'),
 );
 ipcMain.handle('adapters:status', () => daemon.request('adapters/status'));
+// Both wait out a full app-server start (readiness, connect, initialize), and
+// a repair runs nvm first, so the ordinary 30s request deadline is too short.
+ipcMain.handle('codex:restart', () =>
+  daemon.request('codex/restart', undefined, 90_000),
+);
+ipcMain.handle('codex:repair', () =>
+  daemon.request('codex/repair', undefined, 180_000),
+);
 ipcMain.handle('agent:detect', (_e, agent: ManagedAgent) =>
   daemon.request('agent/detect', agent),
 );

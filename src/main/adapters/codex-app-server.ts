@@ -11,8 +11,12 @@ import {
   resolveOnWindowsPath,
 } from './binary-resolve';
 import { sessionEnv } from '../login-env';
+import { nvmTrustPromptUnder } from './nvm-firewall';
 
 const run = promisify(execFile);
+
+/** Enough for a wrapper's whole refusal (nvm's runs ~600 chars), not a log. */
+const STDERR_TAIL_CHARS = 2_000;
 
 /** A JSON-RPC notification from the app server, already parsed. */
 export interface CodexNotification {
@@ -57,6 +61,15 @@ export class CodexAppServer extends EventEmitter {
   private listeningPid: number | null = null;
   /** Whether the spawn went through a shell, which displaces our real child. */
   private usedShell = false;
+  /** True from spawn until the server answers /readyz or the start gives up. */
+  private starting = false;
+  /**
+   * What the current child has said on stderr, kept to explain a failed
+   * start -- or what it is silently waiting on, when that can be seen.
+   */
+  private stderrTail = '';
+  /** Why the last start failed, in the server's own words; null once connected. */
+  private startError: string | null = null;
 
   /**
    * Resolved lazily, in `start()`, rather than baked in as a constructor
@@ -101,15 +114,56 @@ export class CodexAppServer extends EventEmitter {
     return this.events;
   }
 
+  /**
+   * Why the server is not up, in the words of whatever refused to run it.
+   *
+   * A wrapper in front of codex -- nvm's firewall refusing a shim that
+   * changed after an update, most memorably -- prints a complete diagnosis
+   * and exits 1. Reporting only "unavailable" sent the reader to Settings >
+   * Agents, where Detect then found the binary and contradicted the error.
+   */
+  get lastError(): string | null {
+    return this.connected ? null : this.startError;
+  }
+
+  /** The sentence a caller throws when it needs the server and it is down. */
+  get unavailableReason(): string {
+    const why = this.lastError;
+    return why ? `Codex app server is unavailable: ${why}` : 'Codex app server is unavailable.';
+  }
+
+  /** Stops whatever is running and starts afresh; the UI's retry. */
+  async restart(): Promise<boolean> {
+    this.stop();
+    return this.start();
+  }
+
   async start(): Promise<boolean> {
     if (this.child) return this.connected;
     this.stopping = false;
+    this.starting = true;
+    try {
+      const up = await this.launch();
+      if (up) this.startError = null;
+      return up;
+    } finally {
+      this.starting = false;
+    }
+  }
 
+  private async launch(): Promise<boolean> {
     this.binary = this.resolveBinary();
     this.boundPort = await freePort();
     this.usedShell =
       process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.binary);
-    this.child = spawn(this.binary, ['app-server', '--listen', this.remoteUrl], {
+    this.stderrTail = '';
+    let exitCode: number | null | undefined;
+    // Through a shell the command is one string that cmd.exe splits at spaces,
+    // so a shim under a folder like "Author Software" ran as "C:\...\Author".
+    // Quoted, it survives: Node passes `/s /c "<line>"`, and /s strips only the
+    // outer pair.
+    const command = this.usedShell ? `"${this.binary}"` : this.binary;
+    const child = spawn(command, ['app-server', '--listen', this.remoteUrl], {
       stdio: ['ignore', 'ignore', 'pipe'],
       // The login shell's environment, not ours: an npm-installed codex is a
       // `#!/usr/bin/env node` script, and under nvm that `node` is only on
@@ -123,35 +177,51 @@ export class CodexAppServer extends EventEmitter {
       // safe to array-quote because none of them come from user input.
       shell: this.usedShell,
     });
-    this.child.stderr?.on('data', (d: Buffer) => {
+    this.child = child;
+    child.stderr?.on('data', (d: Buffer) => {
       const text = d.toString();
       // Startup banner is not worth surfacing; anything else may explain a drop.
       if (!/listening on|readyz|healthz|note:|WebSockets/.test(text)) {
         this.emit('log', text.trim());
+        this.stderrTail = (this.stderrTail + text).slice(-STDERR_TAIL_CHARS);
       }
     });
-    this.child.on('exit', (code) => {
+    child.on('exit', (code) => {
+      exitCode = code;
+      // A child replaced by a restart still reports its own exit later; it
+      // must not clear the state that now belongs to its successor.
+      if (this.child !== child) return;
       this.child = null;
       // Dropped with the child, not kept: a pid outlives its process only as
       // a number, and Windows reuses those. A remembered pid is a licence to
       // kill, so it must never outlast the certainty that it is still ours.
       this.listeningPid = null;
       this.emit('log', `app server exited (${code})`);
-      if (!this.stopping) this.scheduleReconnect();
+      // A start in progress reports its own failure; rescheduling from here
+      // is what used to respawn a refused codex every two seconds for the
+      // whole of the readiness wait.
+      if (!this.stopping && !this.starting) this.scheduleReconnect();
     });
 
     // The binary may be missing entirely; treat that as "Codex unavailable"
     // rather than a crash, so the app still runs with Claude only.
-    const failed = await new Promise<boolean>((resolve) => {
-      this.child?.once('error', () => resolve(true));
-      setTimeout(() => resolve(false), 300);
+    const spawnError = await new Promise<Error | null>((resolve) => {
+      child.once('error', (err) => resolve(err));
+      setTimeout(() => resolve(null), 300);
     });
-    if (failed) {
-      this.child = null;
+    if (spawnError) {
+      if (this.child === child) this.child = null;
+      this.startError = `${this.binary} could not be run (${spawnError.message}).`;
       return false;
     }
 
-    if (!(await this.waitForReady())) {
+    if (!(await this.waitForReady(child))) {
+      const said = this.stderrTail.trim();
+      this.startError =
+        said ||
+        (exitCode !== undefined
+          ? `codex app-server exited with code ${exitCode} before it was ready.`
+          : 'codex app-server did not become ready in time.');
       this.stop();
       return false;
     }
@@ -165,10 +235,26 @@ export class CodexAppServer extends EventEmitter {
     return this.connect();
   }
 
-  /** Polls /readyz so we connect when the server is up, not after a fixed wait. */
-  private async waitForReady(timeoutMs = 15_000): Promise<boolean> {
+  /**
+   * Polls /readyz so we connect when the server is up, not after a fixed wait.
+   * Gives up as soon as the child exits: a server that refused to run will
+   * not become ready, and waiting out the clock only delays saying why.
+   */
+  private async waitForReady(child: ChildProcess, timeoutMs = 15_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    // Once, after the server has had time to come up normally: is it stuck
+    // behind a question it cannot ask? See `nvmTrustPromptUnder`.
+    const promptCheckAt = Date.now() + 3_000;
+    let promptChecked = false;
+    while (Date.now() < deadline && this.child === child) {
+      if (!promptChecked && Date.now() >= promptCheckAt) {
+        promptChecked = true;
+        const waiting = await nvmTrustPromptUnder(child.pid ?? null);
+        if (waiting) {
+          this.stderrTail = waiting;
+          return false;
+        }
+      }
       try {
         const res = await fetch(`http://127.0.0.1:${this.boundPort}/readyz`);
         if (res.ok) return true;
