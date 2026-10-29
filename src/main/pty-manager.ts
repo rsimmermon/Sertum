@@ -52,6 +52,8 @@ interface Session {
    */
   scrollback: string[];
   scrollbackBytes: number;
+  /** Subagents seen to finish, so an overtaken late hook cannot revive one. */
+  endedSubagents?: Set<string>;
 }
 
 /** Per-session replay budget. Enough to repaint a TUI and its recent past. */
@@ -59,6 +61,33 @@ const SCROLLBACK_CAP = 512 * 1024;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 32;
+
+/**
+ * What leaves this class, as opposed to what it stores.
+ *
+ * The stored `status` and `activity` are the main conversation's own, which
+ * is all a subagent's work is never allowed to touch. One thing a subagent
+ * does still belong in them: an ask held for a person. That is folded in
+ * here -- the dot, notifications and the tray all read `status`, and a
+ * blocked background agent wants you as much as a blocked turn -- while
+ * `turnActive` goes on saying what the main thread itself is doing, so the
+ * composer does not queue a message the conversation is free to take.
+ */
+function view(snap: SessionSnapshot): SessionSnapshot {
+  const turnActive = snap.status === 'working' || snap.status === 'needs-input';
+  const subagents = snap.subagents.map((a) => ({ ...a }));
+  const asking = snap.subagents.find((a) => a.asking);
+  if (!asking || snap.status === 'needs-input' || snap.exitCode !== null) {
+    return { ...snap, turnActive, subagents };
+  }
+  return {
+    ...snap,
+    turnActive,
+    subagents,
+    status: 'needs-input',
+    activity: `${asking.type ?? 'subagent'} agent: ${asking.activity ?? 'approval needed'}`,
+  };
+}
 
 /**
  * Owns every PTY process. This is plane 1 of the architecture: bytes in,
@@ -73,10 +102,11 @@ export class PtyManager extends EventEmitter {
   private rememberActivity(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
+    const shown = view(session.snapshot);
     const event: SessionActivityEvent = {
       at: Date.now(),
-      status: session.snapshot.status,
-      activity: session.snapshot.activity,
+      status: shown.status,
+      activity: shown.activity,
     };
     const history = this.activity.get(id) ?? [];
     const last = history[history.length - 1];
@@ -148,6 +178,9 @@ export class PtyManager extends EventEmitter {
       ...resolved,
       id,
       toolsPaused: false,
+      // Both derived again by `view` on the way out.
+      turnActive: false,
+      subagents: [],
       muted: false,
       origin: opts?.origin ?? 'owned',
       externalId: opts?.externalId ?? null,
@@ -179,16 +212,17 @@ export class PtyManager extends EventEmitter {
         session.snapshot.exitCode = exitCode;
         session.snapshot.pid = null;
         session.snapshot.toolsPaused = false;
+        session.snapshot.subagents = [];
         session.snapshot.activity =
           exitCode === 0 ? 'exited cleanly' : `exited with code ${exitCode}`;
         this.rememberActivity(id);
-        this.emit('session-updated', { ...session.snapshot });
+        this.emit('session-updated', view(session.snapshot));
       }
       this.emit('exit', { id, exitCode, signal });
     });
 
     this.sessions.set(id, { snapshot, proc, scrollback: [], scrollbackBytes: 0 });
-    return { ...snapshot };
+    return view(snapshot);
   }
 
   /** Appends to the session's replay ring, trimming oldest-first. */
@@ -269,7 +303,7 @@ export class PtyManager extends EventEmitter {
       snap.modelLabel = label;
       changed = true;
     }
-    if (changed) this.emit('session-updated', { ...snap });
+    if (changed) this.emit('session-updated', view(snap));
   }
 
   /**
@@ -289,7 +323,7 @@ export class PtyManager extends EventEmitter {
       if (session.snapshot.activity === 'starting…') {
         session.snapshot.activity = null;
         this.rememberActivity(id);
-        this.emit('session-updated', { ...session.snapshot });
+        this.emit('session-updated', view(session.snapshot));
       }
       return;
     }
@@ -297,7 +331,7 @@ export class PtyManager extends EventEmitter {
     session.snapshot.status = 'idle';
     session.snapshot.activity = null;
     this.rememberActivity(id);
-    this.emit('session-updated', { ...session.snapshot });
+    this.emit('session-updated', view(session.snapshot));
   }
 
   /**
@@ -322,6 +356,9 @@ export class PtyManager extends EventEmitter {
     const snapshot: SessionSnapshot = {
       id: input.id,
       toolsPaused: false,
+      // Both derived again by `view` on the way out.
+      turnActive: false,
+      subagents: [],
       muted: false,
       origin: 'owned',
       externalId: input.externalId,
@@ -356,8 +393,8 @@ export class PtyManager extends EventEmitter {
       scrollbackBytes: 0,
     });
     this.rememberActivity(input.id);
-    this.emit('session-updated', { ...snapshot });
-    return { ...snapshot };
+    this.emit('session-updated', view(snapshot));
+    return view(snapshot);
   }
 
   /**
@@ -371,10 +408,11 @@ export class PtyManager extends EventEmitter {
     session.snapshot.exitCode = exitCode;
     session.snapshot.pid = null;
     session.snapshot.toolsPaused = false;
+    session.snapshot.subagents = [];
     session.snapshot.activity =
       exitCode === 0 ? 'exited cleanly' : `exited with code ${exitCode}`;
     this.rememberActivity(id);
-    this.emit('session-updated', { ...session.snapshot });
+    this.emit('session-updated', view(session.snapshot));
     this.emit('exit', { id, exitCode });
   }
 
@@ -394,11 +432,14 @@ export class PtyManager extends EventEmitter {
     const existing = [...this.sessions.values()].find(
       (s) => s.snapshot.externalId === input.externalId,
     );
-    if (existing) return { ...existing.snapshot };
+    if (existing) return view(existing.snapshot);
 
     const snapshot: SessionSnapshot = {
       id: randomUUID(),
       toolsPaused: false,
+      // Both derived again by `view` on the way out.
+      turnActive: false,
+      subagents: [],
       muted: false,
       origin: 'monitored',
       externalId: input.externalId,
@@ -431,8 +472,8 @@ export class PtyManager extends EventEmitter {
       scrollbackBytes: 0,
     });
     this.rememberActivity(snapshot.id);
-    this.emit('session-updated', { ...snapshot });
-    return { ...snapshot };
+    this.emit('session-updated', view(snapshot));
+    return view(snapshot);
   }
 
   /**
@@ -460,7 +501,7 @@ export class PtyManager extends EventEmitter {
           snap.status = 'done';
           snap.activity = 'no longer running';
           this.rememberActivity(snap.id);
-          this.emit('session-updated', { ...snap });
+          this.emit('session-updated', view(snap));
         }
         continue;
       }
@@ -474,7 +515,7 @@ export class PtyManager extends EventEmitter {
               : 'idle in another terminal';
         snap.lastEventAt = Date.now();
         this.rememberActivity(snap.id);
-        this.emit('session-updated', { ...snap });
+        this.emit('session-updated', view(snap));
       }
     }
   }
@@ -509,9 +550,68 @@ export class PtyManager extends EventEmitter {
     if (update.activity) session.snapshot.activity = update.activity;
     session.snapshot.lastEventAt = Date.now();
     this.rememberActivity(id);
-    const next = { ...session.snapshot };
+    const next = view(session.snapshot);
     this.emit('session-updated', next);
     return next;
+  }
+
+  /**
+   * Records what one subagent is doing, without touching the session's own
+   * status. Ignored once the process has exited, like `applyUpdate`.
+   *
+   * A subagent first heard of through a tool hook is added rather than
+   * dropped: a session spawned before Sertum subscribed to `SubagentStart`
+   * never sends one. An ended id is remembered so that a hook overtaking its
+   * own `SubagentStop` -- each hook is its own curl, and nothing orders them
+   * -- cannot bring it back.
+   */
+  applySubagent(
+    id: string,
+    agent: { id: string; type?: string | null },
+    update: { activity?: string; asking?: boolean; ended?: true },
+  ): void {
+    const session = this.sessions.get(id);
+    if (!session || session.snapshot.exitCode !== null) return;
+    if (session.snapshot.origin === 'owned' && session.snapshot.pid === null) return;
+    const ended = (session.endedSubagents ??= new Set());
+    const list = session.snapshot.subagents;
+    const index = list.findIndex((a) => a.id === agent.id);
+
+    if (update.ended) {
+      ended.add(agent.id);
+      if (index < 0) return;
+      list.splice(index, 1);
+    } else {
+      if (ended.has(agent.id)) return;
+      const entry = index >= 0
+        ? list[index]
+        : { id: agent.id, type: null, activity: null, asking: false };
+      if (index < 0) list.push(entry);
+      if (agent.type) entry.type = agent.type;
+      if (update.activity) entry.activity = update.activity;
+      if (update.asking !== undefined) entry.asking = update.asking;
+    }
+    session.snapshot.lastEventAt = Date.now();
+    this.rememberActivity(id);
+    this.emit('session-updated', view(session.snapshot));
+  }
+
+  /**
+   * Forgets every subagent the agent no longer lists as running. Driven by
+   * the main thread's own `Stop`, which is the only word on a subagent whose
+   * `SubagentStop` never arrived.
+   */
+  reconcileSubagents(id: string, running: Set<string>): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const kept = session.snapshot.subagents.filter((a) => running.has(a.id));
+    if (kept.length === session.snapshot.subagents.length) return;
+    for (const gone of session.snapshot.subagents) {
+      if (!running.has(gone.id)) (session.endedSubagents ??= new Set()).add(gone.id);
+    }
+    session.snapshot.subagents = kept;
+    this.rememberActivity(id);
+    this.emit('session-updated', view(session.snapshot));
   }
 
   /** Records structured tool gating so every renderer surface stays in sync. */
@@ -524,7 +624,7 @@ export class PtyManager extends EventEmitter {
       ? 'tool use paused'
       : 'tool use resumed';
     this.rememberActivity(id);
-    this.emit('session-updated', { ...session.snapshot });
+    this.emit('session-updated', view(session.snapshot));
     return true;
   }
 
@@ -641,7 +741,7 @@ export class PtyManager extends EventEmitter {
         session.snapshot.status = 'attention';
         session.snapshot.activity = 'will not exit — still running';
         this.rememberActivity(id);
-        this.emit('session-updated', { ...session.snapshot });
+        this.emit('session-updated', view(session.snapshot));
       }
       return false;
     }
@@ -665,17 +765,17 @@ export class PtyManager extends EventEmitter {
     const next = trimmed || fallbackLabel(session.snapshot.cwd);
     if (next === session.snapshot.label) return next;
     session.snapshot.label = next;
-    this.emit('session-updated', { ...session.snapshot });
+    this.emit('session-updated', view(session.snapshot));
     return next;
   }
 
   list(): SessionSnapshot[] {
-    return [...this.sessions.values()].map((s) => ({ ...s.snapshot }));
+    return [...this.sessions.values()].map((s) => (view(s.snapshot)));
   }
 
   get(id: string): SessionSnapshot | undefined {
     const s = this.sessions.get(id);
-    return s ? { ...s.snapshot } : undefined;
+    return s ? view(s.snapshot) : undefined;
   }
 
   recentActivity(id: string): SessionActivityEvent[] {

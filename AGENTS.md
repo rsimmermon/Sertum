@@ -226,6 +226,22 @@ The dot moves because the agent said so — never because output went quiet.
 Late events for an exited process are ignored, so a dead session's dot cannot
 be resurrected.
 
+### A subagent is not the turn
+
+Claude stamps `agent_id` on every hook fired inside a subagent, and those
+hooks describe that subagent alone. They update its entry in
+`SessionSnapshot.subagents` and never the session's `status` or `activity`:
+a background agent still running `Bash` after the main `Stop` is not a turn
+in progress, and mapping it as one queued every message typed into a
+conversation that was free to take it. The exception is a subagent's
+permission ask, which still wants a person, so it is folded into the
+outgoing `status` as `needs-input`. **`turnActive` -- not `status` -- is
+what the composer queues on**, the stop sign shows for, and the waiting
+bubble's turn means; subagents get their own line in the pane and a mark on
+the sidebar row. The verified payloads, and why the main `Stop`'s
+`background_tasks` rather than `SubagentStop`'s reconciles them:
+[docs/sessions.md](docs/sessions.md).
+
 ### Plane 2 for Grok: name the session, then read its log
 
 Grok offers neither of the other two routes -- there is no `--settings` to
@@ -580,7 +596,9 @@ mode ids with terminal-equivalent permission tuples; a protocol 5 daemon
 cannot safely interpret the new choices. Protocol 7 gives the daemon the
 transport decision, so the GUI sends no `transport` at all; a protocol 6
 daemon reads that absence as "not stream" and quietly starts a PTY session
-instead.
+instead. Protocol 8 adds `turnActive` and `subagents` to every snapshot; a
+protocol 7 daemon sends neither, and the composer would read every session
+as never mid-turn and send into running turns.
 
 **The daemon decides how a session is carried.** `session/create` treats an
 absent `transport` as "you decide": stream where the agent declares

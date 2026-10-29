@@ -298,9 +298,13 @@ export class HookServer extends EventEmitter {
       };
       const timer = setTimeout(() => settle(null), this.approvalTimeoutMs);
       timer.unref?.();
+      const agentId = payload.agent_id;
       const request: PendingApproval = {
         id,
         sessionId,
+        // A subagent's ask is stamped with whose it is, so answering it moves
+        // that subagent rather than the main turn (see `subagentOf`).
+        ...(typeof agentId === 'string' && agentId ? { agentId } : {}),
         tool: String(payload.tool_name ?? 'a tool'),
         subject,
       };

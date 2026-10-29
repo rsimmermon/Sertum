@@ -14,6 +14,9 @@ import { hydrateLoginEnv } from '../main/login-env';
 import {
   buildClaudeSettings,
   mapClaudeHook,
+  mapSubagentHook,
+  runningSubagents,
+  subagentOf,
   type StatusUpdate,
 } from '../main/adapters/claude';
 import {
@@ -215,13 +218,38 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
    * or by holding a `can_use_tool` control request open.
    */
   function raiseApproval(request: PendingApproval): void {
-    if (request.blocksTurn !== false) {
+    if (request.agentId) {
+      // Held on the subagent's own line; `PtyManager` still turns the dot
+      // amber for it, without claiming the main turn is the one waiting.
+      ptys.applySubagent(request.sessionId, { id: request.agentId }, {
+        activity: activityFor(request),
+        asking: true,
+      });
+    } else if (request.blocksTurn !== false) {
       ptys.applyUpdate(request.sessionId, {
         status: 'needs-input',
         activity: activityFor(request),
       });
     }
     emit('approval:needed', request);
+  }
+
+  /**
+   * A call is answered, so whoever asked is moving again. When that was a
+   * subagent, the main turn was never the one waiting -- it may well have
+   * ended -- and putting the session back to `working` would queue the next
+   * message typed into a conversation free to take it.
+   */
+  function markAnswered(
+    sessionId: string,
+    agentId: string | undefined,
+    activity: string,
+  ): void {
+    if (agentId) {
+      ptys.applySubagent(sessionId, { id: agentId }, { activity, asking: false });
+    } else {
+      ptys.applyUpdate(sessionId, { status: 'working', activity });
+    }
   }
 
   /** What the sidebar says while this call waits. A card is not an approval. */
@@ -419,16 +447,10 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     if (decision && decision.decision !== 'ask') {
       if (decision.decision === 'allow') {
         reply({ behavior: 'allow' });
-        ptys.applyUpdate(ask.id, {
-          status: 'working',
-          activity: `${ask.toolName}…`,
-        });
+        markAnswered(ask.id, ask.agentId, `${ask.toolName}…`);
       } else {
         reply({ behavior: 'deny', message: decision.reason });
-        ptys.applyUpdate(ask.id, {
-          status: 'working',
-          activity: `${ask.toolName} denied`,
-        });
+        markAnswered(ask.id, ask.agentId, `${ask.toolName} denied`);
       }
       return;
     }
@@ -449,6 +471,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     const request: PendingApproval = {
       id,
       sessionId: ask.id,
+      ...(ask.agentId ? { agentId: ask.agentId } : {}),
       tool: ask.toolName,
       subject: decision?.subject ?? subjectOf(ask.toolName, ask.input),
       description: ask.description,
@@ -473,6 +496,9 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       if (ask.request.sessionId !== id || ask.requestId !== requestId) continue;
       controlAsks.delete(askId);
       emit('approval:gone', askId);
+      if (ask.request.agentId) {
+        ptys.applySubagent(id, { id: ask.request.agentId }, { asking: false });
+      }
     }
   });
 
@@ -709,6 +735,20 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   codex.on('log', (line: string) => console.warn('[codex]', line));
 
   hooks.on('hook', ({ sessionId, event, payload }) => {
+    // A subagent's hook describes that subagent and nothing else. Mapping it
+    // like the main thread's is what had a background agent's `Bash…`,
+    // arriving after the main `Stop`, put a finished conversation back to
+    // `working` and queue every message typed into it.
+    const subagent = subagentOf(payload);
+    if (subagent) {
+      ptys.applySubagent(sessionId, subagent, mapSubagentHook(event, payload));
+      return;
+    }
+    if (event === 'Stop') {
+      const running = runningSubagents(payload);
+      if (running) ptys.reconcileSubagents(sessionId, running);
+    }
+
     // A question the agent's own TUI is drawing gets no bar here (see
     // `ownsItsOwnDialog`), so the activity line is the only thing that can say
     // where it *can* be answered. Still plane 2 speaking: the agent fired the
@@ -1465,10 +1505,11 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
                   : 'Denied in Sertum.'),
             });
       if (!settled) hooks.resolveApproval(p.id, p.answer);
-      ptys.applyUpdate(p.sessionId, {
-        status: 'working',
-        activity: ANSWERED_ACTIVITY[p.answer.decision](p.tool),
-      });
+      markAnswered(
+        p.sessionId,
+        pending.agentId,
+        ANSWERED_ACTIVITY[p.answer.decision](p.tool),
+      );
       return null;
     },
   };

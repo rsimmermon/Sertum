@@ -315,6 +315,25 @@ export interface SessionSnapshot extends SessionSpec {
   /** The agent's own session id, when we adopted rather than spawned it. */
   externalId: string | null;
   status: SessionStatus;
+  /**
+   * Whether the main conversation is mid-turn -- working, or holding its own
+   * ask -- and so cannot take a message now.
+   *
+   * Not the same question as `status`. `status` is the whole session for
+   * the dot, notifications and the tray, so a subagent's permission ask
+   * turns it amber; but the main thread may have finished its turn and be
+   * free to take the next prompt while that subagent waits. The composer
+   * queue, the stop sign and the waiting bubble read this; every other
+   * surface reads `status`.
+   */
+  turnActive: boolean;
+  /**
+   * Subagents running on this session's behalf, from hooks Claude stamps
+   * with `agent_id`. Their work never moves `status` or `activity` -- a
+   * background agent still running after the main turn ended is not a turn
+   * in progress -- except that one asking for permission still wants you.
+   */
+  subagents: SubagentActivity[];
   pid: number | null;
   startedAt: number;
   exitCode: number | null;
@@ -357,6 +376,18 @@ export interface SessionSnapshot extends SessionSpec {
    * not said, which is not the same as `default`.
    */
   permissionMode: PermissionMode | null;
+}
+
+/** One subagent working for a session, as its own hooks describe it. */
+export interface SubagentActivity {
+  /** Claude's `agent_id`, stamped on every hook fired inside the subagent. */
+  id: string;
+  /** `agent_type`: general-purpose, Explore, a custom agent's name. */
+  type: string | null;
+  /** The same vocabulary as a session's activity line: `Bash…`, `Read`. */
+  activity: string | null;
+  /** True while it is held on a permission ask. */
+  asking: boolean;
 }
 
 /** One structured status/activity transition retained for session inspection. */
@@ -935,6 +966,11 @@ export interface PendingApproval {
   detail?: string;
   id: string;
   sessionId: string;
+  /**
+   * The subagent asking, when it is not the main conversation. Its answer
+   * then moves that subagent's line rather than the session's own turn.
+   */
+  agentId?: string;
   tool: string;
   /** The command or path the call is about, as the rules would match it. */
   subject: string;

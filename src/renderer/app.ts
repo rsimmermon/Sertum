@@ -1333,6 +1333,16 @@ export class App {
         }
         const badges = this.chipsFor(s);
         if (badges) top.append(badges);
+        // The dot is the main conversation; subagents still working after
+        // its turn ended get a mark of their own rather than turning it green.
+        if (s.subagents.length && s.exitCode === null) {
+          const mark = text('span', `⋯${s.subagents.length}`, 'sb-subagents');
+          mark.title = s.subagents
+            .map((a) => `${a.type ?? 'subagent'}: ${a.activity ?? 'working'}`)
+            .join('\n');
+          if (s.subagents.some((a) => a.asking)) mark.classList.add('is-asking');
+          top.append(mark);
+        }
         top.append(
           text('span', repoMark(s.cwd), 'sb-mark'),
           text('span', sessionAge(s.startedAt), 'sb-age'),
@@ -1378,8 +1388,12 @@ export class App {
           bottom.append(hint);
           row.append(bottom);
         }
-        row.title =
-          `${agentName(s.agent)}\n${s.cwd}\n${s.activity ?? ''}`.trim();
+        const subagentLines = s.subagents.map(
+          (a) => `↳ ${a.type ?? 'subagent'}: ${a.activity ?? 'working'}`,
+        );
+        row.title = [agentName(s.agent), s.cwd, s.activity ?? '', ...subagentLines]
+          .join('\n')
+          .trim();
         row.tabIndex = 0;
         // Announced as a selectable option so the highlight is not the only
         // signal of which session is showing.

@@ -268,6 +268,13 @@ input[type='reset'] {
   flex: none; white-space: nowrap;
 }
 .sb-mark { letter-spacing: 0.3px; }
+/* Subagents still working beside a main thread that may be idle: the
+   working colour, small, so it never reads as the row's own dot. */
+.sb-subagents {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  color: var(--run); flex: none; white-space: nowrap;
+}
+.sb-subagents.is-asking { color: var(--warn); }
 .sb-age { min-width: 24px; text-align: right; }
 .sb-row.active .sb-mark, .sb-row.active .sb-age { color: var(--ink-2); }
 .sb-row {
@@ -2008,6 +2015,22 @@ select.field {
 }
 .chat-waiting[hidden] { display: none; }
 .chat-waiting-label { font-size: 12px; color: var(--muted); }
+/* Subagents: deliberately not a bubble. The bubble says the conversation is
+   mid-turn; this says work is going on beside it, composer still open. */
+.chat-subagents {
+  align-self: flex-start;
+  display: flex; flex-direction: column; gap: 3px;
+  max-width: 100%;
+  padding: 6px 10px; border-radius: 8px;
+  border: 1px dashed var(--line);
+  font-size: 12px; color: var(--muted);
+}
+.chat-subagents[hidden] { display: none; }
+.chat-subagents-head { font-size: 11px; font-weight: 600; color: var(--run); }
+.chat-subagent { display: flex; gap: 8px; min-width: 0; }
+.chat-subagent-type { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); flex: none; }
+.chat-subagent-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-subagent.is-asking .chat-subagent-activity { color: var(--warn); font-weight: 600; }
 .chat-dots { display: inline-flex; align-items: center; gap: 4px; height: 12px; }
 .chat-dots i {
   width: 6px; height: 6px; border-radius: 50%; background: var(--muted);

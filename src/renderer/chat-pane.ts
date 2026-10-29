@@ -119,6 +119,12 @@ export class ChatPane {
   private effortButton: HTMLButtonElement;
   private waiting: HTMLDivElement;
   private waitingLabel: HTMLSpanElement;
+  /**
+   * Subagents still working, kept apart from the waiting bubble: that one
+   * says the conversation is mid-turn and cannot take a message, and a
+   * background agent running after the turn ended says neither.
+   */
+  private subagentLine: HTMLDivElement;
   private timer: ReturnType<typeof setInterval> | null = null;
   private renderedKey = '';
   /** The transcript version this pane has drawn; handed to every poll. */
@@ -362,6 +368,11 @@ export class ChatPane {
     this.waitingLabel.className = 'chat-waiting-label';
     this.waiting.append(dots, this.waitingLabel);
 
+    this.subagentLine = document.createElement('div');
+    this.subagentLine.className = 'chat-subagents';
+    this.subagentLine.hidden = true;
+    this.subagentLine.setAttribute('role', 'status');
+
     this.queuedMessages = document.createElement('div');
     this.queuedMessages.className = 'chat-queued-messages';
 
@@ -461,10 +472,14 @@ export class ChatPane {
    * turn in progress is what refuses a message, and `working`/`needs-input`
    * is the adapter's own word for that. A session waiting on an approval is
    * as unable to take a prompt as one mid-answer, so both queue.
+   *
+   * It is the *main thread's* turn that refuses, which is `turnActive`
+   * rather than `status`: a subagent still running, or asking, after the
+   * turn ended leaves the conversation free to take the next prompt.
    */
   private receivable(): boolean {
     const s = this.session;
-    return this.canWrite(s) && s.status !== 'working' && s.status !== 'needs-input';
+    return this.canWrite(s) && !s.turnActive;
   }
 
   private applySession(s: SessionSnapshot): void {
@@ -550,9 +565,8 @@ export class ChatPane {
     const s = this.session;
     const writable = this.canWrite(s);
     const hasDraft = this.input.value.trim().length > 0 || this.attachments.length > 0;
-    const turnActive = s.status === 'working' || s.status === 'needs-input';
-    this.mode = writable && !hasDraft && turnActive ? 'stop' : 'send';
-    const canStop = writable && turnActive && this.interruptCapability.ok;
+    this.mode = writable && !hasDraft && s.turnActive ? 'stop' : 'send';
+    const canStop = writable && s.turnActive && this.interruptCapability.ok;
 
     let reason: string;
     if (this.mode === 'stop') {
@@ -779,6 +793,33 @@ export class ChatPane {
     this.waiting.hidden = !working;
     this.waitingLabel.textContent = working ? (s.activity ?? 'working') : '';
     if (working && wasHidden) this.scrollToTail();
+    this.paintSubagents(s);
+  }
+
+  /** One line per subagent, said in its own words and apart from the turn. */
+  private paintSubagents(s: SessionSnapshot): void {
+    const agents = s.exitCode === null ? s.subagents : [];
+    const wasHidden = this.subagentLine.hidden;
+    this.subagentLine.hidden = agents.length === 0;
+    const head = document.createElement('div');
+    head.className = 'chat-subagents-head';
+    head.textContent = `${agents.length} subagent${agents.length === 1 ? '' : 's'} working`;
+    this.subagentLine.replaceChildren(
+      head,
+      ...agents.map((agent) => {
+        const row = document.createElement('div');
+        row.className = 'chat-subagent' + (agent.asking ? ' is-asking' : '');
+        const type = document.createElement('span');
+        type.className = 'chat-subagent-type';
+        type.textContent = agent.type ?? 'subagent';
+        const what = document.createElement('span');
+        what.className = 'chat-subagent-activity';
+        what.textContent = agent.activity ?? 'working';
+        row.append(type, what);
+        return row;
+      }),
+    );
+    if (agents.length && wasHidden && this.isNearBottom()) this.scrollToTail();
   }
 
   private scrollToTail(): void {
@@ -1097,6 +1138,7 @@ export class ChatPane {
         this.pendingSentMessages,
         this.queuedMessages,
         this.waiting,
+        this.subagentLine,
       );
       return;
     }
@@ -1122,6 +1164,7 @@ export class ChatPane {
       this.pendingSentMessages,
       this.queuedMessages,
       this.waiting,
+      this.subagentLine,
     );
     if (nearBottom) this.scrollToTail();
     else this.scroll.scrollTop = wasAt;

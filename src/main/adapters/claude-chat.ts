@@ -61,6 +61,12 @@ export interface ChatPermissionAsk {
   id: string;
   /** The control request this answers; the CLI matches replies on it. */
   requestId: string;
+  /**
+   * The subagent asking, when it is not the main conversation. Verified
+   * against Claude Code 2.1.312: a background subagent's `can_use_tool`
+   * carries `agent_id`, the main thread's does not.
+   */
+  agentId?: string;
   toolName: string;
   displayName: string;
   input: Record<string, unknown>;
@@ -828,9 +834,11 @@ export class ClaudeChatHost extends EventEmitter {
 
     const toolName = String(request.tool_name ?? '');
     entry.pendingAsks.add(requestId);
+    const agentId = wireText(request.agent_id);
     this.emit('permission', {
       id,
       requestId,
+      ...(agentId ? { agentId } : {}),
       toolName,
       displayName: String(request.display_name ?? toolName),
       input:

@@ -388,3 +388,54 @@ Claude-native background hosting still does not combine with structured stream
 sessions or Remote Control; C1 keeps those choices exclusive. This limitation
 does not affect broker persistence: `sertumd` owns stream processes and PTYs
 for every ordinary Sertum session.
+
+## Subagents report on their own line, not the session's
+
+A Claude session's subagents fire the same hooks the main conversation does,
+so mapping them identically made a background agent's work read as a turn in
+progress. The failure was concrete: the main turn ended (`Stop`, idle, "turn
+finished"), the background agent it had launched ran its next `Bash`, and that
+`PreToolUse` put the session straight back to `working` -- waiting bubble,
+stop sign, and every message typed into a conversation that was free to take
+it sitting in the queue until the subagent finished.
+
+Verified against Claude Code 2.1.312, by a stream-json session launching one
+background general-purpose subagent with hooks registered on every event:
+
+| Hook | `agent_id` | Notes |
+|---|---|---|
+| `PreToolUse` (`Agent`), `PostToolUse` (`Agent`) | — | the main thread launching it |
+| `SubagentStart` | ✓ | with `agent_type` |
+| `Stop` | — | `background_tasks: [{ id, type: "subagent", status: "running", agent_type, description }]` |
+| `PreToolUse` / `PostToolUse` (`Bash`) | ✓ | arriving *after* the main `Stop` |
+| `PermissionRequest` (`Bash`) | ✓ | a denied call fires no `PostToolUse` afterwards |
+| `SubagentStop` | ✓ | its own `background_tasks` still lists itself as `running` |
+| `UserPromptSubmit`, `Stop` | — | the follow-up turn the task notification starts; `background_tasks: []` |
+
+On the stream, `can_use_tool` from the subagent carries `agent_id` too, and
+`stream_event` partial messages are the main thread's only -- the subagent's
+records arrive as whole `assistant`/`user` records with `parent_tool_use_id`
+set, which `ClaudeChatHost` already ignores. The stream also reports
+`system` records `background_tasks_changed`, `task_started`, `task_progress`,
+`task_updated` and `task_notification`; Sertum reads the hooks instead,
+because they reach PTY-backed sessions as well.
+
+So a hook carrying `agent_id` updates that subagent's entry in
+`SessionSnapshot.subagents` and never the session's `status` or `activity`.
+Three details make it hold up:
+
+- **An ask still wants you.** A subagent's `PermissionRequest` or
+  `can_use_tool` sets its `asking` flag, and `PtyManager` folds that into the
+  outgoing `status` as `needs-input` -- the dot, notifications and tray all
+  read `status`. `turnActive` keeps saying whether the *main* thread is
+  mid-turn, and that is what the composer queues on. Answering the ask, or
+  the subagent's next hook (the only word on a denial made in a terminal),
+  clears it.
+- **Ended ids are remembered.** Each hook is its own curl and nothing orders
+  them, so a `PreToolUse` overtaking its own `SubagentStop` would otherwise
+  bring the subagent back.
+- **The main `Stop` reconciles.** Its `background_tasks` is the one place a
+  missed `SubagentStop` shows up, and the only way a session spawned before
+  Sertum subscribed to `SubagentStart`/`SubagentStop` -- which learns of its
+  subagents from tool hooks alone -- ever forgets one. `SubagentStop`'s own
+  copy is not used, for the reason in the table.

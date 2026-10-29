@@ -13,6 +13,8 @@ const HOOK_EVENTS = [
   'PostCompact',
   'Stop',
   'StopFailure',
+  'SubagentStart',
+  'SubagentStop',
   'SessionEnd',
 ] as const;
 
@@ -148,6 +150,95 @@ export function mapClaudeHook(
     default:
       return {};
   }
+}
+
+/**
+ * The subagent a hook was fired inside, or null for the main conversation.
+ *
+ * Verified against Claude Code 2.1.312: every hook fired inside a subagent --
+ * `PreToolUse`, `PostToolUse`, `PermissionRequest`, `SubagentStart`,
+ * `SubagentStop` -- carries `agent_id` and `agent_type`, and the main
+ * thread's own hooks carry neither. That is what lets a background agent's
+ * `Bash…` stop reading as a turn in progress: before this, its `PreToolUse`
+ * arriving after the main `Stop` put the session straight back to `working`
+ * and queued every message typed into a conversation that was free to take
+ * it.
+ */
+export function subagentOf(
+  payload: Record<string, unknown>,
+): { id: string; type: string | null } | null {
+  const id = str(payload.agent_id);
+  return id ? { id, type: str(payload.agent_type) ?? null } : null;
+}
+
+export interface SubagentUpdate {
+  activity?: string;
+  asking?: boolean;
+  /** The subagent has finished; forget it. */
+  ended?: true;
+}
+
+/**
+ * Maps one hook fired inside a subagent onto that subagent's own line.
+ *
+ * Any event that shows the subagent moving again clears `asking`: a denied
+ * call fires no `PostToolUse` at all, so the next thing it does is the only
+ * word that its ask is over when the answer came from somewhere Sertum did
+ * not see.
+ */
+export function mapSubagentHook(
+  event: string,
+  payload: Record<string, unknown>,
+): SubagentUpdate {
+  const tool = str(payload.tool_name);
+  switch (event) {
+    case 'SubagentStart':
+      return { activity: 'starting', asking: false };
+    case 'SubagentStop':
+      return { ended: true };
+    case 'PreToolUse':
+      return { activity: tool ? `${tool}…` : 'running a tool', asking: false };
+    case 'PostToolUse':
+      return { activity: tool ?? 'thinking', asking: false };
+    case 'PostToolUseFailure':
+      return { activity: tool ? `${tool} failed` : 'tool failed', asking: false };
+    case 'PermissionRequest':
+      return { activity: tool ? `approve ${tool}?` : 'approval needed', asking: true };
+    case 'Notification': {
+      const update = mapNotification(payload);
+      return update.status === 'needs-input'
+        ? { activity: update.activity, asking: true }
+        : {};
+    }
+    default:
+      return {};
+  }
+}
+
+/**
+ * The subagents a main-thread `Stop` says are still running, or null when it
+ * did not say.
+ *
+ * `Stop` carries `background_tasks`, which is the one place a missed
+ * `SubagentStop` can be noticed -- and the only way a session spawned before
+ * Sertum subscribed to `SubagentStop` ever loses a subagent it learned about
+ * from tool hooks. `SubagentStop`'s own copy of the list is not used: it was
+ * observed still naming the stopping subagent as `running`.
+ */
+export function runningSubagents(
+  payload: Record<string, unknown>,
+): Set<string> | null {
+  const tasks = payload.background_tasks;
+  if (!Array.isArray(tasks)) return null;
+  const running = new Set<string>();
+  for (const task of tasks) {
+    if (!task || typeof task !== 'object') continue;
+    const t = task as Record<string, unknown>;
+    if (t.type === 'subagent' && t.status === 'running' && typeof t.id === 'string') {
+      running.add(t.id);
+    }
+  }
+  return running;
 }
 
 /**
