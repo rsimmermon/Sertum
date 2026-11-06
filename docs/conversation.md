@@ -35,14 +35,13 @@ point. Transcript resolution reuses `transcriptFor`, so a Claude session is
 only ever matched exactly and a shell never inherits another agent's
 transcript.
 
-Conversation reads keep complete transcripts up to a 32MB safety ceiling and
-cache the parsed snapshot by file size and mtime. A fixed 512KB tail was not a
-complete-turn boundary: one image-generation result embeds a multi-megabyte
+Conversation reads cover the whole transcript, however large; see "Full history
+is a bounded window" below. A fixed 512KB tail was the first answer and was not
+a complete-turn boundary: one image-generation result embeds a multi-megabyte
 data URL in a single JSONL record and pushed the user's prompt, tool call and
 earlier conversation out of view. Structured `data:image/*` fields in tool
 results now become `image` chat items and render as bounded previews; ordinary
-prose is never interpreted as an image URL. Beyond the ceiling, the tail and
-its truncation notice remain the honest bounded fallback.
+prose is never interpreted as an image URL.
 
 Conversation content opts back into native text selection (`user-select:
 text`) beneath the app-wide chrome rule that prevents accidental interface
@@ -187,13 +186,11 @@ into the same flood. A captured stack of the spinning thread was
 `onStreamRead → Readable.push → addChunk → maybeReadMore`, and the daemon,
 idle with no client attached, grew ~40 MB/s the moment one connected.
 
-So `conversation/read` takes `{ id, known }`. `known` is the `version` the
-pane already holds — the transcript's `size:mtime`, the same pair the parse
-cache already keys on, named once by `versionOf` so a poll's "unchanged" and
-a cache hit cannot disagree about what identity is. When it still matches,
-the answer is `{ unchanged: true }`: **18 bytes instead of 9.32MB, a
-543,117× reduction on an idle conversation.** A transcript only changes when
-the agent writes, so that is the overwhelmingly common answer.
+So `conversation/read` takes `known`, the `version` the pane already holds, and
+when it still matches the answer is `{ unchanged: true }`: **18 bytes instead of
+9.32MB, a 543,117× reduction on an idle conversation.** A transcript only changes
+when the agent writes, so that is the overwhelmingly common answer. The version
+was `size:mtime` then; "Full history is a bounded window" below has what it is now.
 
 Two details are load-bearing:
 
@@ -224,6 +221,101 @@ before decoding is safe. Verified against the real class with a fake daemon
 chunking at hostile boundaries: a 9MB frame, a multi-byte character split
 across a chunk cut, a frame immediately after the big one, and a blank line
 between frames all survive.
+
+## Full history is a bounded window
+
+The pane used to hold the newest 400 items of the newest 32MB and rebuild all of
+them on any change. Both limits had to go for the same reason: the phone has to
+show a whole conversation, and the rebuild was what made that impossible.
+Measured with the desktop `ChatPane` on a Galaxy Z Fold6 at full speed, one new
+message cost 94ms at 400 items and 3.1s at 20,000, with the composer blocked
+throughout.
+
+**The daemon holds the conversation; a pane holds a window of it.**
+`main/adapters/conversation.ts` keeps one store per transcript and reads only
+what the file has gained, a megabyte at a time so a large file cannot hold the
+event loop. An item's index is its identity. `conversation/read` takes the window
+a client holds and answers `{ unchanged }`, a delta of what changed in it, or,
+with nothing known or too much to send, the newest page. `conversation/page`
+fetches 200 items or 4MB, whichever comes first, from either direction. At least
+one item always goes, so a huge image cannot wedge paging.
+
+**A version is derived from the file, not the process.** It is
+`<identity>:<bytes consumed>`, where identity hashes the path and the first
+record, and an item's revision is the end offset of the record that last changed
+it. Parsing the same bytes again reproduces the same answers, so dropping an idle
+store after 10 minutes should not cost a reader their place. That property follows
+from the construction and has not been exercised across an eviction or a daemon
+restart.
+
+- **A file rewritten in place starts over.** The bytes just before the read
+  offset are compared on every read, and a mismatch or a shrink re-parses with a
+  new identity, which sends every client back to the newest page.
+- **A half-written last line waits.** A final line with no newline is consumed
+  only if it parses whole, which keeps a record still being written out, and
+  still reads the last record from a writer that ends its file without one.
+- **Formats cannot move.** An assistant message is classified against the user
+  message before it, which never changes, so classifying as items arrive equals
+  classifying the whole list. A tool result does change an earlier item, by
+  index, which is why a delta can replace as well as append.
+
+**The pane keeps at most about 1,000 items.** It replaces only the nodes that
+changed, fetches the next page within 1,500px of an edge, and past 1,050 items
+drops 50 or more from whichever end is further from the reader. It compensates for
+content added or removed above the reader itself, so `overflow-anchor` is off on
+the scroller: the browser's anchoring would apply the same correction twice. A
+window scrolled back does not reach the end, so it is not told about arrivals and
+`scrollToTail` means asking for the newest page. A turn starting still pulls the
+reader to the end, as it did before, though now that also gives up their window.
+
+**A size change keeps the reader's place by item, not by pixel.** Rewrapping changes
+every height above the reader, so the scroll listener records the item at the top
+of the view and the fraction through it, and a `ResizeObserver` restores that when
+the width changes. It has to be recorded beforehand, because the observer runs
+after the old geometry is gone, and a scroll event landing between the change and
+the observer is ignored for the same reason. Someone at the end stays at the end,
+whichever dimension changed. Verified on a Galaxy Z Fold6 by folding, and by
+`spike.widthCheck` in `mobile/spikes/harness.ts`, but not by dragging a split in the
+desktop app.
+
+Measured with synthetic items at 4x CPU throttle on the Android emulator, before
+and after:
+
+| Items | Open | New message | Scroll p50 |
+|---|---|---|---|
+| 400 | 414ms → 156ms | 321ms → 27ms | 16.7ms → 16.7ms |
+| 5,000 | 4.3s → 158ms | 4.1s → 25ms | 33.3ms → 16.7ms |
+| 20,000 | 19.1s → 128ms | 20.6s → 20ms | 200ms → 16.7ms |
+
+The "after" scroll runs at 9,000px/s through page loads, faster than the earlier
+3,000px/s runs, and the emulator's GPU is not slowed by the throttle. A page
+landing is synchronous and is the remaining cost: 3 or 4 frames over 50ms in 15
+seconds of scrolling, the worst 183ms.
+
+The store on this machine's largest transcripts, run standalone under Node 20
+rather than inside the daemon:
+
+| Transcript | Items | First parse | Worst event-loop stall | Biggest page | RSS growth |
+|---|---|---|---|---|---|
+| Claude, 31.4MB | 833 | 78ms | 9ms | 0.23MB | 18MB |
+| Codex, 37MB | 56 | 102ms | 14ms | 3.4MB | 57MB |
+| Codex, 29.1MB | 241 | 91ms | 14ms | 4.38MB | 25MB |
+
+A page can pass 4MB slightly because the bound counts characters of content and
+the JSON around it is extra. Holding a store costs about what its images cost,
+which is what the idle eviction is for.
+
+Verified end to end by driving the running app over the real socket, on a real
+Claude stream session whose transcript was grown by 3,000 records:
+`scripts/test-conversation-paging.ts` covers the store, and that pass covered the
+welcome card, reaching the conversation's first message and scrolling back down,
+no reader movement at any page, an arrival leaving a reader in history untouched,
+a real turn adding two nodes while all 1,001 on screen kept their identity, and a
+tab switch keeping the position.
+
+Not covered: touch flings, which a programmatic scroll is not; find-in-page, which
+now sees only the window; the scrollbar, which measures the window rather than the
+conversation; and text still capped by `TEXT_CAP` and `TOOL_CAP`, which remain.
 
 ## Typing while the agent is busy: the queue
 

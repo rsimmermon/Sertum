@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ConversationPageRequest,
+  ConversationReadRequest,
   AgentEffortList,
   AgentModelList,
   EffortChangeResult,
@@ -128,8 +130,10 @@ const api: SertumApi = {
   defaultCwd: () => ipcRenderer.invoke('workspace:default-cwd'),
   inspectDirectory: (dir: string) =>
     ipcRenderer.invoke('workspace:inspect', dir),
-  readConversation: (id: string, known?: string | null) =>
-    ipcRenderer.invoke('conversation:read', id, known),
+  readConversation: (id: string, request?: ConversationReadRequest) =>
+    ipcRenderer.invoke('conversation:read', id, request),
+  readConversationPage: (id: string, request: ConversationPageRequest) =>
+    ipcRenderer.invoke('conversation:page', id, request),
   sendChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
     ipcRenderer.invoke('chat:send', { id, text, attachments }),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),

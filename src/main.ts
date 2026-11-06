@@ -54,7 +54,12 @@ import type {
   Settings,
   PermissionMode,
 } from './shared/types';
-import type { PtySize, SessionSpec } from './shared/types';
+import type {
+  ConversationPageRequest,
+  ConversationReadRequest,
+  PtySize,
+  SessionSpec,
+} from './shared/types';
 
 // Sets the userData dir and the name Electron reports to the app itself.
 // On macOS this does NOT drive the menu-bar/Dock title: those come from the
@@ -737,8 +742,11 @@ ipcMain.handle(
   (_e, p: { id: string; text: string; attachments?: ChatAttachment[] }) =>
     daemon.request('chat/send', p),
 );
-ipcMain.handle('conversation:read', (_e, id: string, known?: string | null) =>
-  daemon.request('conversation/read', { id, known }),
+ipcMain.handle('conversation:read', (_e, id: string, request?: ConversationReadRequest) =>
+  daemon.request('conversation/read', { ...request, id }),
+);
+ipcMain.handle('conversation:page', (_e, id: string, request: ConversationPageRequest) =>
+  daemon.request('conversation/page', { ...request, id }),
 );
 
 ipcMain.handle('discovery:list', () => daemon.request('discovery/list'));ipcMain.handle('discovery:focus', (_e, pid: number) =>

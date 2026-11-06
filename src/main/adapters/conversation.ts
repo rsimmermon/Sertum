@@ -1,10 +1,14 @@
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import type {
   AgentKind,
   ChatItem,
+  ConversationPageRequest,
+  ConversationRead,
+  ConversationReadRequest,
   ConversationSnapshot,
 } from '../../shared/types';
-import { classifyMessages } from './markdown-format';
+import { classifyMessage } from './markdown-format';
 
 /**
  * Reads a session's transcript as a conversation.
@@ -30,51 +34,270 @@ import { classifyMessages } from './markdown-format';
  *           `tool_call_id`, and `synthetic_reason` marks injected context.
  */
 
-/**
- * Read complete transcripts until they become genuinely exceptional. Image
- * tools embed multi-megabyte data URLs in one JSONL record, so a small byte
- * tail can never promise even one complete turn.
- */
-const TRANSCRIPT_CAP = 32 * 1024 * 1024;
-
 /** Prose is capped high — losing the end of an answer defeats the view. */
 const TEXT_CAP = 24_000;
 
 /** Tool payloads are capped low: they are context, not the conversation. */
 const TOOL_CAP = 2_000;
 
-/** Ceiling on rendered items, so a chatty turn cannot swamp the renderer. */
-const ITEM_CAP = 400;
+/** The most items one answer carries, however small they are. */
+const PAGE_ITEMS = 200;
 
-const conversationCache = new Map<
-  string,
-  { size: number; mtime: number; snapshot: ConversationSnapshot }
->();
+/**
+ * The most one answer carries in characters. Image items hold their data URL,
+ * so a count alone cannot bound a page: 60 items measured 9.32MB on a Codex
+ * session with pasted screenshots. One item always goes, whatever its size.
+ */
+const PAGE_CHARS = 4 * 1024 * 1024;
+
+/** Transcripts are read in slices so a large one never holds the event loop. */
+const READ_CHUNK = 1024 * 1024;
+
+/** How much of what was already read must still match before reading on. */
+const TAIL_CHECK = 256;
+
+/**
+ * A transcript nobody has asked about for this long is dropped and parsed again
+ * when next asked. Panes poll only while on screen, and an image-heavy session
+ * costs roughly its file size to hold. Versions survive this; see `versionOf`.
+ */
+const IDLE_MS = 10 * 60_000;
+
+type ToolItem = ChatItem & { kind: 'tool' };
+
+interface ParseContext {
+  items: ChatItem[];
+  tools: Map<string, { tool: ToolItem; index: number }>;
+  /** Indexes of existing items the current record changed. */
+  touched: number[];
+}
+
+/** One transcript's parsed items, extended as the file grows. */
+interface TranscriptStore extends ParseContext {
+  agent: AgentKind;
+  file: string;
+  /** Names this file's content; a client holding another identity starts over. */
+  identity: string | null;
+  /** Bytes consumed, always at a record boundary. */
+  offset: number;
+  /** For each item, the end offset of the record that last changed it. */
+  revs: number[];
+  /** The bytes just before `offset`, to notice a file rewritten in place. */
+  tail: Buffer;
+  size: number;
+  mtime: number;
+  /** The last user message, which the next assistant message answers. */
+  request: string;
+  lastAsked: number;
+  syncing: Promise<boolean> | null;
+}
+
+const stores = new Map<string, TranscriptStore>();
+
+function freshStore(agent: AgentKind, file: string): TranscriptStore {
+  return {
+    agent,
+    file,
+    items: [],
+    tools: new Map(),
+    touched: [],
+    identity: null,
+    offset: 0,
+    revs: [],
+    tail: Buffer.alloc(0),
+    size: -1,
+    mtime: -1,
+    request: '',
+    lastAsked: Date.now(),
+    syncing: null,
+  };
+}
 
 export function noConversation(reason: string): ConversationSnapshot {
   return {
     items: [],
+    start: 0,
+    total: 0,
     path: null,
     updatedAt: null,
-    truncated: false,
     reason,
     version: null,
   };
 }
 
 /**
- * What a snapshot was read from, in the two numbers that decide whether it
- * has moved. The same pair the cache above keys on, named once so a poll's
- * "unchanged" and the cache's hit can never disagree about what identity is.
+ * Where a client has read up to: this content, up to this byte.
+ *
+ * Both halves are derived from the file rather than from this process, and an
+ * item's revision is the offset of the record that last changed it. So parsing
+ * the same bytes again, after an idle eviction or a daemon restart, reproduces
+ * the same answers, and a reader scrolled back through history keeps their
+ * place instead of being sent back to the end.
  */
-function versionOf(size: number, mtime: number): string {
-  return `${size}:${mtime}`;
+function versionOf(store: TranscriptStore): string {
+  return `${store.identity ?? 'empty'}:${store.offset}`;
 }
 
-export function readConversation(
+function parseVersion(version: string): { identity: string; offset: number } | null {
+  const cut = version.lastIndexOf(':');
+  const offset = Number(version.slice(cut + 1));
+  if (cut < 1 || !Number.isSafeInteger(offset)) return null;
+  return { identity: version.slice(0, cut), offset };
+}
+
+function charsOf(item: ChatItem): number {
+  switch (item.kind) {
+    case 'message':
+    case 'thinking':
+      return item.text.length;
+    case 'image':
+      return item.src.length;
+    case 'tool':
+      return (item.detail?.length ?? 0) + (item.output?.length ?? 0);
+  }
+}
+
+function feedRecord(store: TranscriptStore, rec: Record<string, unknown>, end: number): void {
+  switch (store.agent) {
+    case 'codex':
+      feedCodex(store, rec);
+      break;
+    case 'grok':
+      feedGrok(store, rec);
+      break;
+    default:
+      feedClaude(store, rec);
+  }
+  for (let index = store.revs.length; index < store.items.length; index += 1) {
+    const item = store.items[index];
+    // Items are classified as they arrive, each against the request before
+    // it, and that request can never change, so neither can a format.
+    if (item?.kind === 'message') {
+      if (item.role === 'user') store.request = item.text;
+      else item.format = classifyMessage(item.text, store.request);
+    }
+    store.revs.push(end);
+  }
+  for (const index of store.touched) store.revs[index] = end;
+  store.touched.length = 0;
+}
+
+/** Parse one line; a line that is not a record is skipped, never fatal. */
+function feedLine(store: TranscriptStore, line: Buffer, end: number): boolean {
+  store.identity ??= createHash('sha1')
+    .update(store.file)
+    .update(line)
+    .digest('hex')
+    .slice(0, 16);
+  const text = line.toString('utf8').trim();
+  store.offset = end;
+  if (!text.startsWith('{')) return false;
+  try {
+    feedRecord(store, JSON.parse(text) as Record<string, unknown>, end);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read whatever the file has gained. False when it could not be read. */
+async function readNewRecords(store: TranscriptStore): Promise<boolean> {
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(store.file, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const stat = await handle.stat();
+    if (stat.size === store.size && stat.mtimeMs === store.mtime) return true;
+
+    let intact = stat.size >= store.offset;
+    if (intact && store.tail.length) {
+      const check = Buffer.alloc(store.tail.length);
+      await handle.read(check, 0, check.length, store.offset - check.length);
+      intact = check.equals(store.tail);
+    }
+    if (!intact) {
+      // Rewritten in place, so nothing already read can be trusted to line up.
+      // The nonce makes this identity differ from the old one even when the
+      // first record is the same, which sends every client back to the tail.
+      const fresh = freshStore(store.agent, store.file);
+      fresh.lastAsked = store.lastAsked;
+      const { syncing } = store;
+      Object.assign(store, fresh, { syncing });
+      store.identity = null;
+      rewriteNonces.set(store.file, randomBytes(4).toString('hex'));
+    }
+
+    let position = store.offset;
+    let lineStart = position;
+    let carry: Buffer[] = [];
+    const chunk = Buffer.allocUnsafe(READ_CHUNK);
+    while (position < stat.size) {
+      const want = Math.min(READ_CHUNK, stat.size - position);
+      const { bytesRead } = await handle.read(chunk, 0, want, position);
+      if (bytesRead === 0) break;
+      const view = chunk.subarray(0, bytesRead);
+      let from = 0;
+      for (;;) {
+        const newline = view.indexOf(0x0a, from);
+        if (newline === -1) break;
+        const end = position + newline + 1;
+        const piece = view.subarray(from, newline);
+        const line = carry.length ? Buffer.concat([...carry, piece]) : piece;
+        carry = [];
+        feedLine(store, line, end);
+        lineStart = end;
+        from = newline + 1;
+      }
+      if (from < bytesRead) carry.push(Buffer.from(view.subarray(from)));
+      position += bytesRead;
+    }
+    // A final line with no newline is either a record still being written or a
+    // complete one from a writer that does not end its file with a newline.
+    // Only the second parses, so nothing half-written is ever taken as a record.
+    if (carry.length) {
+      const line = Buffer.concat(carry);
+      if (isCompleteRecord(line)) feedLine(store, line, lineStart + line.length);
+    }
+    const nonce = rewriteNonces.get(store.file);
+    if (nonce && store.identity && !store.identity.endsWith(nonce)) {
+      store.identity = `${store.identity}${nonce}`;
+    }
+
+    const tailLength = Math.min(TAIL_CHECK, store.offset);
+    store.tail = Buffer.alloc(tailLength);
+    await handle.read(store.tail, 0, tailLength, store.offset - tailLength);
+    store.size = stat.size;
+    store.mtime = stat.mtimeMs;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** Files seen rewritten in place; lost on restart, when no client remains either. */
+const rewriteNonces = new Map<string, string>();
+
+function isCompleteRecord(line: Buffer): boolean {
+  const text = line.toString('utf8').trim();
+  if (!text.startsWith('{')) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The store for this transcript, caught up with the file, or why it is not. */
+async function currentStore(
   agent: AgentKind,
   file: string,
-): ConversationSnapshot {
+): Promise<TranscriptStore | ConversationSnapshot> {
   // Claude names its transcript in the first hook payload before the file
   // exists, so "not there yet" is the young session's normal state, not an
   // error.
@@ -83,59 +306,125 @@ export function readConversation(
       'No transcript yet — the conversation appears once the agent records its first turn.',
     );
   }
-  const cacheKey = `${agent}\0${file}`;
-  try {
-    const stat = fs.statSync(file);
-    const cached = conversationCache.get(cacheKey);
-    if (cached?.size === stat.size && cached.mtime === stat.mtimeMs) {
-      return cached.snapshot;
-    }
-  } catch {
-    return noConversation('The transcript could not be read.');
+  const now = Date.now();
+  for (const [key, held] of stores) {
+    if (!held.syncing && now - held.lastAsked > IDLE_MS) stores.delete(key);
   }
-  const tail = readTail(file);
-  if (!tail) {
-    return noConversation('The transcript could not be read.');
+  const key = `${agent}\0${file}`;
+  let store = stores.get(key);
+  if (!store) {
+    store = freshStore(agent, file);
+    stores.set(key, store);
   }
-  // Sized once, here, rather than again beside the cache write: the snapshot's
-  // version and the cache's key have to be the same two numbers, and two
-  // stats of a file an agent is actively appending to need not agree.
-  let size: number;
-  try {
-    size = fs.statSync(file).size;
-  } catch {
-    return noConversation('The transcript could not be read.');
-  }
+  store.lastAsked = now;
+  // Two panes on one transcript, or a poll overtaking a slow read, share a read
+  // rather than racing to feed the same bytes in twice.
+  store.syncing ??= readNewRecords(store).finally(() => {
+    (store as TranscriptStore).syncing = null;
+  });
+  const ok = await store.syncing;
+  return ok ? store : noConversation('The transcript could not be read.');
+}
 
-  let items: ChatItem[];
-  switch (agent) {
-    case 'codex':
-      items = parseCodex(tail.records);
-      break;
-    case 'grok':
-      items = parseGrok(tail.records);
-      break;
-    default:
-      items = parseClaude(tail.records);
-  }
-
-  classifyMessages(items);
-
-  const truncated = tail.truncated || items.length > ITEM_CAP;
-  if (items.length > ITEM_CAP) items = items.slice(items.length - ITEM_CAP);
-
-  const snapshot: ConversationSnapshot = {
-    items,
-    path: file,
-    updatedAt: tail.mtime,
-    truncated,
-    reason: items.length
-      ? null
-      : 'Nothing conversational in the transcript yet.',
-    version: versionOf(size, tail.mtime),
+/** Items `[start, end)`, as one bounded answer. */
+function snapshotOf(store: TranscriptStore, start: number, end: number): ConversationSnapshot {
+  const total = store.items.length;
+  return {
+    items: store.items.slice(start, end),
+    start,
+    total,
+    path: store.file,
+    updatedAt: store.mtime,
+    reason: total ? null : 'Nothing conversational in the transcript yet.',
+    version: versionOf(store),
   };
-  conversationCache.set(cacheKey, { size, mtime: tail.mtime, snapshot });
-  return snapshot;
+}
+
+/** Walk back from `end` until the page is full. */
+function pageEndingAt(store: TranscriptStore, end: number, limit: number): ConversationSnapshot {
+  let start = end;
+  let chars = 0;
+  while (start > 0 && end - start < limit) {
+    const item = store.items[start - 1];
+    chars += item ? charsOf(item) : 0;
+    if (chars > PAGE_CHARS && start < end) break;
+    start -= 1;
+  }
+  return snapshotOf(store, start, end);
+}
+
+/** Walk forward from `start` until the page is full. */
+function pageStartingAt(store: TranscriptStore, start: number, limit: number): ConversationSnapshot {
+  const total = store.items.length;
+  let end = Math.min(start, total);
+  let chars = 0;
+  while (end < total && end - start < limit) {
+    const item = store.items[end];
+    chars += item ? charsOf(item) : 0;
+    if (chars > PAGE_CHARS && end > start) break;
+    end += 1;
+  }
+  return snapshotOf(store, Math.min(start, total), end);
+}
+
+/**
+ * What a client needs to catch up.
+ *
+ * With nothing known, or a version from different content, the answer is the
+ * newest page. Otherwise it is only what changed: items in the window the client
+ * holds whose record moved past its version, and, when it is following the end,
+ * whatever arrived. Too much to send at once falls back to the newest page.
+ */
+export async function readConversation(
+  agent: AgentKind,
+  file: string,
+  request: ConversationReadRequest = {},
+): Promise<ConversationRead> {
+  const current = await currentStore(agent, file);
+  if (!('revs' in current)) return current;
+  const store = current;
+  const total = store.items.length;
+  const newest = (): ConversationSnapshot => pageEndingAt(store, total, PAGE_ITEMS);
+
+  const known = request.known ? parseVersion(request.known) : null;
+  if (!known || known.identity !== (store.identity ?? 'empty') || known.offset > store.offset) {
+    return newest();
+  }
+  if (known.offset === store.offset) return { unchanged: true };
+
+  const start = Math.max(0, request.start ?? 0);
+  const end = request.follow ? total : Math.min(total, request.end ?? total);
+  const changed: Array<{ index: number; item: ChatItem }> = [];
+  let chars = 0;
+  for (let index = start; index < end; index += 1) {
+    if ((store.revs[index] ?? 0) <= known.offset) continue;
+    const item = store.items[index];
+    if (!item) continue;
+    chars += charsOf(item);
+    changed.push({ index, item });
+    if (changed.length > PAGE_ITEMS || chars > PAGE_CHARS) return newest();
+  }
+  return {
+    delta: true,
+    changed,
+    total,
+    updatedAt: store.mtime,
+    version: versionOf(store),
+  };
+}
+
+/** One bounded page of history, from either direction. */
+export async function readConversationPage(
+  agent: AgentKind,
+  file: string,
+  request: ConversationPageRequest,
+): Promise<ConversationSnapshot> {
+  const current = await currentStore(agent, file);
+  if (!('revs' in current)) return current;
+  const limit = Math.min(PAGE_ITEMS, Math.max(1, request.limit ?? PAGE_ITEMS));
+  return request.before !== undefined
+    ? pageEndingAt(current, Math.min(Math.max(0, request.before), current.items.length), limit)
+    : pageStartingAt(current, Math.max(0, request.from ?? 0), limit);
 }
 
 // ------------------------------------------------------------------ Claude
@@ -148,68 +437,57 @@ export function readConversation(
 const CLAUDE_MACHINE_TEXT =
   /^\s*<(local-command|command-|bash-|system-reminder|task-notification|user-memory)/;
 
-function parseClaude(records: Array<Record<string, unknown>>): ChatItem[] {
-  const items: ChatItem[] = [];
-  const toolsById = new Map<string, ChatItem & { kind: 'tool' }>();
+function feedClaude(context: ParseContext, rec: Record<string, unknown>): void {
+  const { items } = context;
+  if (rec.type !== 'user' && rec.type !== 'assistant') return;
+  // Injected context and subagent traffic are not the conversation.
+  if (rec.isMeta === true || rec.isSidechain === true) return;
+  const msg = rec.message as Record<string, unknown> | undefined;
+  if (!msg) return;
+  const role = msg.role;
+  if (role !== 'user' && role !== 'assistant') return;
+  const at = parseTime(rec.timestamp);
 
-  for (const rec of records) {
-    if (rec.type !== 'user' && rec.type !== 'assistant') continue;
-    // Injected context and subagent traffic are not the conversation.
-    if (rec.isMeta === true || rec.isSidechain === true) continue;
-    const msg = rec.message as Record<string, unknown> | undefined;
-    if (!msg) continue;
-    const role = msg.role;
-    if (role !== 'user' && role !== 'assistant') continue;
-    const at = parseTime(rec.timestamp);
+  const content = msg.content;
+  if (typeof content === 'string') {
+    pushMessage(items, role, content, at, CLAUDE_MACHINE_TEXT);
+    return;
+  }
+  if (!Array.isArray(content)) return;
 
-    const content = msg.content;
-    if (typeof content === 'string') {
-      pushMessage(items, role, content, at, CLAUDE_MACHINE_TEXT);
-      continue;
-    }
-    if (!Array.isArray(content)) continue;
-
-    for (const raw of content) {
-      if (!raw || typeof raw !== 'object') continue;
-      const block = raw as Record<string, unknown>;
-      switch (block.type) {
-        case 'text':
-          if (typeof block.text === 'string') {
-            pushMessage(items, role, block.text, at, CLAUDE_MACHINE_TEXT);
-          }
-          break;
-        case 'thinking':
-          if (typeof block.thinking === 'string' && block.thinking.trim()) {
-            items.push({ kind: 'thinking', text: cap(block.thinking, TEXT_CAP), at });
-          }
-          break;
-        case 'tool_use': {
-          const tool: ChatItem & { kind: 'tool' } = {
-            kind: 'tool',
-            name: typeof block.name === 'string' ? block.name : 'tool',
-            detail: claudeToolDetail(block.input),
-            output: null,
-            at,
-          };
-          if (typeof block.id === 'string') toolsById.set(block.id, tool);
-          items.push(tool);
-          break;
+  for (const raw of content) {
+    if (!raw || typeof raw !== 'object') continue;
+    const block = raw as Record<string, unknown>;
+    switch (block.type) {
+      case 'text':
+        if (typeof block.text === 'string') {
+          pushMessage(items, role, block.text, at, CLAUDE_MACHINE_TEXT);
         }
-        case 'tool_result': {
-          // Paired by the call's own id. A result whose call scrolled out of
-          // the tail window has nowhere honest to land, so it is dropped.
-          const id = block.tool_use_id;
-          const tool = typeof id === 'string' ? toolsById.get(id) : undefined;
-          if (tool) {
-            tool.output = cap(joinBlockText(block.content), TOOL_CAP);
-            pushImages(items, block.content, tool.name, at);
-          }
-          break;
+        break;
+      case 'thinking':
+        if (typeof block.thinking === 'string' && block.thinking.trim()) {
+          items.push({ kind: 'thinking', text: cap(block.thinking, TEXT_CAP), at });
         }
+        break;
+      case 'tool_use': {
+        pushTool(
+          context,
+          typeof block.id === 'string' ? block.id : null,
+          typeof block.name === 'string' ? block.name : 'tool',
+          claudeToolDetail(block.input),
+          at,
+        );
+        break;
+      }
+      case 'tool_result': {
+        // Paired by the call's own id. A result with no call on record has
+        // nowhere honest to land, so it is dropped.
+        const tool = setToolOutput(context, block.tool_use_id, block.content);
+        if (tool) pushImages(items, block.content, tool.name, at);
+        break;
       }
     }
   }
-  return items;
 }
 
 /**
@@ -263,132 +541,107 @@ function questionText(value: unknown): string | null {
 const CODEX_MACHINE_TEXT =
   /^\s*<(environment_context|user_instructions|skills_instructions|recommended_plugins|turn_aborted|permissions|collaboration_mode|AGENTS)/;
 
-function parseCodex(records: Array<Record<string, unknown>>): ChatItem[] {
-  const items: ChatItem[] = [];
-  const toolsByCall = new Map<string, ChatItem & { kind: 'tool' }>();
+function feedCodex(context: ParseContext, rec: Record<string, unknown>): void {
+  const { items } = context;
+  if (rec.type !== 'response_item') return;
+  const p = rec.payload as Record<string, unknown> | undefined;
+  if (!p) return;
+  const at = parseTime(rec.timestamp);
 
-  for (const rec of records) {
-    if (rec.type !== 'response_item') continue;
-    const p = rec.payload as Record<string, unknown> | undefined;
-    if (!p) continue;
-    const at = parseTime(rec.timestamp);
-
-    switch (p.type) {
-      case 'message': {
-        const role = p.role;
-        // `developer` records are injected instructions, not conversation.
-        if (role !== 'user' && role !== 'assistant') break;
-        pushMessage(items, role, joinBlockText(p.content), at, CODEX_MACHINE_TEXT);
-        break;
-      }
-      case 'function_call':
-      case 'custom_tool_call': {
-        const detail = p.type === 'function_call' ? p.arguments : p.input;
-        const tool: ChatItem & { kind: 'tool' } = {
-          kind: 'tool',
-          name: typeof p.name === 'string' ? p.name : 'tool',
-          detail: typeof detail === 'string' && detail ? cap(detail, TOOL_CAP) : null,
-          output: null,
-          at,
-        };
-        if (typeof p.call_id === 'string') toolsByCall.set(p.call_id, tool);
-        items.push(tool);
-        break;
-      }
-      case 'function_call_output':
-      case 'custom_tool_call_output': {
-        const id = p.call_id;
-        const tool = typeof id === 'string' ? toolsByCall.get(id) : undefined;
-        if (tool) {
-          tool.output = cap(joinBlockText(p.output), TOOL_CAP);
-          pushImages(items, p.output, tool.name, at);
-        }
-        break;
-      }
-      case 'reasoning': {
-        const text = joinSummaryText(p.summary);
-        if (text) items.push({ kind: 'thinking', text: cap(text, TEXT_CAP), at });
-        break;
-      }
+  switch (p.type) {
+    case 'message': {
+      const role = p.role;
+      // `developer` records are injected instructions, not conversation.
+      if (role !== 'user' && role !== 'assistant') break;
+      pushMessage(items, role, joinBlockText(p.content), at, CODEX_MACHINE_TEXT);
+      break;
+    }
+    case 'function_call':
+    case 'custom_tool_call': {
+      const detail = p.type === 'function_call' ? p.arguments : p.input;
+      pushTool(
+        context,
+        typeof p.call_id === 'string' ? p.call_id : null,
+        typeof p.name === 'string' ? p.name : 'tool',
+        typeof detail === 'string' && detail ? cap(detail, TOOL_CAP) : null,
+        at,
+      );
+      break;
+    }
+    case 'function_call_output':
+    case 'custom_tool_call_output': {
+      const tool = setToolOutput(context, p.call_id, p.output);
+      if (tool) pushImages(items, p.output, tool.name, at);
+      break;
+    }
+    case 'reasoning': {
+      const text = joinSummaryText(p.summary);
+      if (text) items.push({ kind: 'thinking', text: cap(text, TEXT_CAP), at });
+      break;
     }
   }
-  return items;
 }
 
 // -------------------------------------------------------------------- Grok
 
-function parseGrok(records: Array<Record<string, unknown>>): ChatItem[] {
-  const items: ChatItem[] = [];
-  const toolsByCall = new Map<string, ChatItem & { kind: 'tool' }>();
-
-  for (const rec of records) {
-    // Grok stamps the context it injects; the environment preamble is the
-    // one unmarked injection, identified by the tag it opens with.
-    if (typeof rec.synthetic_reason === 'string' && rec.synthetic_reason) {
-      continue;
+function feedGrok(context: ParseContext, rec: Record<string, unknown>): void {
+  const { items } = context;
+  // Grok stamps the context it injects; the environment preamble is the
+  // one unmarked injection, identified by the tag it opens with.
+  if (typeof rec.synthetic_reason === 'string' && rec.synthetic_reason) return;
+  // No timestamps anywhere in Grok's chat history: `at` stays null.
+  switch (rec.type) {
+    case 'user': {
+      const text = joinBlockText(rec.content).trim();
+      if (!text || text.startsWith('<user_info>')) break;
+      items.push({
+        kind: 'message',
+        role: 'user',
+        text: cap(unwrapUserQuery(text), TEXT_CAP),
+        at: null,
+        format: 'text',
+      });
+      break;
     }
-    // No timestamps anywhere in Grok's chat history: `at` stays null.
-    switch (rec.type) {
-      case 'user': {
-        const text = joinBlockText(rec.content).trim();
-        if (!text || text.startsWith('<user_info>')) break;
+    case 'assistant': {
+      const text = joinBlockText(rec.content).trim();
+      if (text) {
         items.push({
           kind: 'message',
-          role: 'user',
-          text: cap(unwrapUserQuery(text), TEXT_CAP),
+          role: 'assistant',
+          text: cap(text, TEXT_CAP),
           at: null,
           format: 'text',
         });
-        break;
       }
-      case 'assistant': {
-        const text = joinBlockText(rec.content).trim();
-        if (text) {
-          items.push({
-            kind: 'message',
-            role: 'assistant',
-            text: cap(text, TEXT_CAP),
-            at: null,
-            format: 'text',
-          });
+      if (Array.isArray(rec.tool_calls)) {
+        for (const raw of rec.tool_calls) {
+          if (!raw || typeof raw !== 'object') continue;
+          const call = raw as Record<string, unknown>;
+          pushTool(
+            context,
+            typeof call.id === 'string' ? call.id : null,
+            typeof call.name === 'string' ? call.name : 'tool',
+            typeof call.arguments === 'string' && call.arguments
+              ? cap(call.arguments, TOOL_CAP)
+              : null,
+            null,
+          );
         }
-        if (Array.isArray(rec.tool_calls)) {
-          for (const raw of rec.tool_calls) {
-            if (!raw || typeof raw !== 'object') continue;
-            const call = raw as Record<string, unknown>;
-            const tool: ChatItem & { kind: 'tool' } = {
-              kind: 'tool',
-              name: typeof call.name === 'string' ? call.name : 'tool',
-              detail:
-                typeof call.arguments === 'string' && call.arguments
-                  ? cap(call.arguments, TOOL_CAP)
-                  : null,
-              output: null,
-              at: null,
-            };
-            if (typeof call.id === 'string') toolsByCall.set(call.id, tool);
-            items.push(tool);
-          }
-        }
-        break;
       }
-      case 'tool_result': {
-        const id = rec.tool_call_id;
-        const tool = typeof id === 'string' ? toolsByCall.get(id) : undefined;
-        if (tool) {
-          tool.output = cap(joinBlockText(rec.content), TOOL_CAP);
-          pushImages(items, rec.content, tool.name, null);
-        }
-        break;
-      }
-      case 'reasoning': {
-        const text = joinSummaryText(rec.summary);
-        if (text) items.push({ kind: 'thinking', text: cap(text, TEXT_CAP), at: null });
-        break;
-      }
+      break;
+    }
+    case 'tool_result': {
+      const tool = setToolOutput(context, rec.tool_call_id, rec.content);
+      if (tool) pushImages(items, rec.content, tool.name, null);
+      break;
+    }
+    case 'reasoning': {
+      const text = joinSummaryText(rec.summary);
+      if (text) items.push({ kind: 'thinking', text: cap(text, TEXT_CAP), at: null });
+      break;
     }
   }
-  return items;
 }
 
 /** Grok wraps what the user typed; the tags are ours to strip, not to show. */
@@ -403,6 +656,31 @@ function unwrapUserQuery(text: string): string {
 
 // ----------------------------------------------------------------- helpers
 
+function pushTool(
+  context: ParseContext,
+  id: string | null,
+  name: string,
+  detail: string | null,
+  at: number | null,
+): void {
+  const tool: ToolItem = { kind: 'tool', name, detail, output: null, at };
+  if (id) context.tools.set(id, { tool, index: context.items.length });
+  context.items.push(tool);
+}
+
+/** Pair a result with its call by the agent's own id, recording what moved. */
+function setToolOutput(
+  context: ParseContext,
+  id: unknown,
+  content: unknown,
+): ToolItem | undefined {
+  const entry = typeof id === 'string' ? context.tools.get(id) : undefined;
+  if (!entry) return undefined;
+  entry.tool.output = cap(joinBlockText(content), TOOL_CAP);
+  context.touched.push(entry.index);
+  return entry.tool;
+}
+
 function pushMessage(
   items: ChatItem[],
   role: 'user' | 'assistant',
@@ -414,8 +692,7 @@ function pushMessage(
   if (!trimmed) return;
   if (role === 'user' && machine.test(trimmed)) return;
   // `format` is the parsers' placeholder: telling markdown from prose needs
-  // the request a message answers, which only exists once the whole list is
-  // built. `classifyMessages` fills it in there.
+  // the request a message answers. `feedRecord` fills it in as items arrive.
   items.push({ kind: 'message', role, text: cap(trimmed, TEXT_CAP), at, format: 'text' });
 }
 
@@ -480,39 +757,4 @@ function imageDataUrls(value: unknown): string[] {
   };
   visit(value);
   return [...new Set(found)];
-}
-
-function readTail(
-  file: string,
-): { records: Array<Record<string, unknown>>; mtime: number; truncated: boolean } | null {
-  try {
-    const stat = fs.statSync(file);
-    const start = Math.max(0, stat.size - TRANSCRIPT_CAP);
-    const fd = fs.openSync(file, 'r');
-    let text: string;
-    try {
-      const len = stat.size - start;
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, start);
-      text = buf.toString('utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
-    const lines = text.split('\n');
-    // A read that started mid-file almost certainly opens mid-record.
-    if (start > 0) lines.shift();
-    const records: Array<Record<string, unknown>> = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('{')) continue;
-      try {
-        records.push(JSON.parse(trimmed) as Record<string, unknown>);
-      } catch {
-        // One unparseable record must not abandon the file.
-      }
-    }
-    return { records, mtime: stat.mtimeMs, truncated: start > 0 };
-  } catch {
-    return null;
-  }
 }

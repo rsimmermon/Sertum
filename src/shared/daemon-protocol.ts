@@ -19,6 +19,12 @@ import path from 'node:path';
 /**
  * Bumped on any incompatible change to methods, params or events.
  *
+ * Protocol 9 makes conversation reads windowed: `conversation/read` takes the
+ * window a client holds and answers with what changed in it, and
+ * `conversation/page` fetches history. A protocol 8 daemon has no paging and
+ * sends no `start` or `total`, so a new pane would read its newest 400 items as
+ * the whole conversation, which is what this exists to end.
+ *
  * Protocol 8 adds `turnActive` and `subagents` to every session snapshot,
  * and the composer now queues on `turnActive` rather than `status`. A
  * protocol 7 daemon sends neither, so a new GUI would read every session as
@@ -45,7 +51,7 @@ import path from 'node:path';
  * poll "Session not found." -- which is exactly why the handshake refuses
  * rather than trying.
  */
-export const DAEMON_PROTOCOL = 8;
+export const DAEMON_PROTOCOL = 9;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }

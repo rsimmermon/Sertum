@@ -483,14 +483,22 @@ Seven rules constrain any change here:
   verified PNG/JPEG/GIF/WebP files into image content blocks in `sertumd`;
   Codex sends `localImage` inputs; ordinary files and PTY-backed agents receive
   explicit absolute paths so their normal file permissions still apply.
-- **A poll asks whether the transcript moved; it does not fetch it again.**
+- **A poll asks what moved; it does not fetch the conversation again.**
   `conversation/read` takes the `version` the pane holds and answers
-  `{ unchanged: true }` when it still matches. Sending the snapshot every
-  second regardless is what locked the GUI up: a Codex conversation with
+  `{ unchanged: true }`, or only the items that changed. Sending the snapshot
+  every second regardless is what locked the GUI up: a Codex conversation with
   pasted images measures 9.32MB, 99.7% of it base64, and parsing that on the
   main thread once a second per pane saturated a core and starved the event
   loop until the window stopped responding. The pane records the version only
-  once it has drawn the snapshot, never when it arrives.
+  once it has drawn the answer, never when it arrives.
+- **The daemon holds the whole conversation; a pane holds a window of it.** Item
+  indexes are stable, a store reads only what its file gained, and a pane keeps
+  about 1,000 items, replacing only the nodes that changed and paging the rest
+  through `conversation/page`. Never rebuild the list on a change: that cost 3.1s
+  per new message at 20,000 items on a flagship phone. Versions derive from the
+  file rather than the process, so re-parsing reproduces them. A width change
+  restores the item at the top of the view rather than a pixel offset, which
+  rewrapping makes meaningless.
 
 The waiting bubble is on because an adapter reported a turn in progress,
 never because output went quiet, and the stop button calls the declared
@@ -599,7 +607,9 @@ transport decision, so the GUI sends no `transport` at all; a protocol 6
 daemon reads that absence as "not stream" and quietly starts a PTY session
 instead. Protocol 8 adds `turnActive` and `subagents` to every snapshot; a
 protocol 7 daemon sends neither, and the composer would read every session
-as never mid-turn and send into running turns.
+as never mid-turn and send into running turns. Protocol 9 makes conversation
+reads windowed and adds `conversation/page`; a protocol 8 daemon has neither, and
+a pane would read its newest 400 items as the whole conversation.
 
 **The daemon decides how a session is carried.** `session/create` treats an
 absent `transport` as "you decide": stream where the agent declares
@@ -1211,12 +1221,14 @@ desktop install. Node 22+ and JDK 21 are set per terminal, because desktop
 packaging still needs Node 20.
 
 Measured on an emulator and one flagship phone, not yet a mid-range one: the
-unmodified `ChatPane` runs in the WebView with only `window.sertum` replaced, but
-full history requires a bounded DOM window and incremental appends rather than
-today's full repaint. A WebView refuses both `ws://` and self-signed `wss://`, so
+`ChatPane` runs in the WebView with only `window.sertum` replaced, and full history
+is served by the bounded window described under "The conversation view". A WebView
+refuses both `ws://` and self-signed `wss://`, so
 the socket is native and pinned; that socket and mDNS discovery both work over
 real Wi-Fi. Discovery does not imply reachability, because a firewall can drop
-TCP while mDNS still works, so pairing must report the two separately. See
+TCP while mDNS still works, so pairing must report the two separately. The app
+draws edge to edge, so its shell pads by the safe-area insets, and on a foldable
+it fills the inner screen on opening without restarting. See
 [docs/mobile.md](docs/mobile.md).
 
 ## Running
@@ -1453,6 +1465,8 @@ scripts/
   ensure-electron.js          Fetch the Electron binary if absent; Electron 42+ has no postinstall
   ensure-pty-helper.js        Restore the +x bit node-pty's package drops from spawn-helper  [docs/terminal.md]
   smoke-pty.js                Headless PTY test
+  test-conversation-paging.ts The transcript store: paging, deltas, rewrites, half-written lines  [docs/conversation.md]
+  measure-conversation-store.ts  Store timing and memory on this machine's largest transcripts; prints no content
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
   smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall

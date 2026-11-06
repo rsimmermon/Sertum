@@ -1759,6 +1759,9 @@ select.field {
 .chat-scroll {
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
   padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+  /* The pane compensates for history added or dropped above the reader itself;
+     the browser's anchoring would apply the same correction a second time. */
+  overflow-anchor: none;
   scrollbar-color: var(--line) var(--bg);
   scrollbar-width: thin;
   cursor: text;

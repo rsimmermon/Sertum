@@ -46,6 +46,7 @@ import {
 import {
   noConversation,
   readConversation,
+  readConversationPage,
 } from '../main/adapters/conversation';
 import {
   findTranscriptForCwd,
@@ -77,7 +78,10 @@ import {
   type BinaryDetection,
   type ChatAttachment,
   type CodexRecovery,
+  type ConversationPageRequest,
   type ConversationRead,
+  type ConversationReadRequest,
+  type ConversationSnapshot,
   type DiscoveredSession,
   type ManagedAgent,
   type EffortChangeResult,
@@ -845,6 +849,24 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     }, 3000);
   }
 
+  /** The transcript a session's conversation comes from, or why it has none. */
+  function conversationSource(
+    id: string,
+  ): { agent: AgentKind; transcript: string } | ConversationSnapshot {
+    const session = ptys.get(id);
+    if (!session) return noConversation('Session not found.');
+    const answer =
+      agentAdapters.get(session.agent)?.capabilities['conversation-view'];
+    if (answer && !answer.ok) return noConversation(answer.reason);
+    const transcript = transcriptFor(session);
+    if (!transcript) {
+      return noConversation(
+        'No transcript yet — the conversation appears once the agent records its first turn.',
+      );
+    }
+    return { agent: session.agent, transcript };
+  }
+
   function transcriptFor(s: SessionSnapshot): string | null {
     if (s.transcriptPath) return s.transcriptPath;
 
@@ -1169,28 +1191,25 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       return structuredHostFor(p.id).send(p.id, message, attachments);
     },
     /**
-     * A chat pane's poll. `known` is the version the pane already holds, and
-     * when the transcript has not moved since, the answer is that one word
-     * rather than the conversation over again -- see `ConversationRead` for
-     * what re-sending it every second cost.
+     * A chat pane's poll. It names what the pane holds and is told only what
+     * moved -- see `ConversationRead` for what re-sending it every second cost.
      */
-    'conversation/read': (p: { id: string; known?: string | null }): ConversationRead => {
-      const session = ptys.get(p.id);
-      if (!session) return noConversation('Session not found.');
-      const answer =
-        agentAdapters.get(session.agent)?.capabilities['conversation-view'];
-      if (answer && !answer.ok) return noConversation(answer.reason);
-      const transcript = transcriptFor(session);
-      if (!transcript) {
-        return noConversation(
-          'No transcript yet — the conversation appears once the agent records its first turn.',
-        );
-      }
-      const snapshot = readConversation(session.agent, transcript);
-      if (p.known && snapshot.version && p.known === snapshot.version) {
-        return { unchanged: true };
-      }
-      return snapshot;
+    'conversation/read': async (
+      p: { id: string } & ConversationReadRequest,
+    ): Promise<ConversationRead> => {
+      const source = conversationSource(p.id);
+      return 'reason' in source
+        ? source
+        : readConversation(source.agent, source.transcript, p);
+    },
+    /** A page of history, for a pane scrolling beyond the window it holds. */
+    'conversation/page': async (
+      p: { id: string } & ConversationPageRequest,
+    ): Promise<ConversationSnapshot> => {
+      const source = conversationSource(p.id);
+      return 'reason' in source
+        ? source
+        : readConversationPage(source.agent, source.transcript, p);
     },
 
     'discovery/list': () => discoverSessions(ptys.ownedPids(), resolvedCommand),

@@ -4,7 +4,14 @@
 // window.sertum, which is the seam the phone app is betting on.
 import { registerPlugin } from '@capacitor/core';
 import '@desktop/index.css';
-import type { ChatItem, ConversationRead, SessionSnapshot } from '@desktop/shared/types';
+import type {
+  ChatItem,
+  ConversationPageRequest,
+  ConversationRead,
+  ConversationReadRequest,
+  ConversationSnapshot,
+  SessionSnapshot,
+} from '@desktop/shared/types';
 
 // --- Fixture: a seeded mix shaped like a working session, not private data.
 function fixture(count: number): ChatItem[] {
@@ -46,24 +53,47 @@ function fixture(count: number): ChatItem[] {
 }
 
 // --- The seam. Anything the pane asks for beyond the transcript resolves empty.
-let served: { items: ChatItem[]; version: string } = { items: [], version: 'none' };
+// The stub keeps the daemon's contract: bounded pages, and deltas by revision.
+const PAGE = 200;
+let served: ChatItem[] = [];
+let rev = 1;
+let revs: number[] = [];
 let readAt = 0;
-function readConversation(_id: string, known?: string | null): Promise<ConversationRead> {
-  if (known === served.version) return Promise.resolve({ unchanged: true } as ConversationRead);
+function serve(items: ChatItem[]) {
+  served = items;
+  rev += 1;
+  revs = items.map(() => rev);
+}
+function page(start: number, end: number): ConversationSnapshot {
+  return {
+    items: served.slice(start, end), start, total: served.length, path: 'fixture',
+    updatedAt: rev, reason: null, version: `fixture:${rev}`,
+  };
+}
+function readConversation(_id: string, request: ConversationReadRequest = {}): Promise<ConversationRead> {
+  const known = request.known ? Number(request.known.split(':')[1]) : null;
+  if (known === null) return Promise.resolve(page(Math.max(0, served.length - PAGE), served.length));
+  if (known === rev) return Promise.resolve({ unchanged: true } as ConversationRead);
   readAt = performance.now();
-  return Promise.resolve({
-    items: served.items,
-    path: 'fixture',
-    updatedAt: Number(served.version.slice(1)) || 1,
-    truncated: false,
-    reason: null,
-    version: served.version,
-  } as ConversationRead);
+  const from = request.start ?? 0;
+  const to = request.follow ? served.length : Math.min(served.length, request.end ?? served.length);
+  const changed = [];
+  for (let index = from; index < to; index += 1) {
+    if ((revs[index] ?? 0) > known) changed.push({ index, item: served[index] as ChatItem });
+  }
+  return Promise.resolve({ delta: true, changed, total: served.length, updatedAt: rev, version: `fixture:${rev}` } as ConversationRead);
+}
+function readConversationPage(_id: string, request: ConversationPageRequest): Promise<ConversationSnapshot> {
+  const size = request.limit ?? PAGE;
+  if (request.before !== undefined) return Promise.resolve(page(Math.max(0, request.before - size), request.before));
+  const from = request.from ?? 0;
+  return Promise.resolve(page(from, Math.min(served.length, from + size)));
 }
 const stub = new Proxy({} as Record<string, unknown>, {
   get(_t, prop: string) {
     if (prop === 'platform') return 'linux';
     if (prop === 'readConversation') return readConversation;
+    if (prop === 'readConversationPage') return readConversationPage;
     if (prop.startsWith('on')) return () => () => undefined;
     return async () => null;
   },
@@ -103,8 +133,9 @@ function nextRepaint(el: HTMLElement): Promise<void> {
   });
 }
 
+/** Scroll up from the end, as a reader does, paging in history on the way. */
 async function scrollProbe(el: HTMLElement, pxPerSecond: number, seconds: number) {
-  el.scrollTop = 0;
+  el.scrollTop = el.scrollHeight;
   await wait(300);
   const deltas: number[] = [];
   let last = await frame();
@@ -112,7 +143,7 @@ async function scrollProbe(el: HTMLElement, pxPerSecond: number, seconds: number
   while (last < end) {
     const now = await frame();
     deltas.push(now - last);
-    el.scrollTop += (pxPerSecond * (now - last)) / 1000;
+    el.scrollTop -= (pxPerSecond * (now - last)) / 1000;
     last = now;
   }
   const sorted = [...deltas].sort((a, b) => a - b);
@@ -126,19 +157,12 @@ async function scrollProbe(el: HTMLElement, pxPerSecond: number, seconds: number
   };
 }
 
-interface RunOptions { items: number; contentVisibility?: boolean; scrollSeconds?: number }
+interface RunOptions { items: number; scrollSeconds?: number; pxPerSecond?: number }
 
-/** Build the conversation at this size, scroll it, then deliver one new item. */
+/** Open the conversation, deliver new items, then scroll back through history. */
 async function run(options: RunOptions) {
-  const { items, contentVisibility = false, scrollSeconds = 5 } = options;
-  document.getElementById('spike-cv')?.remove();
-  if (contentVisibility) {
-    const style = document.createElement('style');
-    style.id = 'spike-cv';
-    style.textContent = '.chat-scroll > * { content-visibility: auto; contain-intrinsic-size: auto 140px; }';
-    document.head.append(style);
-  }
-  served = { items: fixture(items), version: 'v1' };
+  const { items, scrollSeconds = 5, pxPerSecond = 3000 } = options;
+  serve(fixture(items));
   const pane = new ChatPane(session, { ok: true }, () => undefined, null);
   host.replaceChildren(pane.element);
   const scroll = pane.element.querySelector('.chat-scroll') as HTMLElement;
@@ -148,27 +172,194 @@ async function run(options: RunOptions) {
   pane.attach();
   await first;
   const openMs = Math.round(performance.now() - started);
-  await wait(500);
+  await wait(300);
 
-  const scrolling = await scrollProbe(scroll, 3000, scrollSeconds);
+  // A new item costs its own nodes now, and this is what a person typing in
+  // the composer would feel.
+  const newItems: number[] = [];
+  for (let i = 0; i < 3; i += 1) {
+    const arrived = { kind: 'message', role: 'assistant', text: `## New ${i}\n\nA **new** message.`, at: Date.now(), format: 'markdown' } as ChatItem;
+    rev += 1;
+    served.push(arrived);
+    revs.push(rev);
+    const repaint = nextRepaint(scroll);
+    await repaint;
+    newItems.push(Math.round(performance.now() - readAt));
+  }
+  const nodesAtTail = pane.element.querySelectorAll('*').length;
 
-  // Today's path: one new item repaints the whole conversation, and that is
-  // the stall a person typing in the composer would feel.
-  served = {
-    items: [...served.items, { kind: 'message', role: 'assistant', text: 'A new message.', at: Date.now(), format: 'markdown' } as ChatItem],
-    version: 'v2',
-  };
-  const repaint = nextRepaint(scroll);
-  await repaint;
-  const newItemMs = Math.round(performance.now() - readAt);
-
+  const scrolling = await scrollProbe(scroll, pxPerSecond, scrollSeconds);
+  await wait(300);
+  const itemsHeld = scroll.querySelectorAll(':scope > .chat-item:not([hidden])').length;
   const nodes = pane.element.querySelectorAll('*').length;
-  const memory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
-  const heapMB = memory ? Math.round(memory.usedJSHeapSize / 1048576) : null;
   pane.dispose();
   host.replaceChildren();
   await wait(300);
-  return { items, contentVisibility, openMs, newItemMs, nodes, heapMB, scroll: scrolling };
+  return { items, openMs, newItemMs: newItems, nodesAtTail, nodes, itemsHeld, scroll: scrolling };
+}
+
+/**
+ * Walk to the start of the conversation and back to the end through the real
+ * pane, checking at every page that the line being read did not move, the window
+ * stayed bounded, and each end of the history was actually reached.
+ */
+async function pagingCheck(items: number) {
+  serve(fixture(items));
+  const pane = new ChatPane(session, { ok: true }, () => undefined, null);
+  host.replaceChildren(pane.element);
+  const scroll = pane.element.querySelector('.chat-scroll') as HTMLElement;
+  const landed = nextRepaint(scroll);
+  pane.attach();
+  await landed;
+  await wait(100);
+
+  const held = () => [...scroll.querySelectorAll<HTMLElement>(':scope > .chat-item:not([hidden])')];
+  const textAt = (node: Element | undefined) => node?.textContent?.slice(0, 60) ?? '';
+  const expected = (index: number) => {
+    const probe = document.createElement('div');
+    const item = served[index] as ChatItem;
+    probe.textContent = item.kind === 'tool' ? item.name : item.kind === 'image' ? item.alt : item.text;
+    return probe.textContent.slice(0, 12);
+  };
+  const center = () => {
+    const box = scroll.getBoundingClientRect();
+    return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+      ?.closest('.chat-item') as HTMLElement | null;
+  };
+  const jumps: number[] = [];
+  let maxHeld = 0;
+  let steps = 0;
+
+  /** Move one screen past the threshold, then see whether the reader was moved. */
+  async function step(top: number) {
+    scroll.scrollTop = top;
+    await frame();
+    const node = center();
+    const y = node?.getBoundingClientRect().top ?? 0;
+    await wait(60);
+    await frame();
+    await frame();
+    if (node?.isConnected) jumps.push(Math.abs(node.getBoundingClientRect().top - y));
+    maxHeld = Math.max(maxHeld, held().length);
+    steps += 1;
+  }
+
+  let quiet = 0;
+  while (quiet < 5 && steps < 2000) {
+    const before = textAt(held()[0]);
+    await step(Math.max(0, scroll.scrollTop - 4000));
+    quiet = scroll.scrollTop === 0 && textAt(held()[0]) === before ? quiet + 1 : 0;
+  }
+  const firstHeld = textAt(held()[0]);
+  const reachedStart = firstHeld.includes(expected(0));
+  const stepsUp = steps;
+
+  quiet = 0;
+  while (quiet < 5 && steps < 4000) {
+    const before = textAt(held().at(-1));
+    await step(scroll.scrollTop + 4000);
+    const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 2;
+    quiet = atBottom && textAt(held().at(-1)) === before ? quiet + 1 : 0;
+  }
+  const reachedEnd = textAt(held().at(-1)).includes(expected(items - 1));
+
+  // Back at the end, an arrival must be drawn and followed.
+  const arrived = { kind: 'message', role: 'assistant', text: 'Arrived after the walk.', at: Date.now(), format: 'text' } as ChatItem;
+  rev += 1;
+  served.push(arrived);
+  revs.push(rev);
+  await wait(1300);
+  const followed = held().at(-1)?.textContent?.includes('Arrived after the walk.') === true &&
+    scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
+
+  jumps.sort((a, b) => a - b);
+  const internals = pane as unknown as {
+    snapshot: { start: number; total: number; items: unknown[] } | null;
+    version: string | null;
+  };
+  const result = {
+    items, stepsUp, stepsDown: steps - stepsUp, reachedStart, reachedEnd, followed, maxHeld,
+    window: internals.snapshot && {
+      start: internals.snapshot.start,
+      held: internals.snapshot.items.length,
+      total: internals.snapshot.total,
+    },
+    version: internals.version,
+    served: served.length,
+    lastHeld: textAt(held().at(-1)),
+    expectedLast: expected(items - 1),
+    fromBottom: Math.round(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight),
+    jumpsOver1px: jumps.filter((j) => j > 1).length,
+    worstJumpPx: Math.round((jumps.at(-1) ?? 0) * 10) / 10,
+  };
+  pane.dispose();
+  host.replaceChildren();
+  return result;
+}
+
+/**
+ * Change the pane's width at several reading positions, and check that the item
+ * at the top of the view stays there and that a reader at the end stays at the end.
+ */
+async function widthCheck(items: number) {
+  serve(fixture(items));
+  const pane = new ChatPane(session, { ok: true }, () => undefined, null);
+  host.replaceChildren(pane.element);
+  const scroll = pane.element.querySelector('.chat-scroll') as HTMLElement;
+  const landed = nextRepaint(scroll);
+  pane.attach();
+  await landed;
+  await wait(200);
+
+  const held = () => [...scroll.querySelectorAll<HTMLElement>(':scope > .chat-item:not([hidden])')];
+  const atTop = () => {
+    const top = scroll.getBoundingClientRect().top;
+    const node = held().find((n) => n.getBoundingClientRect().bottom > top) as HTMLElement;
+    const box = node.getBoundingClientRect();
+    return { node, through: Math.max(0, top - box.top) / (box.height || 1) };
+  };
+  const settle = async () => {
+    await frame();
+    await frame();
+    await wait(120);
+  };
+  const widths = ['55%', '100%', '75%', '100%'];
+  const cases: Array<{ start: number; sameItem: boolean; worstThrough: number; heights: number[] }> = [];
+  for (const fraction of [0.1, 0.35, 0.5, 0.65, 0.85]) {
+    scroll.scrollTop = Math.round((scroll.scrollHeight - scroll.clientHeight) * fraction);
+    await settle();
+    const before = atTop();
+    let sameItem = true;
+    let worstThrough = 0;
+    const heights: number[] = [];
+    for (const width of widths) {
+      host.style.width = width;
+      await settle();
+      const after = atTop();
+      sameItem &&= after.node === before.node;
+      worstThrough = Math.max(worstThrough, Math.abs(after.through - before.through));
+      heights.push(scroll.scrollHeight);
+    }
+    cases.push({
+      start: fraction,
+      sameItem,
+      worstThrough: Math.round(worstThrough * 1000) / 1000,
+      heights,
+    });
+  }
+
+  scroll.scrollTop = scroll.scrollHeight;
+  await settle();
+  const tail: boolean[] = [];
+  for (const width of widths) {
+    host.style.width = width;
+    await settle();
+    tail.push(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 2);
+  }
+  host.style.width = '';
+  pane.dispose();
+  host.replaceChildren();
+  return { items, cases, stayedAtEnd: tail };
 }
 
 // --- Spike 2: native pinned socket, and what the WebView refuses on its own.
@@ -261,7 +452,7 @@ async function browse(type: string, ms: number) {
 
 /** Leaves a conversation on screen, for a screenshot at phone width. */
 async function show(items: number) {
-  served = { items: fixture(items), version: 'v1' };
+  serve(fixture(items));
   const pane = new ChatPane(session, { ok: true }, () => undefined, null);
   host.replaceChildren(pane.element);
   const landed = nextRepaint(pane.element.querySelector('.chat-scroll') as HTMLElement);
@@ -272,6 +463,8 @@ async function show(items: number) {
 
 globals.spike = {
   run,
+  pagingCheck,
+  widthCheck,
   show,
   pinTest,
   webviewSocket,

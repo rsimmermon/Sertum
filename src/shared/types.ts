@@ -481,23 +481,54 @@ export type ChatItem =
       at: number | null;
     };
 
+/**
+ * A bounded run of a conversation: items `[start, start + items.length)` of
+ * `total`. An item's index is its identity for as long as the version's
+ * identity half holds, because transcripts only grow.
+ */
 export interface ConversationSnapshot {
   items: ChatItem[];
+  start: number;
+  total: number;
   path: string | null;
   updatedAt: number | null;
-  /** The read window cut off older records; the full history stays on disk. */
-  truncated: boolean;
   /** Why there is nothing to show, when `items` is empty. */
   reason: string | null;
   /**
-   * What this snapshot was read from, as `size:mtime` of the transcript.
+   * Where this answer read up to, opaque to clients.
    *
-   * A poll hands back the version it already holds and is told "unchanged"
-   * rather than being sent the conversation again. Null when there is no
-   * file behind the snapshot, which is every `noConversation` answer -- those
-   * are empty, so re-sending one costs nothing worth avoiding.
+   * A poll hands back the version it holds and is told only what moved since.
+   * Null when there is no file behind the snapshot, which is every
+   * `noConversation` answer -- those are empty, so re-sending one costs nothing
+   * worth avoiding.
    */
   version: string | null;
+}
+
+/** What moved since the version a poll named, in index order. */
+export interface ConversationDelta {
+  delta: true;
+  changed: Array<{ index: number; item: ChatItem }>;
+  total: number;
+  updatedAt: number | null;
+  version: string;
+}
+
+/** A poll: what the client holds. Nothing known means the newest page. */
+export interface ConversationReadRequest {
+  known?: string | null;
+  /** The window held, so changes outside it are not sent. */
+  start?: number;
+  end?: number;
+  /** Whether the window reaches the end, and so wants what arrives after it. */
+  follow?: boolean;
+}
+
+/** A page of history, either the items before an index or from one onward. */
+export interface ConversationPageRequest {
+  before?: number;
+  from?: number;
+  limit?: number;
 }
 
 /** Word that the transcript has not moved since the version the poll named. */
@@ -516,7 +547,10 @@ export interface ConversationUnchanged {
  * unresponsive until the pipe timed out. The transcript only changes when the
  * agent writes, so the overwhelmingly common answer is that nothing has.
  */
-export type ConversationRead = ConversationSnapshot | ConversationUnchanged;
+export type ConversationRead =
+  | ConversationSnapshot
+  | ConversationDelta
+  | ConversationUnchanged;
 
 export interface PtyDataEvent {
   id: string;
@@ -1463,7 +1497,8 @@ export interface SertumApi {
    * it still matches, the answer is `{ unchanged: true }` and the megabytes
    * stay where they are.
    */
-  readConversation(id: string, known?: string | null): Promise<ConversationRead>;
+  readConversation(id: string, request?: ConversationReadRequest): Promise<ConversationRead>;
+  readConversationPage(id: string, request: ConversationPageRequest): Promise<ConversationSnapshot>;
   /**
    * Send a message into a `stream` session over the agent's structured chat
    * protocol. Resolves false when the session cannot take one — wrong

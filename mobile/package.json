@@ -8,7 +8,7 @@
     "icons": "node scripts/make-icons.mjs",
     "build": "vite build",
     "sync": "vite build && cap sync android",
-    "apk": "npm run sync && cd android && gradlew.bat assembleDebug"
+    "apk": "npm run sync && cd android && .\\gradlew.bat assembleDebug"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",
