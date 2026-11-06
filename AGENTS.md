@@ -23,6 +23,7 @@ about to change, before you change it.
 | [docs/terminal.md](docs/terminal.md) | Key handling, clipboard, WebGL context loss, helper-process death, node-pty's macOS spawn helper |
 | [docs/windows.md](docs/windows.md) | Packaging, binary resolution, icons, installer, platform no-ops |
 | [docs/git.md](docs/git.md) | Commit from the review, pull requests through `gh` |
+| [docs/mobile.md](docs/mobile.md) | The phone client: spike results, toolchain, why it shares this repo |
 
 When changing the project:
 
@@ -1200,6 +1201,24 @@ panes. While a split is up the sidebar regroups into IN VIEW and OTHER SESSIONS,
 and an unfocused pane carries its status colour on its border so an errored
 session reads from across the room.
 
+## Phone client (spikes only)
+
+`mobile/` holds an Android client in its earliest stage: spikes, not a product.
+The phone is always a client of a `sertumd` on a PC and never hosts a daemon,
+agents or sessions. It lives in this repo because it imports `src/renderer` and
+`src/shared` directly, and it has its own `package.json` so it cannot disturb a
+desktop install. Node 22+ and JDK 21 are set per terminal, because desktop
+packaging still needs Node 20.
+
+Measured on an emulator and one flagship phone, not yet a mid-range one: the
+unmodified `ChatPane` runs in the WebView with only `window.sertum` replaced, but
+full history requires a bounded DOM window and incremental appends rather than
+today's full repaint. A WebView refuses both `ws://` and self-signed `wss://`, so
+the socket is native and pinned; that socket and mDNS discovery both work over
+real Wi-Fi. Discovery does not imply reachability, because a firewall can drop
+TCP while mDNS still works, so pairing must report the two separately. See
+[docs/mobile.md](docs/mobile.md).
+
 ## Running
 
 ```sh
@@ -1363,6 +1382,8 @@ docs/                         The evidence behind the rules stated in AGENTS.md
   terminal.md                 Keys, clipboard, WebGL loss, helper-process death
   windows.md                  Packaging, binary resolution, icons, installer
   git.md                      Commit from the review, pull requests via gh
+  mobile.md                   The phone client: spike results and toolchain
+mobile/                       Android client (spikes); its own package.json, imports src/ via @desktop
 src/
   main.ts                     Electron main: window, menu, UI IPC, daemon proxies
   sertumd.ts                  The session broker: socket server, lifecycle, log
