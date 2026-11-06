@@ -10,6 +10,7 @@ public class MainActivity extends BridgeActivity {
         // Local plugins have to be registered before the bridge is created.
         registerPlugin(PinnedSocketPlugin.class);
         registerPlugin(NsdBrowserPlugin.class);
+        registerPlugin(PhoneDevicePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -1204,7 +1204,11 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     'session/kill': (id: string) => ptys.kill(id),
     'session/remove': async (id: string) => {
       const removed = await ptys.remove(id);
-      if (removed) chatQueue.forget(id);
+      if (removed) {
+        chatQueue.forget(id);
+        // Another client may be showing this row, and nothing else tells it to go.
+        emit('session:removed', { id });
+      }
       return removed;
     },
     'session/rename': (p: { id: string; label: string }) => {
@@ -1600,6 +1604,8 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       const codexAsk = codexChat.pending().find(a => a.id === p.id);
       if (codexAsk) {
         if (!codexChat.answer(p.id, p.sessionId, p.answer)) throw new Error('That Codex request cannot be answered anymore.');
+        // Every other client is still showing this call.
+        emit('approval:gone', p.id);
         return null;
       }
       const pending = controlAsks.get(p.id)?.request ?? hooks.pending().find(a => a.id === p.id);
@@ -1638,6 +1644,8 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
                   : 'Denied in Sertum.'),
             });
       if (!settled) hooks.resolveApproval(p.id, p.answer);
+      // Every other client is still showing this call.
+      emit('approval:gone', p.id);
       markAnswered(
         p.sessionId,
         pending.agentId,

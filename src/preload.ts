@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   ConversationChangedEvent,
   ConversationItemRequest,
+  GatewayStatus,
+  SessionRemovedEvent,
   ConversationPageRequest,
   ConversationReadRequest,
   AgentEffortList,
@@ -140,6 +142,13 @@ const api: SertumApi = {
   readConversationItem: (id: string, request: ConversationItemRequest) =>
     ipcRenderer.invoke('conversation:item', id, request),
   onConversationChanged: (cb) => on<ConversationChangedEvent>('conversation:changed', cb),
+  onSessionRemoved: (cb) => on<SessionRemovedEvent>('session:removed', cb),
+  gatewayStatus: () => ipcRenderer.invoke('gateway:status'),
+  setGatewayEnabled: (enabled) => ipcRenderer.invoke('gateway:set-enabled', enabled),
+  beginGatewayPairing: () => ipcRenderer.invoke('gateway:pair-begin'),
+  cancelGatewayPairing: () => ipcRenderer.invoke('gateway:pair-cancel'),
+  revokeGatewayDevice: (id) => ipcRenderer.invoke('gateway:revoke', id),
+  onGatewayChanged: (cb) => on<GatewayStatus>('gateway:changed', cb),
   submitChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
     ipcRenderer.invoke('chat:submit', { id, text, attachments }),
   removeQueuedMessage: (id: string, messageId: number) =>

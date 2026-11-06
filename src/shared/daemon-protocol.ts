@@ -19,6 +19,11 @@ import path from 'node:path';
 /**
  * Bumped on any incompatible change to methods, params or events.
  *
+ * `gateway/*` and `session:removed` did not bump it. Each is an addition an older
+ * daemon fails plainly or simply never sends: Settings shows "unknown method", and
+ * a window closes its own sessions as it always did. A phone never sees this number:
+ * it speaks `GATEWAY_API`, in daemon/gateway.ts.
+ *
  * Protocol 10 moves the message queue and the send path into the daemon:
  * `chat/submit` replaces `chat/send` and takes any transport. A protocol 9
  * daemon has no such method and no queue, so nothing typed would go in. It also

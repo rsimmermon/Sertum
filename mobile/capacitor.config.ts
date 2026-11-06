@@ -5,6 +5,8 @@ const config: CapacitorConfig = {
   appId: 'dev.sertum.mobile',
   appName: 'Sertum',
   webDir: 'dist',
+  // The app is always dark, so the bars' icons have to be light to be seen.
+  plugins: { SystemBars: { style: 'DARK' } },
 };
 
 export default config;

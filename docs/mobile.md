@@ -1,9 +1,122 @@
 # The phone client
 
-Evidence behind the "Phone client" section of [AGENTS.md](../AGENTS.md). The
-phone is always a client of a `sertumd` on a PC; it never hosts a daemon,
-agents or sessions. Only spikes exist so far: no gateway, pairing or phone shell
-has been built.
+Evidence behind the "Phone client and gateway" section of
+[AGENTS.md](../AGENTS.md). The phone is always a client of a `sertumd` on a PC; it
+never hosts a daemon, agents or sessions.
+
+## The gateway, as built
+
+| | |
+|---|---|
+| Transport | WebSocket over TLS 1.3, port 47615 on every interface, refusing peers outside private, link-local, loopback and carrier-grade NAT space before TLS |
+| PC's identity | A P-256 key made once in `~/.sertum`. A phone pins the SHA-256 of its SPKI |
+| Phone's identity | A P-256 key in the Android Keystore, unusable while the phone is locked |
+| Pairing | A 128-bit code, one use, five minutes, held only as a hash and withdrawn when the Settings pane closes. A wrong guess leaves it standing, or anything on the network could cancel a pairing |
+| Each connection | The daemon sends a nonce. The phone signs `sertum-gateway-1\|auth\|<nonce>\|<pin>`, which names the key it saw, so a signature cannot be replayed or relayed |
+| Discovery | mDNS `_sertum._tcp`, with the PC's id in TXT. It only says where to try |
+| Versioning | `GATEWAY_API`, apart from `DAEMON_PROTOCOL`, because a phone updates on its own schedule |
+
+A phone may start and end sessions, send messages and files, approve calls, and
+change a session's mode, model and thinking level, including Full Access. The owner
+chose each of these with the cost stated. It may not touch terminals, settings,
+stored rules, discovery, or Codex repairs, or read diagnostics. "Always allow" on
+the approval bar does write a rule, and is allowed because Full Access already
+reaches further. Snapshots leave without `command` and `args`, which on a Claude
+session carry the whole hooks blob on every update.
+
+Thumbnails of attachments still need Electron's `nativeImage`, so a phone previews
+only what it uploaded in this run of the app.
+
+### What was verified, 2026-11-06
+
+`scripts/test-gateway.ts` runs 27 checks over a real socket with the fabric replaced
+by a recorder, so "never reached the fabric" is something a check can see.
+`scripts/smoke-gateway.ts` runs pairing, an upload, a real approval and ending a
+session against real Claude and Codex, inside Electron's runtime.
+
+On an Android 16 emulator against the real daemon through the phone's own UI, with
+the desktop app open as a second client:
+
+| Case | Result |
+|---|---|
+| Pairing with a real Keystore signature | Connected, shown on the desktop |
+| Claude turn: start, ask-first mode, approve on the phone, reply | 4.5s, and the file was written on the PC |
+| Codex turn in `codex-ask` | 6.1s, but Codex asked for nothing, so its approval path was not exercised here |
+| Session started on the desktop, or ended on either side | Appears on or leaves the other client |
+| One held call on both clients, answered on the phone | Both bars gone 9ms later |
+| Phone access off while the agent answers, then on | Reconnected in 231ms, caught up in 448ms, each reply drawn once |
+| Daemon restarted | Listening again by itself, and the phone back without help |
+| Revoked while connected | Cut off at once, stays out, and re-pairs from that screen |
+| Reinstalling the app | Stays paired |
+
+Five defects only the running app showed, all fixed:
+
+- **A chip's picker outlived its pane.** It lives on the body, so going back or
+  ending the session left it covering the next screen, naming a session no longer
+  there. A scripted click reached the button beneath it, so only a screenshot showed
+  this.
+
+- **The daemon failed to start at all.** Vite turned `ws`'s optional `bufferutil` into
+  a throw at load. With its stdio ignored, the only symptom was "sertumd did not come
+  up", and every session on the machine was gone with it, phone access on or off.
+- **A busy port killed the daemon.** `ws` re-raises the server's error as its own,
+  and an unheard `error` event ends the process. `test-gateway.ts` caught this one.
+- **The approval bar hid what it asked about.** On a phone it squeezed the command to
+  `n..`, with no hover to read the rest. The buttons now drop below it, and on touch
+  the command is shown whole.
+- **A second client kept its bar**, because only the answering client took it down.
+
+The firewall: first listening made Windows add Block rules for the dev `electron.exe`
+on the Private profile while its prompt was unanswered, and Block outranks Allow.
+Traffic from an emulator arrives from this PC, so none of the above crossed the
+firewall. The real phone below did, once those rules were changed to Allow.
+
+### On a real phone, 2026-11-06
+
+A Galaxy Z Fold6 on Android 16, on its cover screen, over real Wi-Fi from another
+address through the Windows firewall, with the desktop as a second client:
+
+| Case | Result |
+|---|---|
+| Pairing with only a dead address in the code | 2.8s, so mDNS alone found the PC |
+| Claude turn, Allow tapped on the phone | 4.5s, and the file was written on the PC |
+| Codex turn in `codex-ask`, writing inside its folder | 11.2s, and asked for nothing |
+| Codex in `codex-read-only`, writing outside its folder | Asked on the phone, one tap allowed it, 12.2s, and the file was written |
+| One held call on both clients, answered on the phone | Both bars gone 17ms later |
+| Phone access off while the agent answers, then on (4 runs) | Reply drawn 249 to 554ms after coming back |
+| Revoked while connected | Cut off at once, stays out, and re-pairs |
+| Reinstalling the app | Stays paired |
+| The phone's own file picker, picture sent to real Claude | Claude named the type, and the picture was drawn in the sent bubble |
+| 12MB file through the picker | 3.0s, and its SHA-256 matched on the PC |
+| 20,000 message conversation, opened over the socket | Newest message in 190ms |
+| Scrolling up it for 12s, across 4,400 messages | 120fps at the median and p95, worst frame 50ms, heap steady at 21MB |
+| A message arriving while reading far up | The reader moved 0px |
+| Locked, then unlocked | The socket is gone while locked and comes back by itself |
+
+The long conversation was synthetic and took no turn, since a real one would have
+sent the whole history to the model.
+
+Three defects only the real phone showed, all fixed:
+
+- **A reconnect waited for the backstop.** A pane caught up on its next slow read, up
+  to 5s later. The emulator's 448ms was luck in where that timer stood. It now asks
+  when the socket returns.
+- **A file chosen during a reconnect was lost.** Coming back from the picker, the
+  socket can still be returning, and the upload failed on the spot. A request now
+  waits up to 15s for the connection, and still fails at once if the phone was removed.
+- **Backing out of the scanner said it "could not start".** On this phone the back
+  button arrives as ML Kit's internal error 13, not its cancel code, after the scanner
+  had run perfectly well. It now says no code was read. Because 13 is not specific to
+  backing out, it cannot be treated as a cancel.
+
+Not verified: a QR code actually read by the scanner (it opens, and the camera runs,
+but pairing here used the code as text), the final shell filling the inner screen on
+unfolding (the spike harness did), Grok, a mid-range phone, and a packaged desktop
+build. Nothing notifies a phone that is not open on the app: an approval waits until
+someone looks. An upload that loses its connection part way has to be chosen again.
+
+Ending a Codex session leaves its folder locked, because `codex-code-mode-host.exe`,
+kept by Codex's own app server, still holds it. This is not specific to phones.
 
 ## Why `mobile/` is in this repo
 

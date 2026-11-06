@@ -23,7 +23,7 @@ about to change, before you change it.
 | [docs/terminal.md](docs/terminal.md) | Key handling, clipboard, WebGL context loss, helper-process death, node-pty's macOS spawn helper |
 | [docs/windows.md](docs/windows.md) | Packaging, binary resolution, icons, installer, platform no-ops |
 | [docs/git.md](docs/git.md) | Commit from the review, pull requests through `gh` |
-| [docs/mobile.md](docs/mobile.md) | The phone client: spike results, toolchain, why it shares this repo |
+| [docs/mobile.md](docs/mobile.md) | The phone client and its gateway: pairing, what a phone may do, results, toolchain |
 
 When changing the project:
 
@@ -154,6 +154,10 @@ below, or a file of its own in `docs/`, is described there rather than here:
 - [x] **A waiting bubble and a stop sign** — bouncing dots and the session's
       activity line while plane 2 says the agent is working, and a red stop
       square at the right edge of the composer
+- [x] **Phone access over the local network** — Settings > Phones, QR pairing,
+      per-phone revocation, and an Android client with the desktop's own chat pane.
+      Verified against real agents on an emulator and a Fold6 over real Wi-Fi;
+      reading a QR code with the camera, and a mid-range phone, are still to run
 - [x] **Chat attachments and image paste** — native multi-file picker,
       clipboard images spilled to durable temp files, bounded image previews
       and file placeholders in drafts and sent messages, native Claude/Codex
@@ -1221,14 +1225,44 @@ panes. While a split is up the sidebar regroups into IN VIEW and OTHER SESSIONS,
 and an unfocused pane carries its status colour on its border so an errored
 session reads from across the room.
 
-## Phone client (spikes only)
+## Phone client and gateway
 
-`mobile/` holds an Android client in its earliest stage: spikes, not a product.
-The phone is always a client of a `sertumd` on a PC and never hosts a daemon,
-agents or sessions. It lives in this repo because it imports `src/renderer` and
-`src/shared` directly, and it has its own `package.json` so it cannot disturb a
-desktop install. Node 22+ and JDK 21 are set per terminal, because desktop
-packaging still needs Node 20.
+`mobile/` holds an Android client. The phone is always a client of a `sertumd` on a
+PC and never hosts a daemon, agents or sessions. It lives in this repo because it
+imports `src/renderer` and `src/shared` directly, and it has its own `package.json`
+so it cannot disturb a desktop install. Node 22+ and JDK 21 are set per terminal,
+because desktop packaging still needs Node 20.
+
+`daemon/gateway.ts` is Sertum's one door onto the network, and these rules govern
+any change to it:
+
+- **It is off until Settings > Phones turns it on.** A paired phone can do what the
+  person at the PC can, including approving commands and setting Full Access, and
+  that pane says so before the switch is used.
+- **A phone reaches only what `daemon/gateway-policy.ts` names.** A method added to
+  the fabric is refused until someone decides otherwise, and an event likewise.
+  Terminal bytes, settings, stored rules, discovery and repairs stay on the PC.
+  `gateway/*` lives in `sertumd.ts`, outside the fabric, so a phone cannot reach it
+  whatever that list says.
+- **Params are rebuilt, not trusted.** `session/create` takes an agent, a folder and
+  a label, never a command or arguments, since those would run anything at all
+  without asking an agent to. A phone attaches only files it uploaded itself.
+- **The address proves nothing.** A phone pins the daemon's key from the QR code,
+  over TLS 1.3, and proves itself by signing a fresh nonce with a key held in the
+  Android Keystore. The PC stores public keys, so its files hold nothing a thief
+  could log in with. Revoking cuts a connected phone off at once.
+- **Finding a PC and reaching it are reported apart**, because a firewall lets the
+  first through and not the second.
+- **A connection coming back is routine, not an error.** A phone sleeps and visits the
+  file picker, so a request made during a reconnect waits for it, and an open pane
+  catches up the moment the socket returns rather than on its slow backstop read.
+- **A second client has to be told.** One client's action used to be enough for the
+  only window there was. `session:removed` and `approval:gone` now go to every
+  client when any of them ends a session or answers a call.
+- **The bundle is not the test script.** `sertumd.js` is built by Vite and the smoke
+  scripts by esbuild, and only Vite turned `ws`'s optional `bufferutil` into a throw
+  at load, which stopped the daemon before it could log anything. Run the real app
+  after adding a dependency to the daemon.
 
 Measured on an emulator and one flagship phone, not yet a mid-range one: the
 `ChatPane` runs in the WebView with only `window.sertum` replaced, and full history
@@ -1405,13 +1439,15 @@ docs/                         The evidence behind the rules stated in AGENTS.md
   windows.md                  Packaging, binary resolution, icons, installer
   git.md                      Commit from the review, pull requests via gh
   mobile.md                   The phone client: spike results and toolchain
-mobile/                       Android client (spikes); its own package.json, imports src/ via @desktop
+mobile/                       Android client; its own package.json, imports src/ via @desktop
 src/
   main.ts                     Electron main: window, menu, UI IPC, daemon proxies
   sertumd.ts                  The session broker: socket server, lifecycle, log
   daemon/fabric.ts            The session fabric, re-homed from main.ts
   daemon/chat-queue.ts        Messages a session cannot take yet; one per turn boundary  [docs/conversation.md]
   daemon/upload-spool.ts      Where a file from another device waits to become an attachment  [docs/conversation.md]
+  daemon/gateway.ts           The door onto the network: TLS, pairing, one socket per phone  [docs/mobile.md]
+  daemon/gateway-policy.ts    What a paired phone may ask and be told  [docs/mobile.md]
   shared/daemon-protocol.ts   GUI <-> sertumd wire contract and endpoints
   main/daemon-client.ts       GUI side: connect-or-spawn, requests, reconnect
   main/pty-manager.ts         Plane 1 — PTY lifecycle (runs inside sertumd)
@@ -1461,6 +1497,7 @@ src/
   renderer/text-prompt-dialog.ts  Shared one-field modal prompt
   renderer/session-menu.ts        Sidebar row context menu — wireframe C5
   renderer/settings-dialog.ts     Settings — wireframe E1, plus agent paths
+  renderer/phone-settings.ts      Settings > Phones: turning it on, the QR code, removing a phone  [docs/mobile.md]
   renderer/worktree-dialog.ts     Worktree manager — wireframe C9
   renderer/new-session-dialog.ts  Wireframe C1
   renderer/adopt-dialog.ts        Wireframe C18
@@ -1485,6 +1522,8 @@ scripts/
   test-daemon-files.ts        The upload spool's bounds, and what a message's image read refuses  [docs/conversation.md]
   smoke-conversation-push.ts  Following a real turn on events alone, and a real tool result coming back whole  [docs/conversation.md]
   smoke-upload.ts             A file uploaded in chunks reaching a real agent
+  test-gateway.ts             The gateway over real TLS with the fabric replaced by a recorder  [docs/mobile.md]
+  smoke-gateway.ts            A phone's whole path against real agents, through the socket  [docs/mobile.md]
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
   smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall
   smoke-model-switch.ts       model-select: read each agent's catalogue, switch, confirm the turn ran on it

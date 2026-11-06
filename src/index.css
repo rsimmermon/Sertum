@@ -1584,7 +1584,7 @@ select.field {
  * at the top of the pane.
  */
 .approval-bar {
-  display: flex; align-items: center; gap: 10px; flex: none;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: none;
   padding: 9px 12px; margin: 0 0 1px;
   background: var(--warn-soft); border-top: 1px solid var(--warn);
   border-bottom: 1px solid var(--warn);
@@ -1595,7 +1595,9 @@ select.field {
    terminal below. */
 .chat-pane > .approval-bar { margin: 0; border-bottom: 0; }
 .approval-icon { flex: none; color: var(--warn); font-size: 14px; }
-.approval-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* The basis is what makes the buttons drop below rather than crush the command,
+   which is the thing being decided about, in a narrow pane or on a phone. */
+.approval-body { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .approval-title { font-size: 12px; font-weight: 600; color: var(--warn); }
 .approval-subject {
   font-family: var(--font-mono); font-size: 11px; color: var(--ink-2);
@@ -1608,6 +1610,16 @@ select.field {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .approval-actions { flex: none; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+/* Touch has no hover to read the rest of a shortened command with, so it is shown
+   whole, scrolling inside itself if it is long. Nobody approves what they cannot read. */
+@media (pointer: coarse) {
+  .approval-subject {
+    font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 30vh;
+  }
+  .approval-reason { white-space: normal; }
+  .approval-actions { width: 100%; justify-content: stretch; }
+  .approval-actions .btn { flex: 1 1 auto; min-height: 40px; }
+}
 
 /* ---------- a call whose card is the question ----------
    AskUserQuestion and ExitPlanMode do not ask whether they may run, so the
@@ -2188,3 +2200,11 @@ select.field {
 
 /* B5: inspect server-provided changes before answering. */
 .approval-detail { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font-size: 12px; }
+
+/* Settings > Phones. The QR code stays black on white in either theme, since
+   that is what a camera reads. */
+.phone-pairing { display: flex; gap: 16px; align-items: flex-start; margin: 8px 0; }
+.phone-pairing-side { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; min-width: 0; }
+.phone-qr { flex: none; image-rendering: pixelated; border-radius: 4px; }
+.phone-device { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.phone-error { color: var(--err); }

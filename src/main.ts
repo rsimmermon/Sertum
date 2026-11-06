@@ -55,6 +55,7 @@ import type {
 } from './shared/types';
 import type {
   ConversationItemRequest,
+  SessionRemovedEvent,
   ConversationPageRequest,
   ConversationReadRequest,
   PtySize,
@@ -490,6 +491,14 @@ daemon.on('daemon-event', (name: string, payload: unknown) => {
       refreshTray();
       break;
     }
+    case 'session:removed':
+      sessionCache.delete((payload as SessionRemovedEvent).id);
+      broadcast('session:removed', payload);
+      refreshTray(true);
+      break;
+    case 'gateway:changed':
+      broadcast('gateway:changed', payload);
+      break;
     case 'approval:needed':
       broadcast('approval:needed', payload);
       break;
@@ -754,6 +763,13 @@ ipcMain.handle('conversation:read', (_e, id: string, request?: ConversationReadR
 ipcMain.handle('conversation:page', (_e, id: string, request: ConversationPageRequest) =>
   daemon.request('conversation/page', { ...request, id }),
 );
+ipcMain.handle('gateway:status', () => daemon.request('gateway/status'));
+ipcMain.handle('gateway:set-enabled', (_e, enabled: boolean) =>
+  daemon.request('gateway/set-enabled', { enabled }),
+);
+ipcMain.handle('gateway:pair-begin', () => daemon.request('gateway/pair-begin'));
+ipcMain.handle('gateway:pair-cancel', () => daemon.request('gateway/pair-cancel'));
+ipcMain.handle('gateway:revoke', (_e, id: string) => daemon.request('gateway/revoke', { id }));
 ipcMain.handle('conversation:item', (_e, id: string, request: ConversationItemRequest) =>
   daemon.request('conversation/item', { ...request, id }),
 );

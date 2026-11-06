@@ -11,6 +11,7 @@ import {
 } from '../shared/types';
 
 import { openConfirmDialog } from './confirm-dialog';
+import { phonesPane } from './phone-settings';
 
 const api = window.sertum;
 
@@ -66,12 +67,22 @@ export function openSettingsDialog(
       { id: 'terminal', label: 'Terminal', build: terminal },
       { id: 'worktrees', label: 'Worktrees', build: worktrees },
       { id: 'notifications', label: 'Notifications', build: notifications },
+      { id: 'phones', label: 'Phones', build: phones },
       { id: 'appearance', label: 'Appearance & shortcuts', build: appearance },
       { id: 'advanced', label: 'Advanced', build: advanced },
     ];
 
     const navButtons = new Map<string, HTMLButtonElement>();
+    // A pairing code on screen is withdrawn when the pane that shows it goes.
+    let leavePane: (() => void) | null = null;
+    function phones(): HTMLElement {
+      const pane = phonesPane();
+      leavePane = pane.leave;
+      return pane.element;
+    }
     const show = (id: string): void => {
+      leavePane?.();
+      leavePane = null;
       for (const [key, btn] of navButtons) btn.classList.toggle('on', key === id);
       const pane = PANES.find((p) => p.id === id);
       content.replaceChildren(pane ? pane.build() : el('div', ''));
@@ -795,6 +806,7 @@ export function openSettingsDialog(
     function close(result: Settings | null): void {
       // Cancel puts back exactly what was showing when the dialog opened.
       if (!result) onPreview(opened);
+      leavePane?.();
       overlay.remove();
       resolve(result);
     }

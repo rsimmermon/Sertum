@@ -1351,8 +1351,50 @@ export interface ChatDeliveredEvent {
   stillQueued: number;
 }
 
+/** A session was forgotten, by whichever client asked. */
+export interface SessionRemovedEvent {
+  id: string;
+}
+
+/** A phone this daemon has paired with. */
+export interface GatewayDevice {
+  id: string;
+  name: string;
+  pairedAt: number;
+  lastSeenAt: number | null;
+  connected: boolean;
+}
+
+export interface GatewayStatus {
+  enabled: boolean;
+  listening: boolean;
+  port: number;
+  /** This PC's local addresses, for typing into a phone by hand. */
+  addresses: string[];
+  /** Why it is on but not listening. */
+  error: string | null;
+  devices: GatewayDevice[];
+}
+
+/** One standing offer to pair. `payload` is the secret the QR code carries. */
+export interface GatewayPairing {
+  payload: string;
+  expiresAt: number;
+  hosts: string[];
+  port: number;
+}
+
 /** The surface exposed to the renderer through the preload bridge. */
 export interface SertumApi {
+  /** Another client ended a session this window may be showing. */
+  onSessionRemoved(cb: (event: SessionRemovedEvent) => void): () => void;
+  gatewayStatus(): Promise<GatewayStatus>;
+  /** Turns phone access on or off. Off drops any phone connected; pairings stay. */
+  setGatewayEnabled(enabled: boolean): Promise<GatewayStatus>;
+  beginGatewayPairing(): Promise<GatewayPairing>;
+  cancelGatewayPairing(): Promise<void>;
+  revokeGatewayDevice(id: string): Promise<GatewayStatus>;
+  onGatewayChanged(cb: (status: GatewayStatus) => void): () => void;
   /**
    * Starts a session. Leave `transport` unset unless a terminal is genuinely
    * what is wanted: the daemon owns the adapters, so it resolves the

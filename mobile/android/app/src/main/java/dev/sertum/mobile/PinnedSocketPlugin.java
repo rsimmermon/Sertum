@@ -39,6 +39,7 @@ import okhttp3.WebSocketListener;
 @CapacitorPlugin(name = "PinnedSocket")
 public class PinnedSocketPlugin extends Plugin {
     private WebSocket socket;
+    private int connections = 0;
 
     private static X509TrustManager pinnedTo(final byte[] pin) {
         return new X509TrustManager() {
@@ -81,6 +82,10 @@ public class PinnedSocketPlugin extends Plugin {
             return;
         }
         try {
+            // A socket being replaced may still report. Every event names its
+            // connection, so the app can tell that from the one it is using.
+            if (socket != null) socket.cancel();
+            final int connection = ++connections;
             X509TrustManager trust = pinnedTo(pin);
             SSLContext context = SSLContext.getInstance("TLS");
             context.init(null, new TrustManager[] { trust }, null);
@@ -98,6 +103,7 @@ public class PinnedSocketPlugin extends Plugin {
                 @Override
                 public void onOpen(WebSocket webSocket, Response response) {
                     JSObject data = new JSObject();
+                    data.put("connection", connection);
                     Handshake handshake = response.handshake();
                     data.put("tls", handshake == null ? "none" : handshake.tlsVersion().javaName() + " " + handshake.cipherSuite().javaName());
                     notifyListeners("open", data);
@@ -106,13 +112,21 @@ public class PinnedSocketPlugin extends Plugin {
                 @Override
                 public void onMessage(WebSocket webSocket, String text) {
                     JSObject data = new JSObject();
+                    data.put("connection", connection);
                     data.put("text", text);
                     notifyListeners("message", data);
                 }
 
                 @Override
+                public void onClosing(WebSocket webSocket, int code, String reason) {
+                    webSocket.close(1000, null);
+                    onClosed(webSocket, code, reason);
+                }
+
+                @Override
                 public void onClosed(WebSocket webSocket, int code, String reason) {
                     JSObject data = new JSObject();
+                    data.put("connection", connection);
                     data.put("code", code);
                     notifyListeners("closed", data);
                 }
@@ -120,11 +134,14 @@ public class PinnedSocketPlugin extends Plugin {
                 @Override
                 public void onFailure(WebSocket webSocket, Throwable t, Response response) {
                     JSObject data = new JSObject();
+                    data.put("connection", connection);
                     data.put("message", String.valueOf(t.getMessage()));
                     notifyListeners("failure", data);
                 }
             });
-            call.resolve();
+            JSObject result = new JSObject();
+            result.put("connection", connection);
+            call.resolve(result);
         } catch (GeneralSecurityException e) {
             call.reject(e.getMessage());
         }

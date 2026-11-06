@@ -90,6 +90,9 @@ interface SentAttachmentMessage extends QueuedChatMessage {
   transcriptKey?: string;
 }
 
+/** The phone runs this same pane. Decided by the main pointer, not by screen size. */
+const TOUCH_FIRST = window.matchMedia('(pointer: coarse)').matches;
+
 export class ChatPane {
   readonly element: HTMLDivElement;
   private scroll: HTMLDivElement;
@@ -252,7 +255,9 @@ export class ChatPane {
     this.input.rows = 2;
     this.input.spellcheck = false;
     this.input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // A touch keyboard has no Shift+Enter to reach for, so Enter is a new line
+      // there and the send button sends.
+      if (!TOUCH_FIRST && e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         this.submit();
       }
@@ -474,6 +479,11 @@ export class ChatPane {
     else void this.refresh();
   }
 
+  /** A client that was away missed the events saying what moved, so it asks now. */
+  catchUp(): void {
+    this.onConversationChanged();
+  }
+
   /** Leave the DOM and stop polling; the conversation is on disk, not here. */
   unmount(): void {
     // Capture once more right before detaching, on top of the live scroll
@@ -567,7 +577,9 @@ export class ChatPane {
         ? `Queued message${plural} not sent: ${s.queueStalled}`
         : waiting
           ? `${waiting} message${plural} queued — click × on a message to remove it.`
-          : `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
+          : TOUCH_FIRST
+            ? `Message ${s.agent}`
+            : `Message ${s.agent} — Enter sends, Shift+Enter for a new line`;
       this.input.title = '';
     } else if (s.origin === 'monitored') {
       this.input.placeholder =

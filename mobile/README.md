@@ -1,11 +1,13 @@
 # Sertum for Android
 
-The phone client: always a client of a `sertumd` on a PC, never a host. Only
-spikes exist so far. Design and results are in [docs/mobile.md](../docs/mobile.md).
+The phone client: always a client of a `sertumd` on a PC, never a host. Design and
+results are in [docs/mobile.md](../docs/mobile.md). To pair, turn on Settings > Phones
+on the PC and scan the code it shows.
 
 ```
 scripts/make-icons.mjs   All Android art, generated from assets/icon-windows.svg
 assets/                  Generated Play Store icon
+src/                     The app: connection, window.sertum over it, and its screens
 spikes/                  Throwaway: harness, test server, CDP driver
 android/                 Capacitor's Android project, plus the native plugins
 ```
@@ -28,7 +30,8 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 ## Running the spikes
 
-With the app open on a device:
+Build with `VITE_SPIKE=1` in the environment to get the harness instead of the app.
+With it open on a device:
 
 ```powershell
 node spikes/server.mjs                          # prints the pin; loopback only

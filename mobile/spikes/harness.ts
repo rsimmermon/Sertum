@@ -3,7 +3,6 @@
 // Rendering runs the desktop ChatPane unmodified. The only thing replaced is
 // window.sertum, which is the seam the phone app is betting on.
 import { registerPlugin } from '@capacitor/core';
-import '@desktop/index.css';
 import type {
   ChatItem,
   ConversationPageRequest,

@@ -15,5 +15,5 @@
     "ignoreDeprecations": "5.0",
     "paths": { "@desktop/*": ["../src/*"] }
   },
-  "include": ["spikes/**/*.ts"]
+  "include": ["spikes/**/*.ts", "src/**/*.ts"]
 }

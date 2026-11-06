@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { createFabric } from './daemon/fabric';
+import { Gateway } from './daemon/gateway';
 import {
   DAEMON_PROTOCOL,
   daemonEndpoint,
@@ -56,11 +57,35 @@ function send(client: Client, frame: DaemonFrame): void {
   client.socket.write(`${JSON.stringify(frame)}\n`);
 }
 
-fabric.onEvent((name, payload) => {
+function broadcast(name: string, payload: unknown): void {
   for (const client of clients) {
     if (client.greeted) send(client, { t: 'event', name, payload });
   }
+}
+
+const gateway = new Gateway({
+  dir: sertumHome(),
+  version: VERSION,
+  dispatch: (method, params) => fabric.handle(method, params),
+  onChanged: () => broadcast('gateway:changed', gateway.status()),
 });
+
+fabric.onEvent((name, payload) => {
+  broadcast(name, payload);
+  gateway.event(name, payload);
+});
+
+/**
+ * Settings' side of the gateway. These live outside the fabric, so the one path a
+ * phone has to the daemon cannot reach them whatever its allowlist says.
+ */
+const gatewayMethods: Record<string, (params: never) => unknown> = {
+  'gateway/status': () => gateway.status(),
+  'gateway/set-enabled': (p: { enabled: boolean }) => gateway.setEnabled(p.enabled === true),
+  'gateway/pair-begin': () => gateway.beginPairing(),
+  'gateway/pair-cancel': () => gateway.cancelPairing(),
+  'gateway/revoke': (p: { id: string }) => gateway.revoke(p.id),
+};
 
 const server = net.createServer((socket) => {
   const client: Client = { socket, buf: '', greeted: false };
@@ -131,7 +156,10 @@ async function handleFrame(client: Client, line: string): Promise<void> {
   }
 
   try {
-    const result = await fabric.handle(method, params);
+    const local = gatewayMethods[method];
+    const result = local
+      ? await local(params as never)
+      : await fabric.handle(method, params);
     send(client, { t: 'res', id, ok: true, result: result ?? null });
   } catch (err) {
     send(client, {
@@ -154,6 +182,7 @@ let stopping = false;
 async function stop(code: number): Promise<void> {
   if (stopping) return;
   stopping = true;
+  await gateway.stop();
   await fabric.shutdown();
   try {
     fs.unlinkSync(daemonStateFile());
@@ -199,5 +228,7 @@ server.listen(endpoint, () => {
   console.log(
     `[sertumd] v${VERSION} protocol ${DAEMON_PROTOCOL} listening on ${endpoint}`,
   );
-  void fabric.start();
+  void fabric.start().finally(() => gateway.start().catch((err: unknown) => {
+    console.error('[gateway] failed to start:', err);
+  }));
 });
