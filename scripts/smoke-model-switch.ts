@@ -133,7 +133,7 @@ async function probeConversationAgent(
   console.log('unlisted model refused:', bogus.reason);
 
   // The claim that matters: the agent itself runs the new model next turn.
-  assert(await fabric.handle('chat/send', { id: session.id, text: 'Say OK and nothing else.' }));
+  assert((await fabric.handle('chat/submit', { id: session.id, text: 'Say OK and nothing else.' }) as { outcome: string }).outcome === 'sent');
   await waitIdle(current, session.id);
   console.log('immediately after the turn, the snapshot says', current.get(session.id)?.model);
 

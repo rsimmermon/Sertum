@@ -46,6 +46,7 @@ import {
 import {
   noConversation,
   readConversation,
+  readConversationItem,
   readConversationPage,
 } from '../main/adapters/conversation';
 import {
@@ -60,6 +61,10 @@ import {
 } from '../main/adapters/agent-adapter';
 import { approvalCardFor } from '../main/adapters/interactive-tools';
 import { validateChatAttachments } from '../main/chat-attachments';
+import { promptWithAttachments } from '../shared/chat-attachments';
+import { readLocalImage } from '../main/local-image';
+import { ChatQueue } from './chat-queue';
+import { UploadSpool } from './upload-spool';
 import { inspectProcessTree } from '../main/process-tree';
 import {
   addRule,
@@ -77,7 +82,12 @@ import {
   type ApprovalAnswer,
   type BinaryDetection,
   type ChatAttachment,
+  type ChatDeliveredEvent,
+  type ChatSubmitResult,
   type CodexRecovery,
+  type ConversationChangedEvent,
+  type ConversationItemRead,
+  type ConversationItemRequest,
   type ConversationPageRequest,
   type ConversationRead,
   type ConversationReadRequest,
@@ -98,6 +108,12 @@ import {
   type SessionStatus,
   type SessionTransport,
 } from '../shared/types';
+
+/** The gap that makes a PTY agent read Enter as a keypress, not part of a paste. */
+const PTY_ENTER_DELAY_MS = 150;
+
+/** How often live transcripts are checked for clients waiting on a change. */
+const CONVERSATION_WATCH_MS = 500;
 
 /** What the session's activity line reads once a held call is answered. */
 const ANSWERED_ACTIVITY: Record<
@@ -140,6 +156,8 @@ export interface Fabric {
 export function createFabric(opts: { userDataDir: string }): Fabric {
   const { userDataDir } = opts;
   setRulesDir(userDataDir);
+  const uploads = new UploadSpool(path.join(userDataDir, 'uploads'));
+  void uploads.sweep();
 
   let settings: FabricSettings = {
     approvalsInApp: DEFAULT_SETTINGS.approvalsInApp,
@@ -809,7 +827,49 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     }
     emit('pty:exit', e);
   });
-  ptys.on('session-updated', (s) => emit('session:updated', s));
+  const chatQueue = new ChatQueue({
+    session: (id) => ptys.get(id),
+    deliver: deliverChatMessage,
+    publish: (id, queue, stalled) => ptys.setMessageQueue(id, queue, stalled),
+    delivered: (id, message, stillQueued) =>
+      emit('chat:delivered', { id, message, stillQueued } satisfies ChatDeliveredEvent),
+  });
+  ptys.on('session-updated', (s: SessionSnapshot) => {
+    emit('session:updated', s);
+    chatQueue.sessionChanged(s);
+  });
+
+  /**
+   * Put one message into a session by whichever route its transport has. A
+   * structured host takes text plus attachment descriptors. A PTY takes one
+   * prompt with explicit file paths, then Enter as its own keystroke.
+   *
+   * Multi-line text travels as a bracketed paste, because that is what the
+   * agent's composer is built to receive whole. Encoding the newlines as ESC CR
+   * (the Shift+Enter chord) was tried first: written in one burst with a trailing
+   * CR, Claude's TUI read the whole thing as a paste, swallowed the CR into it,
+   * and left the message sitting unsent. The CR is therefore delayed a beat so it
+   * arrives as a real Enter press, verified against a live Claude session. Codex
+   * needs the same write boundary even for a single line: `text + CR` in one write
+   * leaves the text in its composer without submitting it.
+   */
+  async function deliverChatMessage(
+    session: SessionSnapshot,
+    text: string,
+    attachments: ChatAttachment[],
+  ): Promise<string | null> {
+    const { id } = session;
+    if (hasStructuredTransport(session)) {
+      if (session.origin !== 'owned') return 'This session cannot take messages here.';
+      const taken = await structuredHostFor(id).send(id, text.trim(), attachments);
+      return taken ? null : 'The session did not take the message. Finish or stop the current turn, then try again.';
+    }
+    const prompt = promptWithAttachments(text, attachments);
+    const body = prompt.includes('\n') ? `\x1b[200~${prompt}\x1b[201~` : prompt;
+    if (!ptys.write(id, body)) return 'The session’s terminal is gone.';
+    await new Promise((resolve) => setTimeout(resolve, PTY_ENTER_DELAY_MS));
+    return ptys.write(id, '\r') ? null : 'The session ended before Enter could be sent.';
+  }
 
   // ------------------------------------------------------------- polling
 
@@ -847,6 +907,40 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         })),
       );
     }, 3000);
+  }
+
+  /**
+   * Tell clients a transcript moved, so none of them has to keep asking. A stat
+   * per live session per tick, and a frame only when one changed. Reads the path
+   * the meta poll already found, because finding one can mean a folder scan; a
+   * session that has none yet is covered by its pane's own slower poll.
+   */
+  let conversationTimer: NodeJS.Timeout | null = null;
+  const transcriptMarks = new Map<string, string>();
+  function startConversationWatch() {
+    if (conversationTimer) return;
+    let checking = false;
+    conversationTimer = setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const live = ptys.list().filter((s) => s.pid !== null && s.transcriptPath);
+        await Promise.all(live.map(async (s) => {
+          const stat = await fs.promises.stat(s.transcriptPath as string).catch(() => null);
+          if (!stat) return;
+          const mark = `${stat.size}:${stat.mtimeMs}`;
+          if (transcriptMarks.get(s.id) === mark) return;
+          transcriptMarks.set(s.id, mark);
+          emit('conversation:changed', { id: s.id } satisfies ConversationChangedEvent);
+        }));
+        const ids = new Set(live.map((s) => s.id));
+        for (const id of transcriptMarks.keys()) {
+          if (!ids.has(id)) transcriptMarks.delete(id);
+        }
+      } finally {
+        checking = false;
+      }
+    }, CONVERSATION_WATCH_MS);
   }
 
   /** The transcript a session's conversation comes from, or why it has none. */
@@ -1108,7 +1202,11 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       };
     },
     'session/kill': (id: string) => ptys.kill(id),
-    'session/remove': (id: string) => ptys.remove(id),
+    'session/remove': async (id: string) => {
+      const removed = await ptys.remove(id);
+      if (removed) chatQueue.forget(id);
+      return removed;
+    },
     'session/rename': (p: { id: string; label: string }) => {
       const stored = ptys.rename(p.id, p.label);
       if (stored === null) return null;
@@ -1176,20 +1274,27 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       return null;
     },
 
-    'chat/send': (
+    /** A typed message, from any client, for any transport. */
+    'chat/submit': (
       p: { id: string; text: string; attachments?: ChatAttachment[] },
-    ) => {
-      const session = ptys.get(p.id);
-      const message = p.text.trim();
-      const attachments = validateChatAttachments(
-        Array.isArray(p.attachments) ? p.attachments : [],
-      );
-      if (
-        !session || session.exitCode !== null || session.origin !== 'owned' ||
-        !hasStructuredTransport(session) || (!message && !attachments.length)
-      ) return false;
-      return structuredHostFor(p.id).send(p.id, message, attachments);
-    },
+    ): Promise<ChatSubmitResult> =>
+      chatQueue.submit(
+        p.id,
+        p.text.replace(/\s+$/, ''),
+        validateChatAttachments(Array.isArray(p.attachments) ? p.attachments : []),
+      ),
+    'chat/queue-remove': (p: { id: string; messageId: number }) =>
+      chatQueue.remove(p.id, p.messageId),
+    'upload/begin': (p: { name: string; size: number }) => uploads.begin(p),
+    'upload/chunk': (p: { uploadId: string; offset: number; data: string }) => uploads.chunk(p),
+    'upload/finish': (p: { uploadId: string }) => uploads.finish(p),
+    'upload/abort': (p: { uploadId: string }) => uploads.abort(p),
+    /**
+     * An image a message names. Only a folder some session really has can be
+     * read from, so no client can point this anywhere else on the disk.
+     */
+    'image/read-local': (p: { cwd: string; src: string }) =>
+      ptys.list().some((s) => s.cwd === p.cwd) ? readLocalImage(p.cwd, p.src) : null,
     /**
      * A chat pane's poll. It names what the pane holds and is told only what
      * moved -- see `ConversationRead` for what re-sending it every second cost.
@@ -1210,6 +1315,15 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
       return 'reason' in source
         ? source
         : readConversationPage(source.agent, source.transcript, p);
+    },
+    /** One item with its text whole, for a reader who asked for the rest. */
+    'conversation/item': async (
+      p: { id: string } & ConversationItemRequest,
+    ): Promise<ConversationItemRead> => {
+      const source = conversationSource(p.id);
+      return 'reason' in source
+        ? { reason: source.reason ?? 'There is no transcript.' }
+        : readConversationItem(source.agent, source.transcript, p);
     },
 
     'discovery/list': () => discoverSessions(ptys.ownedPids(), resolvedCommand),
@@ -1561,6 +1675,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
 
       startMonitorPolling();
       startMetaPolling();
+      startConversationWatch();
     },
 
     async shutdown() {
@@ -1587,9 +1702,11 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         });
       await Promise.all(backgroundStops);
       if (metaTimer) clearInterval(metaTimer);
+      if (conversationTimer) clearInterval(conversationTimer);
       if (monitorTimer) clearInterval(monitorTimer);
       ptys.disposeAll();
       claudeChat.disposeAll();
+      void uploads.dispose();
       void hooks.stop();
       codex.stop();
       grokEvents.stopAll();

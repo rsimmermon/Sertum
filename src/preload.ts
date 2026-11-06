@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ConversationChangedEvent,
+  ConversationItemRequest,
   ConversationPageRequest,
   ConversationReadRequest,
   AgentEffortList,
@@ -8,6 +10,7 @@ import type {
   ModelChangeResult,
   AgentKind,
   ChatAttachment,
+  ChatDeliveredEvent,
   ApprovalAnswer,
   DiffCommitRequest,
   PendingApproval,
@@ -134,8 +137,14 @@ const api: SertumApi = {
     ipcRenderer.invoke('conversation:read', id, request),
   readConversationPage: (id: string, request: ConversationPageRequest) =>
     ipcRenderer.invoke('conversation:page', id, request),
-  sendChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
-    ipcRenderer.invoke('chat:send', { id, text, attachments }),
+  readConversationItem: (id: string, request: ConversationItemRequest) =>
+    ipcRenderer.invoke('conversation:item', id, request),
+  onConversationChanged: (cb) => on<ConversationChangedEvent>('conversation:changed', cb),
+  submitChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
+    ipcRenderer.invoke('chat:submit', { id, text, attachments }),
+  removeQueuedMessage: (id: string, messageId: number) =>
+    ipcRenderer.invoke('chat:queue-remove', { id, messageId }),
+  onChatDelivered: (cb) => on<ChatDeliveredEvent>('chat:delivered', cb),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),
   restartCodexServer: () => ipcRenderer.invoke('codex:restart'),
   repairCodexServer: () => ipcRenderer.invoke('codex:repair'),

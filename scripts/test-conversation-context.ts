@@ -10,6 +10,7 @@ const file = path.join(dir, 'conversation.jsonl');
 try {
   const messages = [
     ['user', '<recommended_plugins>\n- Airtable\n</recommended_plugins>'],
+    ['user', '# AGENTS.md instructions for D:\\repo\n\n<INSTRUCTIONS>\nRules\n</INSTRUCTIONS>'],
     ['user', '<example>Keep my pasted XML</example>'],
     ['assistant', '## Answer\n\n- One\n- Two'],
   ];
@@ -23,7 +24,7 @@ try {
   assert.equal(result.items[0].kind, 'message');
   assert.equal(result.items[1].kind, 'message');
   if (result.items[0].kind === 'message' && result.items[1].kind === 'message') {
-    assert.equal(result.items[0].text, messages[1][1]);
+    assert.equal(result.items[0].text, messages[2][1]);
     assert.equal(result.items[1].format, 'markdown');
   }
   console.log('Codex injected context, pasted XML, and markdown classification passed.');

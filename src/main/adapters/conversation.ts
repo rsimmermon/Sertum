@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import type {
   AgentKind,
   ChatItem,
+  ConversationItemRead,
+  ConversationItemRequest,
   ConversationPageRequest,
   ConversationRead,
   ConversationReadRequest,
   ConversationSnapshot,
+  ItemMore,
 } from '../../shared/types';
 import { classifyMessage } from './markdown-format';
 
@@ -50,6 +53,12 @@ const PAGE_ITEMS = 200;
  */
 const PAGE_CHARS = 4 * 1024 * 1024;
 
+/**
+ * The most of one field that expanding an item sends. Well past anything a person
+ * reads in a pane, and it keeps a runaway tool result from becoming one frame.
+ */
+const FULL_CHARS = 4 * 1024 * 1024;
+
 /** Transcripts are read in slices so a large one never holds the event loop. */
 const READ_CHUNK = 1024 * 1024;
 
@@ -65,11 +74,23 @@ const IDLE_MS = 10 * 60_000;
 
 type ToolItem = ChatItem & { kind: 'tool' };
 
+/** Where the whole of a shortened item can be read back from. */
+interface ItemSource {
+  /** The record that made the item, and which of its new items this one was. */
+  body?: { start: number; end: number; ordinal: number };
+  /** The record holding a tool's result, and the call it pairs with. */
+  output?: { start: number; end: number; callId: string };
+}
+
 interface ParseContext {
   items: ChatItem[];
   tools: Map<string, { tool: ToolItem; index: number }>;
   /** Indexes of existing items the current record changed. */
   touched: number[];
+  /** Only shortened items have an entry, so this stays small. */
+  sources: Map<number, ItemSource>;
+  /** The byte range of the record being fed. */
+  record: { start: number; end: number };
 }
 
 /** One transcript's parsed items, extended as the file grows. */
@@ -101,6 +122,8 @@ function freshStore(agent: AgentKind, file: string): TranscriptStore {
     items: [],
     tools: new Map(),
     touched: [],
+    sources: new Map(),
+    record: { start: 0, end: 0 },
     identity: null,
     offset: 0,
     revs: [],
@@ -157,19 +180,34 @@ function charsOf(item: ChatItem): number {
   }
 }
 
-function feedRecord(store: TranscriptStore, rec: Record<string, unknown>, end: number): void {
-  switch (store.agent) {
+function feedAgent(agent: AgentKind, context: ParseContext, rec: Record<string, unknown>): void {
+  switch (agent) {
     case 'codex':
-      feedCodex(store, rec);
+      feedCodex(context, rec);
       break;
     case 'grok':
-      feedGrok(store, rec);
+      feedGrok(context, rec);
       break;
     default:
-      feedClaude(store, rec);
+      feedClaude(context, rec);
   }
-  for (let index = store.revs.length; index < store.items.length; index += 1) {
+}
+
+function feedRecord(
+  store: TranscriptStore,
+  rec: Record<string, unknown>,
+  start: number,
+  end: number,
+): void {
+  store.record = { start, end };
+  const firstNew = store.revs.length;
+  feedAgent(store.agent, store, rec);
+  for (let index = firstNew; index < store.items.length; index += 1) {
     const item = store.items[index];
+    if (item && item.kind !== 'image' && bodyWasCut(item)) {
+      sourceOf(store, index).body = { start, end, ordinal: index - firstNew };
+      item.more = 'available';
+    }
     // Items are classified as they arrive, each against the request before
     // it, and that request can never change, so neither can a format.
     if (item?.kind === 'message') {
@@ -183,7 +221,7 @@ function feedRecord(store: TranscriptStore, rec: Record<string, unknown>, end: n
 }
 
 /** Parse one line; a line that is not a record is skipped, never fatal. */
-function feedLine(store: TranscriptStore, line: Buffer, end: number): boolean {
+function feedLine(store: TranscriptStore, line: Buffer, start: number, end: number): boolean {
   store.identity ??= createHash('sha1')
     .update(store.file)
     .update(line)
@@ -193,7 +231,7 @@ function feedLine(store: TranscriptStore, line: Buffer, end: number): boolean {
   store.offset = end;
   if (!text.startsWith('{')) return false;
   try {
-    feedRecord(store, JSON.parse(text) as Record<string, unknown>, end);
+    feedRecord(store, JSON.parse(text) as Record<string, unknown>, start, end);
     return true;
   } catch {
     return false;
@@ -247,7 +285,7 @@ async function readNewRecords(store: TranscriptStore): Promise<boolean> {
         const piece = view.subarray(from, newline);
         const line = carry.length ? Buffer.concat([...carry, piece]) : piece;
         carry = [];
-        feedLine(store, line, end);
+        feedLine(store, line, lineStart, end);
         lineStart = end;
         from = newline + 1;
       }
@@ -259,7 +297,7 @@ async function readNewRecords(store: TranscriptStore): Promise<boolean> {
     // Only the second parses, so nothing half-written is ever taken as a record.
     if (carry.length) {
       const line = Buffer.concat(carry);
-      if (isCompleteRecord(line)) feedLine(store, line, lineStart + line.length);
+      if (isCompleteRecord(line)) feedLine(store, line, lineStart, lineStart + line.length);
     }
     const nonce = rewriteNonces.get(store.file);
     if (nonce && store.identity && !store.identity.endsWith(nonce)) {
@@ -427,6 +465,113 @@ export async function readConversationPage(
     : pageStartingAt(current, Math.max(0, request.from ?? 0), limit);
 }
 
+/**
+ * One item with its text whole, for a reader who asked for the rest of it.
+ *
+ * Only the shortened text is held, because the full text of every tool result in
+ * a long conversation is what the window exists to avoid holding. The store keeps
+ * which bytes each shortened item came from, and those records go back through
+ * the same parsers with the caps off, so what comes back is what the item would
+ * have said. It must still begin with what the reader has, or the file has moved
+ * under the store and the answer is `stale`.
+ */
+export async function readConversationItem(
+  agent: AgentKind,
+  file: string,
+  request: ConversationItemRequest,
+): Promise<ConversationItemRead> {
+  const current = await currentStore(agent, file);
+  if (!('revs' in current)) {
+    return { reason: current.reason ?? 'The transcript could not be read.' };
+  }
+  const known = parseVersion(request.known);
+  const item = current.items[request.index];
+  if (!item || known?.identity !== (current.identity ?? 'empty')) return { stale: true };
+  const source = current.sources.get(request.index);
+  if (!source) return { item };
+  try {
+    const whole = await wholeItem(current, item, source);
+    return whole ? { item: whole } : { stale: true };
+  } catch {
+    return { stale: true };
+  }
+}
+
+async function wholeItem(
+  store: TranscriptStore,
+  item: ChatItem,
+  source: ItemSource,
+): Promise<ChatItem | null> {
+  let cut = false;
+  /** The whole text, if it still starts with what is held; bounded for the wire. */
+  const fit = (full: string | null | undefined, held: string): string | null => {
+    if (typeof full !== 'string' || !full.startsWith(held.slice(0, -1))) return null;
+    if (full.length <= FULL_CHARS) return full;
+    cut = true;
+    return `${full.slice(0, FULL_CHARS - 1)}…`;
+  };
+  const made = source.body
+    ? (await reparse(store, source.body)).items[source.body.ordinal]
+    : undefined;
+
+  if (item.kind === 'message' || item.kind === 'thinking') {
+    const text = fit(made?.kind === item.kind ? made.text : null, item.text);
+    if (text === null) return null;
+    return settled({ ...item, text }, cut);
+  }
+  if (item.kind !== 'tool') return null;
+
+  let { detail, output } = item;
+  if (source.body && detail !== null) {
+    detail = fit(made?.kind === 'tool' ? made.detail : null, detail);
+    if (detail === null) return null;
+  }
+  if (source.output && output !== null) {
+    const held: ToolItem = { kind: 'tool', name: item.name, detail: null, output: null, at: null };
+    await reparse(store, source.output, [source.output.callId, held]);
+    output = fit(held.output, output);
+    if (output === null) return null;
+  }
+  return settled({ ...item, detail, output }, cut);
+}
+
+/** An item that has been expanded: whole, or as whole as it will get. */
+function settled<T extends { more?: ItemMore }>(item: T, cut: boolean): T {
+  delete item.more;
+  if (cut) item.more = 'too-long';
+  return item;
+}
+
+/** Run one record back through its parser with the caps off. */
+async function reparse(
+  store: TranscriptStore,
+  range: { start: number; end: number },
+  call?: [string, ToolItem],
+): Promise<ParseContext> {
+  const handle = await fs.promises.open(store.file, 'r');
+  const bytes = Buffer.alloc(range.end - range.start);
+  try {
+    await handle.read(bytes, 0, bytes.length, range.start);
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  const context: ParseContext = {
+    items: [],
+    tools: new Map(call ? [[call[0], { tool: call[1], index: 0 }]] : []),
+    touched: [],
+    sources: new Map(),
+    record: range,
+  };
+  // Synchronous, so no other parse can run while the caps are off.
+  capping = false;
+  try {
+    feedAgent(store.agent, context, JSON.parse(bytes.toString('utf8').trim()) as Record<string, unknown>);
+  } finally {
+    capping = true;
+  }
+  return context;
+}
+
 // ------------------------------------------------------------------ Claude
 
 /**
@@ -537,9 +682,12 @@ function questionText(value: unknown): string | null {
 
 // ------------------------------------------------------------------- Codex
 
-/** Codex wraps every injection it makes in a named tag on a user record. */
+/**
+ * Codex wraps most injections in a named tag on a user record. A project's
+ * AGENTS.md instead arrives under a markdown heading with the path after it.
+ */
 const CODEX_MACHINE_TEXT =
-  /^\s*<(environment_context|user_instructions|skills_instructions|recommended_plugins|turn_aborted|permissions|collaboration_mode|AGENTS)/;
+  /^\s*(?:<(environment_context|user_instructions|skills_instructions|recommended_plugins|turn_aborted|permissions|collaboration_mode|AGENTS)|# AGENTS\.md instructions for )/;
 
 function feedCodex(context: ParseContext, rec: Record<string, unknown>): void {
   const { items } = context;
@@ -678,6 +826,16 @@ function setToolOutput(
   if (!entry) return undefined;
   entry.tool.output = cap(joinBlockText(content), TOOL_CAP);
   context.touched.push(entry.index);
+  if (wasCut(entry.tool.output, TOOL_CAP)) {
+    const { start, end } = context.record;
+    sourceOf(context, entry.index).output = { start, end, callId: id as string };
+    entry.tool.more = 'available';
+  } else {
+    // A call answered twice: the later result is the one on screen.
+    const source = context.sources.get(entry.index);
+    if (source) delete source.output;
+    if (!source?.body) delete entry.tool.more;
+  }
   return entry.tool;
 }
 
@@ -721,8 +879,32 @@ function parseTime(value: unknown): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
+/** Off only while `reparse` runs a record back through a parser. */
+let capping = true;
+
 function cap(text: string, limit: number): string {
-  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+  return capping && text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+/**
+ * A text exactly at its limit and ending in the mark. One that merely happens to
+ * be costs a button that brings back what is already there.
+ */
+function wasCut(text: string | null, limit: number): boolean {
+  return text !== null && text.length === limit && text.endsWith('…');
+}
+
+function bodyWasCut(item: ChatItem & { kind: 'message' | 'thinking' | 'tool' }): boolean {
+  return item.kind === 'tool' ? wasCut(item.detail, TOOL_CAP) : wasCut(item.text, TEXT_CAP);
+}
+
+function sourceOf(context: ParseContext, index: number): ItemSource {
+  let source = context.sources.get(index);
+  if (!source) {
+    source = {};
+    context.sources.set(index, source);
+  }
+  return source;
 }
 
 /** Only structured image fields become previews; prose is never treated as a URL. */

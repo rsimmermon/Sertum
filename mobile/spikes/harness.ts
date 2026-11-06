@@ -94,6 +94,9 @@ const stub = new Proxy({} as Record<string, unknown>, {
     if (prop === 'platform') return 'linux';
     if (prop === 'readConversation') return readConversation;
     if (prop === 'readConversationPage') return readConversationPage;
+    if (prop === 'readConversationItem') {
+      return (_id: string, request: { index: number }) => Promise.resolve({ item: served[request.index] });
+    }
     if (prop.startsWith('on')) return () => () => undefined;
     return async () => null;
   },
@@ -108,7 +111,8 @@ const { ChatPane } = await import('@desktop/renderer/chat-pane');
 const session = {
   id: 'spike', label: 'Spike', agent: 'claude', cwd: '/spike', command: 'claude', args: [],
   transport: 'stream', background: false, remoteControl: false, toolsPaused: false, muted: false,
-  origin: 'owned', externalId: null, status: 'idle', turnActive: false, subagents: [], pid: 1,
+  origin: 'owned', externalId: null, status: 'idle', turnActive: false, messageQueue: [],
+  queueStalled: null, subagents: [], pid: 1,
   startedAt: 0, exitCode: null, activity: null, lastEventAt: null, adapterBound: true, model: null,
   modelLabel: null, effort: null, contextTokens: null, contextLimit: null, transcriptPath: null,
   permissionMode: null,

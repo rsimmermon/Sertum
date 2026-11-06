@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   readConversation,
+  readConversationItem,
   readConversationPage,
 } from '../src/main/adapters/conversation';
 import type {
@@ -227,6 +228,117 @@ const checks: Array<[string, () => Promise<void>]> = [
     assert.deepEqual(a.items, b.items);
     const formats = a.items.flatMap((item) => (item.kind === 'message' && item.role === 'assistant' ? [item.format] : []));
     assert.deepEqual(formats, ['markdown-source', 'markdown']);
+  }],
+
+  ['a shortened message says so, and comes back whole, keeping its place among its record\'s items', async () => {
+    const file = newFile();
+    const long = `${'é🙂'.repeat(15_000)}THE END`;
+    fs.writeFileSync(file, `${user('hi')}\n${JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [
+        { type: 'text', text: 'short first' },
+        { type: 'text', text: long },
+        { type: 'thinking', thinking: long },
+      ] },
+    })}\n${assistant('after')}\n`);
+    const page = await readConversation('claude', file) as ConversationSnapshot;
+    assert.equal(page.items[0]?.kind === 'message' && page.items[0].more, undefined);
+    assert.equal(page.items[1]?.kind === 'message' && page.items[1].more, undefined);
+    const held = page.items[2];
+    assert.ok(held?.kind === 'message' && held.more === 'available' && held.text.length === 24_000);
+    const read = await readConversationItem('claude', file, { index: 2, known: page.version as string });
+    assert.ok('item' in read && read.item.kind === 'message');
+    assert.equal(read.item.text, long);
+    assert.equal(read.item.more, undefined);
+    assert.equal(read.item.format, held.format);
+    const thought = await readConversationItem('claude', file, { index: 3, known: page.version as string });
+    assert.ok('item' in thought && thought.item.kind === 'thinking');
+    assert.equal(thought.item.text, long);
+  }],
+
+  ['a tool\'s input and its result come back whole, from the two records that hold them', async () => {
+    const file = newFile();
+    const command = `echo ${'c'.repeat(5_000)}`;
+    const output = `${'o'.repeat(9_000)}END`;
+    fs.writeFileSync(file, `${toolUse('a', command)}\n${user('between')}\n${toolUse('b', 'ls')}\n${toolResult('b', output)}\n${toolResult('a', output)}\n`);
+    const page = await readConversation('claude', file) as ConversationSnapshot;
+    const known = page.version as string;
+    const first = page.items[0] as ChatItem & { kind: 'tool' };
+    assert.equal(first.more, 'available');
+    assert.equal(first.detail?.length, 2_000);
+    const whole = await readConversationItem('claude', file, { index: 0, known });
+    assert.ok('item' in whole && whole.item.kind === 'tool');
+    assert.equal(whole.item.detail, command);
+    assert.equal(whole.item.output, output);
+    const second = await readConversationItem('claude', file, { index: 2, known });
+    assert.ok('item' in second && second.item.kind === 'tool');
+    assert.equal(second.item.detail, 'ls');
+    assert.equal(second.item.output, output);
+    assert.equal(second.item.more, undefined);
+  }],
+
+  ['a whole item is what it was, and a later answer to a call replaces a shortened one', async () => {
+    const file = newFile();
+    fs.writeFileSync(file, `${toolUse('a', 'ls')}\n${toolResult('a', 'x'.repeat(3_000))}\n${toolResult('a', 'short')}\n`);
+    const page = await readConversation('claude', file) as ConversationSnapshot;
+    const tool = page.items[0] as ChatItem & { kind: 'tool' };
+    assert.equal(tool.output, 'short');
+    assert.equal(tool.more, undefined);
+    const read = await readConversationItem('claude', file, { index: 0, known: page.version as string });
+    assert.ok('item' in read);
+    assert.deepEqual(read.item, tool);
+  }],
+
+  ['a shortened item still reads after the file grows, and a rewrite makes the old index stale', async () => {
+    const file = newFile();
+    const long = 'L'.repeat(30_000);
+    fs.writeFileSync(file, `${user('hi')}\n${assistant(long)}\n`);
+    const page = await readConversation('claude', file) as ConversationSnapshot;
+    const known = page.version as string;
+    await append(file, assistant('more'));
+    const grown = await readConversationItem('claude', file, { index: 1, known });
+    assert.ok('item' in grown && grown.item.kind === 'message' && grown.item.text === long);
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    fs.writeFileSync(file, `${user('entirely')}\n${assistant('different')}\n`);
+    assert.deepEqual(await readConversationItem('claude', file, { index: 1, known }), { stale: true });
+    assert.deepEqual(await readConversationItem('claude', file, { index: 99, known: 'x:0' }), { stale: true });
+  }],
+
+  ['a huge field is bounded, and says so', async () => {
+    const file = newFile();
+    fs.writeFileSync(file, `${assistant('H'.repeat(5 * 1024 * 1024))}\n`);
+    const page = await readConversation('claude', file) as ConversationSnapshot;
+    const read = await readConversationItem('claude', file, { index: 0, known: page.version as string });
+    assert.ok('item' in read && read.item.kind === 'message');
+    assert.equal(read.item.text.length, 4 * 1024 * 1024);
+    assert.equal(read.item.more, 'too-long');
+  }],
+
+  ['Codex and Grok items come back whole too', async () => {
+    const long = 'Z'.repeat(30_000);
+    const codex = newFile();
+    fs.writeFileSync(codex, [
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: long }] } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'c', name: 'shell', arguments: '{}' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c', output: long } },
+    ].map((r) => `${JSON.stringify(r)}\n`).join(''));
+    const c = await readConversation('codex', codex) as ConversationSnapshot;
+    const cm = await readConversationItem('codex', codex, { index: 0, known: c.version as string });
+    assert.ok('item' in cm && cm.item.kind === 'message' && cm.item.text === long);
+    const ct = await readConversationItem('codex', codex, { index: 1, known: c.version as string });
+    assert.ok('item' in ct && ct.item.kind === 'tool' && ct.item.output === long);
+
+    const grok = newFile();
+    fs.writeFileSync(grok, [
+      { type: 'assistant', content: long, tool_calls: [{ id: 'g', name: 'list_dir', arguments: '{}' }] },
+      { type: 'tool_result', tool_call_id: 'g', content: long },
+    ].map((r) => `${JSON.stringify(r)}\n`).join(''));
+    const g = await readConversation('grok', grok) as ConversationSnapshot;
+    const gm = await readConversationItem('grok', grok, { index: 0, known: g.version as string });
+    assert.ok('item' in gm && gm.item.kind === 'message' && gm.item.text === long);
+    const gt = await readConversationItem('grok', grok, { index: 1, known: g.version as string });
+    assert.ok('item' in gt && gt.item.kind === 'tool' && gt.item.output === long);
   }],
 
   ['an absent file is the young session\'s normal state', async () => {

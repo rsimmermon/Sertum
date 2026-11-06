@@ -66,8 +66,12 @@ const server = net.createServer((socket) => {
   const client: Client = { socket, buf: '', greeted: false };
   clients.add(client);
   socket.setNoDelay(true);
-  socket.on('data', (chunk) => {
-    client.buf += chunk.toString('utf8');
+  // Decoded by the stream, which holds back a character split across two chunks.
+  // Decoding each chunk alone corrupted one that landed on the boundary, which a
+  // long pasted message can do.
+  socket.setEncoding('utf8');
+  socket.on('data', (chunk: string) => {
+    client.buf += chunk;
     let at: number;
     while ((at = client.buf.indexOf('\n')) >= 0) {
       const line = client.buf.slice(0, at).trim();

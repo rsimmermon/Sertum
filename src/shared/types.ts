@@ -328,6 +328,13 @@ export interface SessionSnapshot extends SessionSpec {
    */
   turnActive: boolean;
   /**
+   * Messages waiting for the session to be able to take them, oldest first.
+   * Held by the daemon, so they outlive a window and every client sees them.
+   */
+  messageQueue: QueuedChatMessage[];
+  /** Why the oldest queued message did not go in. Null while nothing is stuck. */
+  queueStalled: string | null;
+  /**
    * Subagents running on this session's behalf, from hooks Claude stamps
    * with `agent_id`. Their work never moves `status` or `activity` -- a
    * background agent still running after the main turn ended is not a turn
@@ -454,6 +461,13 @@ export type PermissionModeResult =
  */
 export type MessageFormat = 'text' | 'markdown' | 'markdown-source';
 
+/**
+ * Why an item's text stops short. `available` means `conversation/item` will send
+ * the rest. `too-long` means that has been done and it still would not fit. Absent
+ * means the text is whole, which is nearly every item.
+ */
+export type ItemMore = 'available' | 'too-long';
+
 export type ChatItem =
   | {
       kind: 'message';
@@ -462,8 +476,9 @@ export type ChatItem =
       at: number | null;
       /** Always `text` for a user's own words; see `MessageFormat`. */
       format: MessageFormat;
+      more?: ItemMore;
     }
-  | { kind: 'thinking'; text: string; at: number | null }
+  | { kind: 'thinking'; text: string; at: number | null; more?: ItemMore }
   | {
       kind: 'image';
       /** Agent-produced data URL from a structured tool result. */
@@ -479,6 +494,7 @@ export type ChatItem =
       /** The result, paired by the agent's own call id. Null while running. */
       output: string | null;
       at: number | null;
+      more?: ItemMore;
     };
 
 /**
@@ -529,6 +545,26 @@ export interface ConversationPageRequest {
   before?: number;
   from?: number;
   limit?: number;
+}
+
+/** One item by index, with `known` naming the content that index belongs to. */
+export interface ConversationItemRequest {
+  index: number;
+  known: string;
+}
+
+/** The whole item; or the index no longer means that item; or there is no transcript. */
+export type ConversationItemRead =
+  | { item: ChatItem }
+  | { stale: true }
+  | { reason: string };
+
+/**
+ * A session's transcript moved. Carries no content: a client that cares asks
+ * `conversation/read`, and one looking elsewhere has paid for one small frame.
+ */
+export interface ConversationChangedEvent {
+  id: string;
 }
 
 /** Word that the transcript has not moved since the version the poll named. */
@@ -1295,6 +1331,26 @@ export interface ChatAttachment {
   kind: 'image' | 'file';
 }
 
+/** A message the daemon is holding until its session can take it. */
+export interface QueuedChatMessage {
+  id: number;
+  text: string;
+  attachments: ChatAttachment[];
+}
+
+/** What became of a submitted message. Refused means the writer keeps it. */
+export type ChatSubmitResult =
+  | { outcome: 'sent' }
+  | { outcome: 'queued'; position: number }
+  | { outcome: 'refused'; reason: string };
+
+/** A message went into its session, whichever client wrote it. */
+export interface ChatDeliveredEvent {
+  id: string;
+  message: QueuedChatMessage;
+  stillQueued: number;
+}
+
 /** The surface exposed to the renderer through the preload bridge. */
 export interface SertumApi {
   /**
@@ -1499,16 +1555,21 @@ export interface SertumApi {
    */
   readConversation(id: string, request?: ConversationReadRequest): Promise<ConversationRead>;
   readConversationPage(id: string, request: ConversationPageRequest): Promise<ConversationSnapshot>;
+  readConversationItem(id: string, request: ConversationItemRequest): Promise<ConversationItemRead>;
+  onConversationChanged(cb: (e: ConversationChangedEvent) => void): () => void;
   /**
    * Send a message into a `stream` session over the agent's structured chat
    * protocol. Resolves false when the session cannot take one — wrong
    * transport, or its process has exited.
    */
-  sendChatMessage(
+  submitChatMessage(
     id: string,
     text: string,
     attachments?: ChatAttachment[],
-  ): Promise<boolean>;
+  ): Promise<ChatSubmitResult>;
+  /** False when the message is already going in, or gone. */
+  removeQueuedMessage(id: string, messageId: number): Promise<boolean>;
+  onChatDelivered(cb: (e: ChatDeliveredEvent) => void): () => void;
   /** Health of the plane 2 adapters. */
   adapterStatus(): Promise<AdapterStatus>;
   /** Stops and restarts the Codex app server; the retry after a fix outside Sertum. */

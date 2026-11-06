@@ -1889,6 +1889,10 @@ select.field {
 }
 .chat-format-toggle:hover { color: var(--ink-2); border-color: var(--line); }
 .chat-format-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-more { display: block; margin: 6px 0 0 14px; }
+.chat-user .chat-more, .chat-assistant .chat-more { margin-left: 0; }
+.chat-more:disabled { cursor: default; opacity: .7; }
+.chat-more-note { margin-top: 6px; font: 11px var(--font-ui); color: var(--muted); }
 
 .chat-md-p { margin: 0 0 8px; }
 .chat-md-h {

@@ -454,7 +454,7 @@ remains a terminal. What it reads is each agent's transcript on disk, the
 same class of source as a hook payload, so this does not touch the
 two-planes rule.
 
-Seven rules constrain any change here:
+Nine rules constrain any change here:
 
 - **The conversation is the default surface, not the only one.** A PTY-backed
   agent session can be switched to its terminal, from the pane header, its row
@@ -473,17 +473,21 @@ Seven rules constrain any change here:
   in the mono face. A fenced block is always code, and every classified
   message carries a toggle, so the guess is never the last word.
 - **An address out of a transcript is never fetched by the renderer.** A
-  local image inside the session's own folder is read in the main process
-  and returned as a `data:` URL; a remote one, or one outside that folder,
-  keeps the labelled link it already had.
-- **The composer writes the body and then a CR 150ms later**, never as one
-  burst — Claude's and Codex's TUIs both silently fail to submit otherwise.
+  local image inside the session's own folder is read by the daemon and returned
+  as a `data:` URL; a remote one, or one outside that folder, keeps the labelled
+  link it already had. The daemon accepts only a folder some session really has,
+  and checks containment after following links, so no client can widen the read.
+- **A PTY gets the body and then a CR 150ms later**, never as one burst —
+  Claude's and Codex's TUIs both silently fail to submit otherwise. The daemon
+  does this, so every client gets it through `chat/submit`.
 - **Attachments remain files until the owning transport takes them.** The
   renderer holds bounded path descriptors and never base64. Claude turns
   verified PNG/JPEG/GIF/WebP files into image content blocks in `sertumd`;
   Codex sends `localImage` inputs; ordinary files and PTY-backed agents receive
   explicit absolute paths so their normal file permissions still apply.
-- **A poll asks what moved; it does not fetch the conversation again.**
+- **A client is told a transcript moved, then asks what moved; it does not fetch
+  the conversation again.** The daemon raises `conversation:changed`, carrying no
+  content, and a pane keeps a slow read as a backstop.
   `conversation/read` takes the `version` the pane holds and answers
   `{ unchanged: true }`, or only the items that changed. Sending the snapshot
   every second regardless is what locked the GUI up: a Codex conversation with
@@ -499,6 +503,9 @@ Seven rules constrain any change here:
   file rather than the process, so re-parsing reproduces them. A width change
   restores the item at the top of the view rather than a pixel offset, which
   rewrapping makes meaningless.
+- **Shortened text is read back from the file, not held.** An item past its cap
+  says so, and `conversation/item` runs its records through the same parser with
+  the caps off.
 
 The waiting bubble is on because an adapter reported a turn in progress,
 never because output went quiet, and the stop button calls the declared
@@ -507,16 +514,17 @@ never because output went quiet, and the stop button calls the declared
 A message typed while the agent cannot take one is **queued rather than
 refused**, and goes in by itself at the next moment the session is
 receivable — the same bargain the model, thinking and permission chips
-already make. Receivable is read from the truth plane (`working` and
-`needs-input` both defer), never from whether output went quiet, and one
-message goes in per turn boundary because the pane's own snapshot cannot yet
-know that delivering started a new turn. Queued messages are rendered as
-user-style bubbles with an × in each bubble's corner, so clicking one removes
-only that message from the renderer-owned queue. The stop sign has one job:
-stop the active turn through the declared capability. It does not recall or
-rewrite queued or sent text, and it appears only while a turn is running, so
-an idle session never offers a red square for a turn that has already ended.
-The queue lives in the pane, so it does not survive the window closing.
+already make. Receivable is read from the truth plane (`turnActive`), never
+from whether output went quiet, and one message goes in per turn boundary. The
+next waits to see that turn start, because a PTY-backed agent reads as free until
+its hook or log catches up. Queued messages are rendered as user-style bubbles
+with an × in each bubble's corner, so clicking one removes only that message. The
+stop sign has one job: stop the active turn through the declared capability. It
+does not recall or rewrite queued or sent text, and it appears only while a turn
+is running, so an idle session never offers a red square for a turn that has
+already ended. **The queue lives in the daemon** (`daemon/chat-queue.ts`) and
+travels on the snapshot, so it survives the window closing, keeps delivering with
+no window open, and is the same queue for every client. A pane holds no copy.
 
 Verified record shapes, the classifier's two signals, the markdown parser's
 constructs, image bounds, selection and polling:
@@ -609,7 +617,9 @@ instead. Protocol 8 adds `turnActive` and `subagents` to every snapshot; a
 protocol 7 daemon sends neither, and the composer would read every session
 as never mid-turn and send into running turns. Protocol 9 makes conversation
 reads windowed and adds `conversation/page`; a protocol 8 daemon has neither, and
-a pane would read its newest 400 items as the whole conversation.
+a pane would read its newest 400 items as the whole conversation. Protocol 10
+moves the message queue and the send path into the daemon behind `chat/submit`,
+which a protocol 9 daemon does not have, so nothing typed would go in.
 
 **The daemon decides how a session is carried.** `session/create` treats an
 absent `transport` as "you decide": stream where the agent declares
@@ -1400,6 +1410,8 @@ src/
   main.ts                     Electron main: window, menu, UI IPC, daemon proxies
   sertumd.ts                  The session broker: socket server, lifecycle, log
   daemon/fabric.ts            The session fabric, re-homed from main.ts
+  daemon/chat-queue.ts        Messages a session cannot take yet; one per turn boundary  [docs/conversation.md]
+  daemon/upload-spool.ts      Where a file from another device waits to become an attachment  [docs/conversation.md]
   shared/daemon-protocol.ts   GUI <-> sertumd wire contract and endpoints
   main/daemon-client.ts       GUI side: connect-or-spawn, requests, reconnect
   main/pty-manager.ts         Plane 1 — PTY lifecycle (runs inside sertumd)
@@ -1468,6 +1480,11 @@ scripts/
   test-conversation-paging.ts The transcript store: paging, deltas, rewrites, half-written lines  [docs/conversation.md]
   measure-conversation-store.ts  Store timing and memory on this machine's largest transcripts; prints no content
   smoke-chat-permission.ts    A conversation session's permission ask, held and answered
+  test-chat-queue.ts          The message queue with turns driven by hand: order, boundaries, retries, removal  [docs/conversation.md]
+  smoke-chat-queue.ts         The message queue against real Claude and Codex hosts, and Claude over a PTY
+  test-daemon-files.ts        The upload spool's bounds, and what a message's image read refuses  [docs/conversation.md]
+  smoke-conversation-push.ts  Following a real turn on events alone, and a real tool result coming back whole  [docs/conversation.md]
+  smoke-upload.ts             A file uploaded in chunks reaching a real agent
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
   smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall
   smoke-model-switch.ts       model-select: read each agent's catalogue, switch, confirm the turn ran on it

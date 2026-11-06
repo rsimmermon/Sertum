@@ -19,6 +19,13 @@ import path from 'node:path';
 /**
  * Bumped on any incompatible change to methods, params or events.
  *
+ * Protocol 10 moves the message queue and the send path into the daemon:
+ * `chat/submit` replaces `chat/send` and takes any transport. A protocol 9
+ * daemon has no such method and no queue, so nothing typed would go in. It also
+ * moves reading a message's image behind `image/read-local`, and adds `upload/*`
+ * for files from another device, `conversation/item` for the whole of a shortened
+ * item, and the `conversation:changed` event.
+ *
  * Protocol 9 makes conversation reads windowed: `conversation/read` takes the
  * window a client holds and answers with what changed in it, and
  * `conversation/page` fetches history. A protocol 8 daemon has no paging and
@@ -51,7 +58,7 @@ import path from 'node:path';
  * poll "Session not found." -- which is exactly why the handshake refuses
  * rather than trying.
  */
-export const DAEMON_PROTOCOL = 9;
+export const DAEMON_PROTOCOL = 10;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }
