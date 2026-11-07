@@ -109,10 +109,13 @@ Three defects only the real phone showed, all fixed:
   had run perfectly well. It now says no code was read. Because 13 is not specific to
   backing out, it cannot be treated as a cancel.
 
-Not verified: a QR code actually read by the scanner (it opens, and the camera runs,
-but pairing here used the code as text), the final shell filling the inner screen on
-unfolding (the spike harness did), Grok, a mid-range phone, and a packaged desktop
-build. Nothing notifies a phone that is not open on the app: an approval waits until
+By hand, the same day: a QR code on the PC's screen read by the Fold6's camera paired
+it. Unfolding with the final shell open took the page from 368 to 707 CSS pixels wide
+with the same process and the connection held, no sideways overflow, and the shell
+stopping above Samsung's taskbar. That was on the empty session list; a place kept in a
+long conversation across an unfold was measured on the spike harness, not this shell.
+
+Not verified: Grok, a mid-range phone, and a packaged desktop build. Nothing notifies a phone that is not open on the app: an approval waits until
 someone looks. An upload that loses its connection part way has to be chosen again.
 
 Ending a Codex session leaves its folder locked, because `codex-code-mode-host.exe`,

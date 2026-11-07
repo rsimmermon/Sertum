@@ -156,8 +156,8 @@ below, or a file of its own in `docs/`, is described there rather than here:
       square at the right edge of the composer
 - [x] **Phone access over the local network** — Settings > Phones, QR pairing,
       per-phone revocation, and an Android client with the desktop's own chat pane.
-      Verified against real agents on an emulator and a Fold6 over real Wi-Fi;
-      reading a QR code with the camera, and a mid-range phone, are still to run
+      Verified against real agents on an emulator and a Fold6 over real Wi-Fi,
+      including a QR code read by the camera; a mid-range phone is still to run
 - [x] **Chat attachments and image paste** — native multi-file picker,
       clipboard images spilled to durable temp files, bounded image previews
       and file placeholders in drafts and sent messages, native Claude/Codex
