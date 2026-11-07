@@ -16,12 +16,12 @@ import { fileURLToPath } from 'node:url';
  * `null` and the message keeps the link it already had.
  *
  * - **Scope is the session's own folder.** The path is resolved against the
- *   cwd the user pointed the agent at and must still be inside it. That cwd
- *   comes from `SessionSnapshot`, never from the message, so a transcript
- *   cannot widen its own reach — and without the check, message text would
- *   be able to make the app read any file on disk and hand it to the
- *   renderer. Worktrees beneath a repository are covered by the same prefix
- *   test the permission rules use.
+ *   cwd the user pointed the agent at and must still be inside it, including
+ *   after following links, so a symlink an agent wrote cannot reach out of it.
+ *   The daemon only accepts a cwd some session really has, so neither a
+ *   transcript nor a client can widen its own reach — without those checks,
+ *   message text could make the app read any image on disk. Worktrees beneath a
+ *   repository are covered by the same prefix test the permission rules use.
  * - **It must actually be an image**, decided by the bytes rather than the
  *   extension: a `.png` that is really something else is not sent.
  * - **It must be small enough to inline.** A data URL is base64 in the
@@ -94,14 +94,19 @@ function toLocalPath(cwd: string, src: string): string | null {
  * image inside `cwd`. Null is the ordinary answer, not an error: the caller
  * keeps the link it already rendered.
  */
-export function readLocalImage(cwd: string, src: string): string | null {
+export async function readLocalImage(cwd: string, src: string): Promise<string | null> {
   if (!cwd || !src) return null;
   const file = toLocalPath(cwd, src);
   if (!file) return null;
   try {
-    const stat = fs.statSync(file);
+    const [realRoot, realFile] = await Promise.all([
+      fs.promises.realpath(cwd),
+      fs.promises.realpath(file),
+    ]);
+    if (!isInside(realRoot, realFile)) return null;
+    const stat = await fs.promises.stat(realFile);
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_BYTES) return null;
-    const bytes = fs.readFileSync(file);
+    const bytes = await fs.promises.readFile(realFile);
     const match = SIGNATURES.find((s) => s.test(bytes));
     if (!match) return null;
     return `data:${match.mime};base64,${bytes.toString('base64')}`;

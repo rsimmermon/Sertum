@@ -1,0 +1,22 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Sertum</title>
+    <style>
+      /* The app draws edge to edge, so it has to stay clear of Android's bars itself. */
+      #host {
+        position: fixed; inset: 0; display: flex; flex-direction: column; min-height: 0;
+        box-sizing: border-box;
+        padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
+          env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+      }
+      #host > * { flex: 1; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

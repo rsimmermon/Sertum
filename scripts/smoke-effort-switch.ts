@@ -115,7 +115,7 @@ async function probeConversationAgent(
 
   // The claim that matters: the agent itself runs the new level next turn,
   // and a turn does not put the old one back.
-  assert(await fabric.handle('chat/send', { id: session.id, text: 'Say OK and nothing else.' }));
+  assert((await fabric.handle('chat/submit', { id: session.id, text: 'Say OK and nothing else.' }) as { outcome: string }).outcome === 'sent');
   await waitIdle(current, session.id);
   await sleep(9000);
   const after = current.get(session.id)?.effort ?? null;

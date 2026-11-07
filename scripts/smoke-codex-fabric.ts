@@ -28,7 +28,7 @@ async function main() {
     assert.equal(session.transport, 'stream');
     assert.equal(session.status, 'idle');
     assert(session.transcriptPath);
-    assert(await fabric.handle('chat/send', { id: session.id, text: 'Use apply_patch to create fabric-probe.txt with hello. If denied, stop.' }));
+    assert((await fabric.handle('chat/submit', { id: session.id, text: 'Use apply_patch to create fabric-probe.txt with hello. If denied, stop.' }) as { outcome: string }).outcome === 'sent');
     const deadline = Date.now() + 100_000;
     while (!asks || current?.status !== 'idle') {
       assert(Date.now() < deadline, 'Turn did not finish');

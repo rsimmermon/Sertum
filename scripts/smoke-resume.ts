@@ -18,7 +18,7 @@ async function waitIdle(
   timeoutMs = 60_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  // chat/send's own promise resolves as soon as turn/start's request round
+  // chat/submit's own promise resolves as soon as turn/start's request round
   // trip completes; the status transition to 'working' is a separate,
   // asynchronous notification that can land a beat later (verified up to
   // ~90ms for Codex, which has no optimistic status on send the way Claude
@@ -57,7 +57,7 @@ async function probeAgent(
   console.log(`created ${agent} session ${session.id}, externalId=${session.externalId}`);
 
   assert(
-    await fabric.handle('chat/send', {
+    await fabric.handle('chat/submit', {
       id: session.id,
       text: `Remember the codeword ${secret}. Reply with just OK.`,
     }),
@@ -105,7 +105,7 @@ async function probeAgent(
   console.log(`resumed as new Sertum session ${resumed.id}, transcriptPath=${resumed.transcriptPath}`);
 
   assert(
-    await fabric.handle('chat/send', {
+    await fabric.handle('chat/submit', {
       id: resumed.id,
       text: 'What codeword did I ask you to remember? Reply with just the codeword.',
     }),

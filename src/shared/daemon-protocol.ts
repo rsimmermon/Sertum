@@ -19,6 +19,24 @@ import path from 'node:path';
 /**
  * Bumped on any incompatible change to methods, params or events.
  *
+ * `gateway/*` and `session:removed` did not bump it. Each is an addition an older
+ * daemon fails plainly or simply never sends: Settings shows "unknown method", and
+ * a window closes its own sessions as it always did. A phone never sees this number:
+ * it speaks `GATEWAY_API`, in daemon/gateway.ts.
+ *
+ * Protocol 10 moves the message queue and the send path into the daemon:
+ * `chat/submit` replaces `chat/send` and takes any transport. A protocol 9
+ * daemon has no such method and no queue, so nothing typed would go in. It also
+ * moves reading a message's image behind `image/read-local`, and adds `upload/*`
+ * for files from another device, `conversation/item` for the whole of a shortened
+ * item, and the `conversation:changed` event.
+ *
+ * Protocol 9 makes conversation reads windowed: `conversation/read` takes the
+ * window a client holds and answers with what changed in it, and
+ * `conversation/page` fetches history. A protocol 8 daemon has no paging and
+ * sends no `start` or `total`, so a new pane would read its newest 400 items as
+ * the whole conversation, which is what this exists to end.
+ *
  * Protocol 8 adds `turnActive` and `subagents` to every session snapshot,
  * and the composer now queues on `turnActive` rather than `status`. A
  * protocol 7 daemon sends neither, so a new GUI would read every session as
@@ -45,7 +63,7 @@ import path from 'node:path';
  * poll "Session not found." -- which is exactly why the handshake refuses
  * rather than trying.
  */
-export const DAEMON_PROTOCOL = 8;
+export const DAEMON_PROTOCOL = 10;
 
 export type DaemonFrame =
   | { t: 'hello'; protocol: number; version: string }

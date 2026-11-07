@@ -332,6 +332,8 @@ export class App {
       this.render();
     });
 
+    api.onSessionRemoved(({ id }) => this.forgetSession(id));
+
     // C20 note 150: clicking a notification lands on the session it was about.
     api.onSessionReveal((id) => {
       if (this.sessions.has(id)) this.focusSession(id);
@@ -949,6 +951,15 @@ export class App {
       return;
     }
 
+    this.forgetSession(id);
+  }
+
+  /**
+   * A session is gone, ended here or by another client. Safe to call twice,
+   * since this window's own close also hears the daemon say so.
+   */
+  private forgetSession(id: string): void {
+    if (!this.sessions.has(id)) return;
     this.panes.get(id)?.dispose();
     this.panes.delete(id);
     this.chatPanes.get(id)?.dispose();

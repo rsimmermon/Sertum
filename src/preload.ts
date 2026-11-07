@@ -1,11 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ConversationChangedEvent,
+  ConversationItemRequest,
+  GatewayStatus,
+  SessionRemovedEvent,
+  ConversationPageRequest,
+  ConversationReadRequest,
   AgentEffortList,
   AgentModelList,
   EffortChangeResult,
   ModelChangeResult,
   AgentKind,
   ChatAttachment,
+  ChatDeliveredEvent,
   ApprovalAnswer,
   DiffCommitRequest,
   PendingApproval,
@@ -128,10 +135,25 @@ const api: SertumApi = {
   defaultCwd: () => ipcRenderer.invoke('workspace:default-cwd'),
   inspectDirectory: (dir: string) =>
     ipcRenderer.invoke('workspace:inspect', dir),
-  readConversation: (id: string, known?: string | null) =>
-    ipcRenderer.invoke('conversation:read', id, known),
-  sendChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
-    ipcRenderer.invoke('chat:send', { id, text, attachments }),
+  readConversation: (id: string, request?: ConversationReadRequest) =>
+    ipcRenderer.invoke('conversation:read', id, request),
+  readConversationPage: (id: string, request: ConversationPageRequest) =>
+    ipcRenderer.invoke('conversation:page', id, request),
+  readConversationItem: (id: string, request: ConversationItemRequest) =>
+    ipcRenderer.invoke('conversation:item', id, request),
+  onConversationChanged: (cb) => on<ConversationChangedEvent>('conversation:changed', cb),
+  onSessionRemoved: (cb) => on<SessionRemovedEvent>('session:removed', cb),
+  gatewayStatus: () => ipcRenderer.invoke('gateway:status'),
+  setGatewayEnabled: (enabled) => ipcRenderer.invoke('gateway:set-enabled', enabled),
+  beginGatewayPairing: () => ipcRenderer.invoke('gateway:pair-begin'),
+  cancelGatewayPairing: () => ipcRenderer.invoke('gateway:pair-cancel'),
+  revokeGatewayDevice: (id) => ipcRenderer.invoke('gateway:revoke', id),
+  onGatewayChanged: (cb) => on<GatewayStatus>('gateway:changed', cb),
+  submitChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
+    ipcRenderer.invoke('chat:submit', { id, text, attachments }),
+  removeQueuedMessage: (id: string, messageId: number) =>
+    ipcRenderer.invoke('chat:queue-remove', { id, messageId }),
+  onChatDelivered: (cb) => on<ChatDeliveredEvent>('chat:delivered', cb),
   adapterStatus: () => ipcRenderer.invoke('adapters:status'),
   restartCodexServer: () => ipcRenderer.invoke('codex:restart'),
   repairCodexServer: () => ipcRenderer.invoke('codex:repair'),

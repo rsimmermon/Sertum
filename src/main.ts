@@ -39,7 +39,6 @@ import { getSettings, setSettings } from './main/settings';
 import { readClipboardPaste } from './main/clipboard-paste';
 import { describeChatAttachment } from './main/chat-attachments';
 import { readChatAttachmentPreview } from './main/attachment-preview';
-import { readLocalImage } from './main/local-image';
 import { focusExternalSession } from './main/adapters/window-focus';
 import type {
   AgentKind,
@@ -54,7 +53,14 @@ import type {
   Settings,
   PermissionMode,
 } from './shared/types';
-import type { PtySize, SessionSpec } from './shared/types';
+import type {
+  ConversationItemRequest,
+  SessionRemovedEvent,
+  ConversationPageRequest,
+  ConversationReadRequest,
+  PtySize,
+  SessionSpec,
+} from './shared/types';
 
 // Sets the userData dir and the name Electron reports to the app itself.
 // On macOS this does NOT drive the menu-bar/Dock title: those come from the
@@ -485,11 +491,25 @@ daemon.on('daemon-event', (name: string, payload: unknown) => {
       refreshTray();
       break;
     }
+    case 'session:removed':
+      sessionCache.delete((payload as SessionRemovedEvent).id);
+      broadcast('session:removed', payload);
+      refreshTray(true);
+      break;
+    case 'gateway:changed':
+      broadcast('gateway:changed', payload);
+      break;
     case 'approval:needed':
       broadcast('approval:needed', payload);
       break;
     case 'approval:gone':
       broadcast('approval:gone', payload);
+      break;
+    case 'chat:delivered':
+      broadcast('chat:delivered', payload);
+      break;
+    case 'conversation:changed':
+      broadcast('conversation:changed', payload);
       break;
   }
 });
@@ -637,13 +657,13 @@ ipcMain.handle('shell:open-external', (_e, url: string) => {
  * An image a message points at, as a data URL, or null.
  *
  * The renderer cannot read a `file://` path and must not fetch an address out
- * of a transcript, so the read happens here. `cwd` is the session's own
- * folder from `SessionSnapshot` -- never a value the message supplied -- and
- * `readLocalImage` refuses anything outside it. Null is the ordinary answer
- * for a remote or unreadable image, and the caller keeps its link.
+ * of a transcript, so the daemon reads it, for any client. `cwd` is the session's
+ * own folder from `SessionSnapshot` -- never a value the message supplied -- and
+ * the read refuses anything outside it. Null is the ordinary answer for a remote
+ * or unreadable image, and the caller keeps its link.
  */
 ipcMain.handle('image:read-local', (_e, request: { cwd: string; src: string }) =>
-  readLocalImage(request.cwd, request.src),
+  daemon.request('image/read-local', request),
 );
 
 /**
@@ -728,17 +748,30 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
  * apply as for model and context readouts — a Claude session is only matched
  * exactly, never guessed by cwd.
  */
-/**
- * Input for a stream session: one structured message, no PTY bytes anywhere.
- * The status flip to working happens in the host, on the write itself.
- */
+/** A typed message, for any transport. The daemon sends it or holds it. */
 ipcMain.handle(
-  'chat:send',
+  'chat:submit',
   (_e, p: { id: string; text: string; attachments?: ChatAttachment[] }) =>
-    daemon.request('chat/send', p),
+    daemon.request('chat/submit', p),
 );
-ipcMain.handle('conversation:read', (_e, id: string, known?: string | null) =>
-  daemon.request('conversation/read', { id, known }),
+ipcMain.handle('chat:queue-remove', (_e, p: { id: string; messageId: number }) =>
+  daemon.request('chat/queue-remove', p),
+);
+ipcMain.handle('conversation:read', (_e, id: string, request?: ConversationReadRequest) =>
+  daemon.request('conversation/read', { ...request, id }),
+);
+ipcMain.handle('conversation:page', (_e, id: string, request: ConversationPageRequest) =>
+  daemon.request('conversation/page', { ...request, id }),
+);
+ipcMain.handle('gateway:status', () => daemon.request('gateway/status'));
+ipcMain.handle('gateway:set-enabled', (_e, enabled: boolean) =>
+  daemon.request('gateway/set-enabled', { enabled }),
+);
+ipcMain.handle('gateway:pair-begin', () => daemon.request('gateway/pair-begin'));
+ipcMain.handle('gateway:pair-cancel', () => daemon.request('gateway/pair-cancel'));
+ipcMain.handle('gateway:revoke', (_e, id: string) => daemon.request('gateway/revoke', { id }));
+ipcMain.handle('conversation:item', (_e, id: string, request: ConversationItemRequest) =>
+  daemon.request('conversation/item', { ...request, id }),
 );
 
 ipcMain.handle('discovery:list', () => daemon.request('discovery/list'));ipcMain.handle('discovery:focus', (_e, pid: number) =>

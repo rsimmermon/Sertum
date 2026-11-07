@@ -7,6 +7,7 @@ import * as pty from 'node-pty';
 import type {
   PermissionMode,
   PtySize,
+  QueuedChatMessage,
   SessionSnapshot,
   SessionActivityEvent,
   SessionSpec,
@@ -180,6 +181,8 @@ export class PtyManager extends EventEmitter {
       toolsPaused: false,
       // Both derived again by `view` on the way out.
       turnActive: false,
+      messageQueue: [],
+      queueStalled: null,
       subagents: [],
       muted: false,
       origin: opts?.origin ?? 'owned',
@@ -358,6 +361,8 @@ export class PtyManager extends EventEmitter {
       toolsPaused: false,
       // Both derived again by `view` on the way out.
       turnActive: false,
+      messageQueue: [],
+      queueStalled: null,
       subagents: [],
       muted: false,
       origin: 'owned',
@@ -439,6 +444,8 @@ export class PtyManager extends EventEmitter {
       toolsPaused: false,
       // Both derived again by `view` on the way out.
       turnActive: false,
+      messageQueue: [],
+      queueStalled: null,
       subagents: [],
       muted: false,
       origin: 'monitored',
@@ -611,6 +618,15 @@ export class PtyManager extends EventEmitter {
     }
     session.snapshot.subagents = kept;
     this.rememberActivity(id);
+    this.emit('session-updated', view(session.snapshot));
+  }
+
+  /** The daemon's message queue, carried on the snapshot every client mirrors. */
+  setMessageQueue(id: string, queue: QueuedChatMessage[], stalled: string | null): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    session.snapshot.messageQueue = queue;
+    session.snapshot.queueStalled = stalled;
     this.emit('session-updated', view(session.snapshot));
   }
 

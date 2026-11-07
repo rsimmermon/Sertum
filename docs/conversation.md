@@ -28,21 +28,29 @@ with trust disabled, while all surrounding transcript content remains text
 nodes rather than injectable HTML. Markdown is rendered — see below for how a
 message that should stay source is told apart.
 
-The renderer polls `conversation:read` once a second while the view is on
-screen, for the reasons Grok's event log established: the file may not exist
-yet, watch semantics differ by platform, and one update per batch is the
-point. Transcript resolution reuses `transcriptFor`, so a Claude session is
-only ever matched exactly and a shell never inherits another agent's
-transcript.
+The daemon checks each live session's transcript every 500ms with a stat and
+raises `conversation:changed` when one moved; a pane then asks `conversation:read`.
+The check is a poll rather than a file watch for the reasons Grok's event log
+established: the file may not exist yet, watch semantics differ by platform, and
+one update per batch is the point. A pane still reads every 5s regardless, and
+every second while it holds nothing or could not draw a change, which covers a
+session whose path the 4s meta poll has not found yet, a final record written as
+it exited, and a reconnect. Transcript resolution reuses `transcriptFor`, so a
+Claude session is only ever matched exactly and a shell never inherits another
+agent's transcript.
 
-Conversation reads keep complete transcripts up to a 32MB safety ceiling and
-cache the parsed snapshot by file size and mtime. A fixed 512KB tail was not a
-complete-turn boundary: one image-generation result embeds a multi-megabyte
+A real turn raised 5 events for Claude and 6 to 8 for Codex, each answered by one
+read; a client following only those events built the same items as a fresh read,
+and 3s of quiet raised none (`scripts/smoke-conversation-push.ts`). In the desktop
+app, 16s idle made 3 reads across the pipe where it used to make 16.
+
+Conversation reads cover the whole transcript, however large; see "Full history
+is a bounded window" below. A fixed 512KB tail was the first answer and was not
+a complete-turn boundary: one image-generation result embeds a multi-megabyte
 data URL in a single JSONL record and pushed the user's prompt, tool call and
 earlier conversation out of view. Structured `data:image/*` fields in tool
 results now become `image` chat items and render as bounded previews; ordinary
-prose is never interpreted as an image URL. Beyond the ceiling, the tail and
-its truncation notice remain the honest bounded fallback.
+prose is never interpreted as an image URL.
 
 Conversation content opts back into native text selection (`user-select:
 text`) beneath the app-wide chrome rule that prevents accidental interface
@@ -187,13 +195,11 @@ into the same flood. A captured stack of the spinning thread was
 `onStreamRead → Readable.push → addChunk → maybeReadMore`, and the daemon,
 idle with no client attached, grew ~40 MB/s the moment one connected.
 
-So `conversation/read` takes `{ id, known }`. `known` is the `version` the
-pane already holds — the transcript's `size:mtime`, the same pair the parse
-cache already keys on, named once by `versionOf` so a poll's "unchanged" and
-a cache hit cannot disagree about what identity is. When it still matches,
-the answer is `{ unchanged: true }`: **18 bytes instead of 9.32MB, a
-543,117× reduction on an idle conversation.** A transcript only changes when
-the agent writes, so that is the overwhelmingly common answer.
+So `conversation/read` takes `known`, the `version` the pane already holds, and
+when it still matches the answer is `{ unchanged: true }`: **18 bytes instead of
+9.32MB, a 543,117× reduction on an idle conversation.** A transcript only changes
+when the agent writes, so that is the overwhelmingly common answer. The version
+was `size:mtime` then; "Full history is a bounded window" below has what it is now.
 
 Two details are load-bearing:
 
@@ -225,6 +231,126 @@ chunking at hostile boundaries: a 9MB frame, a multi-byte character split
 across a chunk cut, a frame immediately after the big one, and a blank line
 between frames all survive.
 
+## Full history is a bounded window
+
+The pane used to hold the newest 400 items of the newest 32MB and rebuild all of
+them on any change. Both limits had to go for the same reason: the phone has to
+show a whole conversation, and the rebuild was what made that impossible.
+Measured with the desktop `ChatPane` on a Galaxy Z Fold6 at full speed, one new
+message cost 94ms at 400 items and 3.1s at 20,000, with the composer blocked
+throughout.
+
+**The daemon holds the conversation; a pane holds a window of it.**
+`main/adapters/conversation.ts` keeps one store per transcript and reads only
+what the file has gained, a megabyte at a time so a large file cannot hold the
+event loop. An item's index is its identity. `conversation/read` takes the window
+a client holds and answers `{ unchanged }`, a delta of what changed in it, or,
+with nothing known or too much to send, the newest page. `conversation/page`
+fetches 200 items or 4MB, whichever comes first, from either direction. At least
+one item always goes, so a huge image cannot wedge paging.
+
+**A version is derived from the file, not the process.** It is
+`<identity>:<bytes consumed>`, where identity hashes the path and the first
+record, and an item's revision is the end offset of the record that last changed
+it. Parsing the same bytes again reproduces the same answers, so dropping an idle
+store after 10 minutes should not cost a reader their place. That property follows
+from the construction and has not been exercised across an eviction or a daemon
+restart.
+
+- **A file rewritten in place starts over.** The bytes just before the read
+  offset are compared on every read, and a mismatch or a shrink re-parses with a
+  new identity, which sends every client back to the newest page.
+- **A half-written last line waits.** A final line with no newline is consumed
+  only if it parses whole, which keeps a record still being written out, and
+  still reads the last record from a writer that ends its file without one.
+- **Formats cannot move.** An assistant message is classified against the user
+  message before it, which never changes, so classifying as items arrive equals
+  classifying the whole list. A tool result does change an earlier item, by
+  index, which is why a delta can replace as well as append.
+
+**The pane keeps at most about 1,000 items.** It replaces only the nodes that
+changed, fetches the next page within 1,500px of an edge, and past 1,050 items
+drops 50 or more from whichever end is further from the reader. It compensates for
+content added or removed above the reader itself, so `overflow-anchor` is off on
+the scroller: the browser's anchoring would apply the same correction twice. A
+window scrolled back does not reach the end, so it is not told about arrivals and
+`scrollToTail` means asking for the newest page. A turn starting still pulls the
+reader to the end, as it did before, though now that also gives up their window.
+
+**A size change keeps the reader's place by item, not by pixel.** Rewrapping changes
+every height above the reader, so the scroll listener records the item at the top
+of the view and the fraction through it, and a `ResizeObserver` restores that when
+the width changes. It has to be recorded beforehand, because the observer runs
+after the old geometry is gone, and a scroll event landing between the change and
+the observer is ignored for the same reason. Someone at the end stays at the end,
+whichever dimension changed. Verified on a Galaxy Z Fold6 by folding, and by
+`spike.widthCheck` in `mobile/spikes/harness.ts`, but not by dragging a split in the
+desktop app.
+
+Measured with synthetic items at 4x CPU throttle on the Android emulator, before
+and after:
+
+| Items | Open | New message | Scroll p50 |
+|---|---|---|---|
+| 400 | 414ms → 156ms | 321ms → 27ms | 16.7ms → 16.7ms |
+| 5,000 | 4.3s → 158ms | 4.1s → 25ms | 33.3ms → 16.7ms |
+| 20,000 | 19.1s → 128ms | 20.6s → 20ms | 200ms → 16.7ms |
+
+The "after" scroll runs at 9,000px/s through page loads, faster than the earlier
+3,000px/s runs, and the emulator's GPU is not slowed by the throttle. A page
+landing is synchronous and is the remaining cost: 3 or 4 frames over 50ms in 15
+seconds of scrolling, the worst 183ms.
+
+The store on this machine's largest transcripts, run standalone under Node 20
+rather than inside the daemon:
+
+| Transcript | Items | First parse | Worst event-loop stall | Biggest page | RSS growth |
+|---|---|---|---|---|---|
+| Claude, 31.4MB | 833 | 78ms | 9ms | 0.23MB | 18MB |
+| Codex, 37MB | 56 | 102ms | 14ms | 3.4MB | 57MB |
+| Codex, 29.1MB | 241 | 91ms | 14ms | 4.38MB | 25MB |
+
+A page can pass 4MB slightly because the bound counts characters of content and
+the JSON around it is extra. Holding a store costs about what its images cost,
+which is what the idle eviction is for.
+
+Verified end to end by driving the running app over the real socket, on a real
+Claude stream session whose transcript was grown by 3,000 records:
+`scripts/test-conversation-paging.ts` covers the store, and that pass covered the
+welcome card, reaching the conversation's first message and scrolling back down,
+no reader movement at any page, an arrival leaving a reader in history untouched,
+a real turn adding two nodes while all 1,001 on screen kept their identity, and a
+tab switch keeping the position.
+
+Not covered: touch flings, which a programmatic scroll is not; find-in-page, which
+now sees only the window; and the scrollbar, which measures the window rather than
+the conversation.
+
+## Shortened text comes back on request
+
+`TEXT_CAP` and `TOOL_CAP` stay, because they are what keeps a page small. An item
+cut by one carries `more: 'available'` and draws a **Show all** button, and
+`conversation/item` answers with the whole of it.
+
+The store keeps no second copy of the text. For a shortened item only, it records
+the byte range of the record that made it and its position among that record's new
+items; a tool's result records its own range and the call id it pairs with. Asking
+reads those bytes and runs them back through the same parser with the caps off, so
+the whole text cannot disagree with the shortened one about what counts as the
+message. The answer must still begin with the text held, or the file moved under
+the store and the answer is `stale`. A field past 4MB comes back cut there with
+`more: 'too-long'`, and the pane says the rest is in the transcript file.
+
+Expanding replaces only that item, and the growth is below the reader, so nothing
+above moves. Paging past the item and back shows it shortened again, because the
+window holds what the store serves.
+
+Verified on Claude, Codex and Grok records in `scripts/test-conversation-paging.ts`,
+on real Claude and Codex tool results of about 19,900 characters from a 2,000
+character item, and in the desktop app, where a 36,039 character message with emoji
+came back exact with its top edge unmoved, and a 400 line tool result came back
+whole and stayed open.
+
 ## Typing while the agent is busy: the queue
 
 A turn in progress used to make the composer a dead end — `chat/send` refused
@@ -233,32 +359,63 @@ thought you had while reading had to be held in your head. A message typed
 then is now queued instead, and goes in at the next moment the session can
 take one.
 
-- **Receivable is read, not guessed.** `working` and `needs-input` both
-  defer; a session waiting on an approval is as unable to take a prompt as
-  one mid-answer. It comes from `SessionSnapshot.status`, so this is the
-  adapter's own word and not an inference from output going quiet.
-- **One message per turn boundary.** Delivering starts a new turn, and the
-  pane's snapshot does not say so until the daemon's next event — so draining
-  the whole queue on one boundary would fire every message into a session
-  that stopped being receivable after the first. The rest follow on the
-  boundaries after it.
-- **The flush is driven by the session event, not by the render.** Panes are
-  only updated while they are on screen, so `app.ts` also hands the update
-  straight to the pane; without that, a message queued before switching tabs
-  would sit there until someone looked at it again.
+The queue is in the daemon (`daemon/chat-queue.ts`), carried on
+`SessionSnapshot.messageQueue`, and every client submits through `chat/submit`
+whichever transport the session has. So it outlives a window, a second client
+sees it, and a message goes in with no window open at all. Moving it out of the
+pane also moved the PTY's paste and delayed Enter into `deliverChatMessage`.
+
+- **Receivable is read, not guessed.** `turnActive` defers, which covers
+  `working` and `needs-input`; a session waiting on an approval is as unable to
+  take a prompt as one mid-answer. This is the adapter's own word and not an
+  inference from output going quiet.
+- **One message per turn boundary, seen starting.** Delivering starts a new turn,
+  but only a stream host says so on the write. A PTY-backed agent still reads as
+  free until its hook or log catches up, so the next message waits to see the turn
+  start, or for `TURN_START_GRACE_MS` if that report never comes.
+- **A refusal retries by itself, then stops and says why.** Codex announces
+  `thread/status/changed` before `turn/completed`, and only the second clears the
+  host's `busy`, so for a moment a session reads idle and refuses. Measured live:
+  the first attempt was refused and the retry 500ms later went in. Waiting for a
+  boundary instead stranded the message, because that idle had already happened.
+  Retries back off over about 15 seconds, then `queueStalled` carries the reason to
+  the composer until a turn boundary, a new message or a removal. A failing Codex
+  send reports `working` and then an error, which must not count as a boundary or it
+  would retry forever, raising a notification each time.
+- **Refused means the writer keeps it.** A message nothing was ahead of that fails
+  is answered `refused`, and the draft stays in the composer. Anything already
+  queued has no draft to return to, so it stays queued.
 - **The stop sign has one job.** A press stops a running turn through the
   declared `turn-interrupt` capability. Queued messages are not recalled or
-  rewritten by stop; they remain queued for the next turn boundary.
+  rewritten by stop; they go in on the boundary it makes.
 - **Queued messages are visible and individually removable.** Each queued
   message is rendered below the transcript as a user-style bubble with an ×
-  control in its corner. Clicking that control removes only that entry from
-  the renderer-owned queue. The queue can therefore be edited without
-  changing the stop action or disturbing the order of the other messages.
+  control in its corner, which removes only that entry through
+  `chat/queue-remove`. One already going in cannot be removed, and the pane says so.
 
-The queue is per pane, in the renderer. It does not survive the window
-closing, which is the honest limit of putting it there and the same one pane
-occupancy already has; moving it into the session fabric would make it
-survive, at the cost of a protocol change and a snapshot field.
+The queue does not survive the daemon, the same limit every session has.
+
+**A file from another device goes through the spool.** A phone has no path an agent
+can read, so `upload/begin`, `upload/chunk` and `upload/finish` write its bytes to a
+random folder under `uploads/` in the daemon's directory and answer an ordinary
+`ChatAttachment` for `chat/submit`. Nothing a client sends names a location; the
+file name only decides what the agent sees, and is sanitised. Chunks state their
+offset, so a gap or a repeat is refused rather than corrupting the file, and the
+declared size binds both ways. Limits: 100MB a file, 2MB a chunk, 10 uploads at once.
+An upload idle for an hour is dropped. A finished file stays 7 days, because the
+transcript names its path and an agent may read it on a later turn. Thumbnails for
+attachments remain in Electron main because they need `nativeImage`, and a read by
+path for a remote client has to be designed with the gateway rather than moved.
+`scripts/smoke-upload.ts` sent a 1MB image in three chunks to a real Claude turn,
+which named its colour. Nothing calls the spool yet except that test.
+
+Verified with `scripts/test-chat-queue.ts` (14 checks, turns driven by hand),
+`scripts/smoke-chat-queue.ts` (real Claude and Codex over their hosts, and Claude
+over a PTY with a multi-line message, all three: sent, queued, one removed, in
+order), and the real desktop composer. There, a window closed with a message and
+image waiting; a new window drew both while the turn ran; stopping the turn sent
+them; and with no window open a message went in and was answered. Grok's PTY path
+was not run live.
 
 Attachments follow the same draft and queue lifetime. A paperclip opens a
 native multi-file picker; pasting a clipboard bitmap or files into the
@@ -420,8 +577,10 @@ A markdown image carries an address written by the agent, and the two useful
 answers are different for different addresses:
 
 - **`data:`** — already trusted from structured tool results, shown directly.
-- **A readable local file** — read by `main/local-image.ts` and returned as a
-  `data:` URL, so what reaches the renderer is the same trusted shape.
+- **A readable local file** — read in the daemon by `main/local-image.ts` and
+  returned as a `data:` URL, so what reaches the renderer is the same trusted
+  shape. `image/read-local` refuses a folder no session has, and a link or junction
+  inside the folder that resolves outside it.
 - **Anything else** — remote, missing, outside the session's folder, or not
   actually an image — keeps the labelled link it already had.
 
