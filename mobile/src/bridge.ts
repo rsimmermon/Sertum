@@ -1,5 +1,6 @@
-import type { ChatAttachment, PendingApproval, SertumApi } from '@desktop/shared/types';
-import { device, type Connection } from './connection';
+import type { ChatAttachment, PendingApproval, SertumApi, SessionSnapshot } from '@desktop/shared/types';
+import { device } from './connection';
+import type { Fleet, Member } from './fleet';
 
 /** Below the daemon's 2MB limit for one chunk. */
 const CHUNK_BYTES = 1536 * 1024;
@@ -31,8 +32,12 @@ function pickFiles(): Promise<File[]> {
  * `window.sertum` over the gateway, which is the whole reason the desktop's chat
  * pane runs here unchanged. What only a window on the PC can do answers as nothing,
  * through the proxy at the bottom, rather than each being written out.
+ *
+ * With several PCs paired, a call about a session goes to the PC that owns it, a
+ * list is gathered from every PC that answers, and a file goes to the PC of the
+ * session on screen, since that is the agent it is for.
  */
-export function makeBridge(connection: Connection): {
+export function makeBridge(fleet: Fleet): {
   api: SertumApi;
   emit(name: string, payload: unknown): void;
 } {
@@ -44,9 +49,22 @@ export function makeBridge(connection: Connection): {
     set.add(fn);
     return () => { set.delete(fn); };
   };
-  const call = <T>(method: string, params?: unknown) => connection.call<T>(method, params);
+  const forSession = <T>(id: string, method: string, params: unknown) => fleet.callFor<T>(id, method, params);
+  const focused = (): Member => {
+    const member = fleet.focusedPc();
+    if (!member) throw new Error('Open a session first, so this phone knows which PC it is for.');
+    return member;
+  };
+  /** Every PC that answers; one switched off does not fail the rest. */
+  async function gather<T>(method: string): Promise<T[]> {
+    const answers = await Promise.allSettled(fleet.list()
+      .filter((m) => m.connection.state.kind === 'connected')
+      .map((m) => m.connection.call<T[]>(method)));
+    return answers.flatMap((a) => a.status === 'fulfilled' ? a.value : []);
+  }
 
-  async function upload(file: File): Promise<ChatAttachment> {
+  async function upload(member: Member, file: File): Promise<ChatAttachment> {
+    const call = <T>(method: string, params?: unknown) => member.connection.call<T>(method, params);
     const { uploadId } = await call<{ uploadId: string }>('upload/begin', { name: file.name, size: file.size });
     try {
       for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
@@ -67,30 +85,34 @@ export function makeBridge(connection: Connection): {
 
   const implemented: Partial<SertumApi> = {
     platform: 'linux',
-    createSession: (spec) => call('session/create', spec),
-    listSessions: () => call('session/list'),
-    removeSession: (id) => call('session/remove', id),
-    agentCapabilities: () => call('agent/capabilities'),
-    interruptTurn: (id) => call('session/interrupt-turn', id),
-    setPermissionMode: (id, mode) => call('session/permission-mode', { id, mode }),
-    sessionModels: (id) => call('session/models', id),
-    setSessionModel: (id, model) => call('session/model', { id, model }),
-    sessionEfforts: (id) => call('session/efforts', id),
-    setSessionEffort: (id, effort) => call('session/effort', { id, effort }),
-    readConversation: (id, request) => call('conversation/read', { ...request, id }),
-    readConversationPage: (id, request) => call('conversation/page', { ...request, id }),
-    readConversationItem: (id, request) => call('conversation/item', { ...request, id }),
-    readLocalImage: (cwd, src) => call('image/read-local', { cwd, src }),
-    submitChatMessage: (id, text, attachments) => call('chat/submit', { id, text, attachments }),
-    removeQueuedMessage: (id, messageId) => call('chat/queue-remove', { id, messageId }),
-    pendingApprovals: () => call<PendingApproval[]>('approval/pending'),
+    createSession: (spec) => fleet.createSession(focused().pc.id, spec),
+    listSessions: () => gather<SessionSnapshot>('session/list'),
+    removeSession: (id) => forSession(id, 'session/remove', id),
+    agentCapabilities: () => focused().connection.call('agent/capabilities'),
+    interruptTurn: (id) => forSession(id, 'session/interrupt-turn', id),
+    setPermissionMode: (id, mode) => forSession(id, 'session/permission-mode', { id, mode }),
+    sessionModels: (id) => forSession(id, 'session/models', id),
+    setSessionModel: (id, model) => forSession(id, 'session/model', { id, model }),
+    sessionEfforts: (id) => forSession(id, 'session/efforts', id),
+    setSessionEffort: (id, effort) => forSession(id, 'session/effort', { id, effort }),
+    readConversation: (id, request) => forSession(id, 'conversation/read', { ...request, id }),
+    readConversationPage: (id, request) => forSession(id, 'conversation/page', { ...request, id }),
+    readConversationItem: (id, request) => forSession(id, 'conversation/item', { ...request, id }),
+    readLocalImage: async (cwd, src) => {
+      const member = fleet.pcForCwd(cwd);
+      return member ? member.connection.call<string | null>('image/read-local', { cwd, src }) : null;
+    },
+    submitChatMessage: (id, text, attachments) => forSession(id, 'chat/submit', { id, text, attachments }),
+    removeQueuedMessage: (id, messageId) => forSession(id, 'chat/queue-remove', { id, messageId }),
+    pendingApprovals: () => gather<PendingApproval>('approval/pending'),
     answerApproval: async (request, answer) => {
-      await call('approval/answer', { ...request, answer });
+      await forSession(request.sessionId, 'approval/answer', { ...request, answer });
     },
     pickChatAttachments: async () => {
+      const member = focused();
       const files = await pickFiles();
       const uploaded: ChatAttachment[] = [];
-      for (const file of files) uploaded.push(await upload(file));
+      for (const file of files) uploaded.push(await upload(member, file));
       return uploaded;
     },
     readChatAttachmentPreview: (attachment) => Promise.resolve(previews.get(attachment.path) ?? null),

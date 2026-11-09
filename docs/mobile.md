@@ -11,7 +11,7 @@ never hosts a daemon, agents or sessions.
 | Transport | WebSocket over TLS 1.3, port 47615 on every interface, refusing peers outside private, link-local, loopback and carrier-grade NAT space before TLS |
 | PC's identity | A P-256 key made once in `~/.sertum`. A phone pins the SHA-256 of its SPKI |
 | Phone's identity | A P-256 key in the Android Keystore, unusable while the phone is locked |
-| Pairing | A 128-bit code, one use, five minutes, held only as a hash and withdrawn when the Settings pane closes. A wrong guess leaves it standing, or anything on the network could cancel a pairing |
+| Pairing | A 128-bit code, one use, five minutes, held only as a hash and withdrawn when the Settings pane closes. A wrong guess leaves it standing, or anything on the network could cancel a pairing. One record per phone key: pairing again replaces that phone's record and quietly closes its old sockets, and records already doubled on disk keep the one seen last |
 | Each connection | The daemon sends a nonce. The phone signs `sertum-gateway-1\|auth\|<nonce>\|<pin>`, which names the key it saw, so a signature cannot be replayed or relayed |
 | Discovery | mDNS `_sertum._tcp`, with the PC's id in TXT. It only says where to try |
 | Versioning | `GATEWAY_API`, apart from `DAEMON_PROTOCOL`, because a phone updates on its own schedule |
@@ -120,6 +120,49 @@ someone looks. An upload that loses its connection part way has to be chosen aga
 
 Ending a Codex session leaves its folder locked, because `codex-code-mode-host.exe`,
 kept by Codex's own app server, still holds it. This is not specific to phones.
+
+## Several PCs, one list
+
+A phone pairs with as many PCs as it likes and shows their sessions as one list,
+with the PC's name and connection dot on every row and in a conversation's header.
+Pairing, addresses and Forget live on their own PCs page; New session asks which PC
+when there is more than one, and remembers recent folders per PC.
+
+- **One socket per PC.** `PinnedSocketPlugin` holds a map of sockets, and `send` and
+  `close` name the connection they mean. It used to cancel the previous socket on
+  every `connect`, which is what limited a phone to one PC. A page load closes any
+  socket a previous page left open, since only the page uses the plugin.
+- **A session's calls go to the PC that owns it.** `mobile/src/fleet.ts` learns
+  ownership from each PC's `session/list` and `session:updated` events; session ids
+  are UUIDs, so the events of every PC merge without translation and the desktop
+  `ChatPane` runs unchanged. A file goes to the PC of the session on screen, and an
+  image a message names goes to the PC whose session has that folder.
+- **Capabilities are per PC**, because two PCs can run different agent versions.
+- **A PC that is off still shows its sessions.** Each PC's list is saved at most
+  every 2s (`sertum.sessions.<pc id>`, 50 newest) and shown on start, marked PC
+  offline, until that PC answers and its own list replaces it. Verified on the
+  Fold6 by breaking the MacBook's port and reloading: its session came back offline,
+  and live again once the port was restored.
+- **A PC that is off is not hunted for.** After a failed attempt the next tries come
+  10s, 30s and 1 min apart, then every 5 min. Nothing is tried while the app is in
+  the background; coming back, Try again, or using one of that PC's sessions each
+  try at once. Its record is kept until Forget. Measured on the Fold6 2026-11-09
+  against an address nothing answers: due times of 4:26, 4:27, then 4:32, a pause
+  while the screen dozed, and an immediate try on waking.
+- **Back walks the app's screens.** Without `@capacitor/app` nothing handled Back,
+  so it closed the app from any screen, a conversation included. `MainActivity`
+  now steps back through the WebView's history and leaves only from the list.
+
+Pairing the same phone again used to add a gateway record each time, so the PC's
+Settings listed the Fold6 three times after two re-pairings; `test-gateway.ts`
+now covers the replacement and the clean-up on load.
+
+Testing note: a value written to `localStorage` just before `am force-stop` can be
+lost, because the WebView had not written it out. Reload the page instead.
+
+A phone paired before this kept `sertum.pc`; it is moved to `sertum.pcs` on first
+start, with its folders, and the old keys removed. Verified on the Fold6: the paired
+MacBook came across connected, with its session and folders.
 
 ## Why `mobile/` is in this repo
 

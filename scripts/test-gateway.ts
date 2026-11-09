@@ -225,6 +225,38 @@ test('a code expires, and can be cancelled', async () => {
   assert.equal((await pair(port, newPhone(), cancelled)).answer.reason, 'code');
 });
 
+test('pairing the same phone again replaces its record, and its old socket', async () => {
+  const again = newPhone();
+  assert.equal((await pair(port, again, codeIn(gateway.beginPairing().payload).code)).answer.t, 'ready');
+  const firstId = again.deviceId;
+  const stale = await auth(port, again);
+  assert.equal(stale.answer.t, 'ready');
+  const before = gateway.status().devices.length;
+  assert.equal((await pair(port, again, codeIn(gateway.beginPairing().payload).code)).answer.t, 'ready');
+  assert.notEqual(again.deviceId, firstId);
+  assert.equal(gateway.status().devices.length, before);
+  assert.equal(await stale.client.closed, 4401);
+  assert.equal(stale.client.frames.some((f) => f.t === 'refused'), false);
+  assert.equal((await auth(port, { ...again, deviceId: firstId })).answer.reason, 'unknown');
+  gateway.revoke(again.deviceId as string);
+});
+
+test('records already doubled on disk keep the one seen last', async () => {
+  const file = path.join(dir, 'gateway.json');
+  const original = fs.readFileSync(file, 'utf8');
+  const stored = JSON.parse(original) as { devices: Array<Record<string, unknown>> };
+  const twice = newPhone();
+  stored.devices.push(
+    { id: 'old', name: 'Twice', publicKey: twice.publicKey, pairedAt: 1, lastSeenAt: 5 },
+    { id: 'new', name: 'Twice', publicKey: twice.publicKey, pairedAt: 2, lastSeenAt: 9 },
+    { id: 'mid', name: 'Twice', publicKey: twice.publicKey, pairedAt: 3, lastSeenAt: null },
+  );
+  fs.writeFileSync(file, JSON.stringify(stored));
+  const reread = new Gateway({ ...options, port: 0 }).status().devices.filter((d) => d.name === 'Twice');
+  fs.writeFileSync(file, original);
+  assert.deepEqual(reread.map((d) => d.id), ['new']);
+});
+
 test('pairing needs proof of holding the key offered', async () => {
   const code = codeIn(gateway.beginPairing().payload).code;
   const claimed = newPhone();

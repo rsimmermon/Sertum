@@ -2,7 +2,8 @@
 
 The phone client: always a client of a `sertumd` on a PC, never a host. Design and
 results are in [docs/mobile.md](../docs/mobile.md). To pair, turn on Settings > Phones
-on the PC and scan the code it shows.
+on the PC and scan the code it shows. More PCs are added from the PCs page, and every
+PC's sessions are shown in one list, each marked with its PC.
 
 ```
 scripts/make-icons.mjs   All Android art, generated from assets/icon-windows.svg

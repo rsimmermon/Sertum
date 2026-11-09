@@ -13,6 +13,8 @@ import java.security.MessageDigest;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
@@ -35,10 +37,14 @@ import okhttp3.WebSocketListener;
  * so the system trust store and hostname check are both replaced by the key
  * learned out of band from the pairing QR code. The socket lives here rather
  * than in the WebView because a WebView offers no way to pin one.
+ *
+ * Several are open at once, one per paired PC, each with its own pin. Every
+ * call and every event names its connection, so no socket is ever addressed
+ * by being the most recent one.
  */
 @CapacitorPlugin(name = "PinnedSocket")
 public class PinnedSocketPlugin extends Plugin {
-    private WebSocket socket;
+    private final Map<Integer, WebSocket> sockets = new ConcurrentHashMap<>();
     private int connections = 0;
 
     private static X509TrustManager pinnedTo(final byte[] pin) {
@@ -82,9 +88,6 @@ public class PinnedSocketPlugin extends Plugin {
             return;
         }
         try {
-            // A socket being replaced may still report. Every event names its
-            // connection, so the app can tell that from the one it is using.
-            if (socket != null) socket.cancel();
             final int connection = ++connections;
             X509TrustManager trust = pinnedTo(pin);
             SSLContext context = SSLContext.getInstance("TLS");
@@ -99,7 +102,7 @@ public class PinnedSocketPlugin extends Plugin {
                 .readTimeout(0, TimeUnit.SECONDS)
                 .pingInterval(20, TimeUnit.SECONDS)
                 .build();
-            socket = client.newWebSocket(new Request.Builder().url(url).build(), new WebSocketListener() {
+            WebSocket socket = client.newWebSocket(new Request.Builder().url(url).build(), new WebSocketListener() {
                 @Override
                 public void onOpen(WebSocket webSocket, Response response) {
                     JSObject data = new JSObject();
@@ -125,6 +128,7 @@ public class PinnedSocketPlugin extends Plugin {
 
                 @Override
                 public void onClosed(WebSocket webSocket, int code, String reason) {
+                    sockets.remove(connection, webSocket);
                     JSObject data = new JSObject();
                     data.put("connection", connection);
                     data.put("code", code);
@@ -133,12 +137,14 @@ public class PinnedSocketPlugin extends Plugin {
 
                 @Override
                 public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                    sockets.remove(connection, webSocket);
                     JSObject data = new JSObject();
                     data.put("connection", connection);
                     data.put("message", String.valueOf(t.getMessage()));
                     notifyListeners("failure", data);
                 }
             });
+            sockets.put(connection, socket);
             JSObject result = new JSObject();
             result.put("connection", connection);
             call.resolve(result);
@@ -149,16 +155,25 @@ public class PinnedSocketPlugin extends Plugin {
 
     @PluginMethod
     public void send(PluginCall call) {
+        Integer connection = call.getInt("connection");
         String text = call.getString("text");
+        WebSocket socket = connection == null ? null : sockets.get(connection);
         JSObject result = new JSObject();
         result.put("queued", socket != null && text != null && socket.send(text));
         call.resolve(result);
     }
 
+    /** Closes the named connection, or every one when none is named. */
     @PluginMethod
     public void close(PluginCall call) {
-        if (socket != null) socket.close(1000, null);
-        socket = null;
+        Integer connection = call.getInt("connection");
+        if (connection == null) {
+            for (WebSocket socket : sockets.values()) socket.close(1000, null);
+            sockets.clear();
+        } else {
+            WebSocket socket = sockets.remove(connection);
+            if (socket != null) socket.close(1000, null);
+        }
         call.resolve();
     }
 }

@@ -368,9 +368,9 @@ async function widthCheck(items: number) {
 // --- Spike 2: native pinned socket, and what the WebView refuses on its own.
 interface Listener { remove(): Promise<void> }
 interface PinnedSocket {
-  connect(o: { url: string; pinSha256: string }): Promise<void>;
-  send(o: { text: string }): Promise<{ queued: boolean }>;
-  close(): Promise<void>;
+  connect(o: { url: string; pinSha256: string }): Promise<{ connection: number }>;
+  send(o: { connection: number; text: string }): Promise<{ queued: boolean }>;
+  close(o?: { connection?: number }): Promise<void>;
   addListener(event: string, cb: (data: Record<string, unknown>) => void): Promise<Listener>;
 }
 const pinned = registerPlugin<PinnedSocket>('PinnedSocket');
@@ -385,10 +385,10 @@ async function pinnedOpen(url: string, pinSha256: string) {
     void pinned.addListener('failure', (d) => resolve({ ok: false, detail: String(d.message) }));
     setTimeout(() => resolve({ ok: false, detail: 'timed out' }), 10000);
   });
-  await pinned.connect({ url, pinSha256 });
+  const { connection } = await pinned.connect({ url, pinSha256 });
   const result = await opened;
   const next = () => new Promise<Record<string, unknown>>((r) => inbox.push(r));
-  return { result, next, handles };
+  return { result, next, handles, connection };
 }
 
 async function pinTest(url: string, goodPin: string, badPin: string) {
@@ -402,7 +402,7 @@ async function pinTest(url: string, goodPin: string, badPin: string) {
     for (let i = 0; i < 200; i++) {
       const reply = good.next();
       const t = performance.now();
-      await pinned.send({ text: `ping-${i}` });
+      await pinned.send({ connection: good.connection, text: `ping-${i}` });
       await reply;
       trips.push(performance.now() - t);
     }
@@ -411,7 +411,7 @@ async function pinTest(url: string, goodPin: string, badPin: string) {
     for (const size of [1048576, 5242880]) {
       const reply = good.next();
       const t = performance.now();
-      await pinned.send({ text: JSON.stringify({ blob: size }) });
+      await pinned.send({ connection: good.connection, text: JSON.stringify({ blob: size }) });
       const message = await reply;
       out[`blob${size / 1048576}MB`] = { ms: Math.round(performance.now() - t), received: String(message.text).length };
     }

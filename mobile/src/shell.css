@@ -12,6 +12,7 @@
 .phone-banner-line { font-weight: 600; }
 .phone-banner-detail { margin-top: 4px; font-size: 13px; color: var(--ink-2); }
 .phone-banner-actions { display: flex; gap: 8px; margin-top: 8px; }
+.phone-banner-row + .phone-banner-row { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
 
 .phone-head {
   display: flex; align-items: center; gap: 8px; padding: 10px 12px;
@@ -31,7 +32,42 @@
 .phone-row > svg { flex: none; width: 24px; height: 24px; }
 .phone-row-text { flex: 1; min-width: 0; }
 .phone-row-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.phone-row-sub { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-row-sub {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 13px; color: var(--muted); overflow: hidden; white-space: nowrap;
+}
+.phone-row-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.phone-row.is-offline .phone-row-title, .phone-row.is-offline .phone-row-activity { opacity: 0.6; }
+
+/* Which PC a session is on, shown everywhere a session is. */
+.phone-pc {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 45%;
+  font-size: 12px; color: var(--ink-2);
+}
+.phone-pc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-pc-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.phone-pc-dot.is-connected { background: var(--ok, var(--run)); }
+.phone-pc-dot.is-connecting { background: var(--run); }
+.phone-pc-dot.is-unreachable, .phone-pc-dot.is-refused { background: var(--warn); }
+.phone-pc-big { max-width: none; font-size: 16px; font-weight: 600; color: var(--ink); gap: 8px; }
+.phone-pc-big .phone-pc-dot { width: 9px; height: 9px; }
+.phone-chat-sub { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.phone-pcs { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.phone-pc-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+}
+.phone-pc-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.phone-pc-word { font-size: 12px; color: var(--muted); }
+.phone-pc-word.is-connected { color: var(--ok, var(--run)); }
+.phone-pc-word.is-unreachable, .phone-pc-word.is-refused { color: var(--warn); }
+.phone-pc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.phone-pc-actions .btn { min-height: 40px; }
+.phone-pc-actions .phone-forget { margin-top: 0; margin-left: auto; }
+.phone-chips-wrap { flex-wrap: wrap; }
+.phone-chips-wrap .phone-chip { flex: 1 1 40%; padding: 0 8px; }
+.phone-folders[hidden] { display: none; }
 .phone-empty { padding: 32px 16px; color: var(--muted); text-align: center; }
 
 .phone-status { flex: none; font-size: 12px; color: var(--muted); }

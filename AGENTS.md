@@ -1253,6 +1253,10 @@ any change to it:
   could log in with. Revoking cuts a connected phone off at once.
 - **Finding a PC and reaching it are reported apart**, because a firewall lets the
   first through and not the second.
+- **A phone can pair with several PCs and shows them as one list.** Each PC has its
+  own socket, and every call about a session goes to the PC that owns it. The phone
+  stops looking for a PC that is out of reach: the gap between tries grows to five
+  minutes, and nothing is tried in the background.
 - **A connection coming back is routine, not an error.** A phone sleeps and visits the
   file picker, so a request made during a reconnect waits for it, and an open pane
   catches up the moment the socket returns rather than on its slow backstop read.

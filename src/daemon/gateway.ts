@@ -102,6 +102,21 @@ function isP256Key(publicKey: string): boolean {
   }
 }
 
+/**
+ * One record per phone key. Pairing the same phone again used to add a record each
+ * time, so Settings listed one phone several times; those already on disk keep the
+ * one seen most recently, which is the one that phone is using.
+ */
+function onePerKey(devices: StoredDevice[]): StoredDevice[] {
+  const kept = new Map<string, StoredDevice>();
+  const recent = (d: StoredDevice) => d.lastSeenAt ?? d.pairedAt;
+  for (const device of devices) {
+    const held = kept.get(device.publicKey);
+    if (!held || recent(device) > recent(held)) kept.set(device.publicKey, device);
+  }
+  return devices.filter((d) => kept.get(d.publicKey) === d);
+}
+
 function signatureHolds(publicKey: string, text: string, signature: unknown): boolean {
   if (typeof signature !== 'string') return false;
   try {
@@ -172,7 +187,7 @@ export class Gateway {
         enabled: read.enabled === true,
         port: this.options.port ?? (Number.isInteger(read.port) ? read.port as number : fresh.port),
         id: typeof read.id === 'string' ? read.id : fresh.id,
-        devices: Array.isArray(read.devices) ? read.devices.filter((d) => isP256Key(d.publicKey)) : [],
+        devices: Array.isArray(read.devices) ? onePerKey(read.devices.filter((d) => isP256Key(d.publicKey))) : [],
       };
     } catch {
       return fresh;
@@ -398,9 +413,20 @@ export class Gateway {
       pairedAt: this.now(),
       lastSeenAt: null,
     };
+    // A phone pairing again replaces its own record rather than adding another. Its
+    // old sockets were already dropped by the phone, so any left are closed quietly,
+    // with no refusal that phone would show.
+    const replaced = new Set(this.stored.devices.filter((d) => d.publicKey === publicKey).map((d) => d.id));
+    this.stored.devices = this.stored.devices.filter((d) => !replaced.has(d.id));
+    for (const other of this.connections) {
+      if (other.device && replaced.has(other.device.id)) {
+        other.device = null;
+        other.socket.close(4401, 'replaced');
+      }
+    }
     this.stored.devices.push(device);
     this.save();
-    console.log(`[gateway] paired ${device.id} from ${connection.address}`);
+    console.log(`[gateway] paired ${device.id} from ${connection.address}${replaced.size ? `, replacing ${replaced.size}` : ''}`);
     this.welcome(connection, device);
   }
 
