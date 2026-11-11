@@ -97,9 +97,10 @@ below, or a file of its own in `docs/`, is described there rather than here:
       a manual override; the status bar calls out a binary it cannot find
 - [x] **Claude Remote Control publish** — an opt-in C1 control starts a session
       with `--remote-control <label>`; published panes carry a REMOTE chip
-- [x] **Structured turn steer and interrupt** — Claude over its control
-      channel or hook responses, Codex over `turn/steer` and `turn/interrupt`;
-      Grok and shell explicitly decline
+- [x] **Structured turn steer and interrupt** — a message sent from the
+      composer mid-turn joins the running turn (Claude's stdin, Codex's
+      `turn/steer`), interrupt over Claude's control channel or hook responses
+      and Codex's `turn/interrupt`; Grok and shell explicitly decline
 - [x] **Claude tool gating** — Pause tool use persistently denies `PreToolUse`
       through structured hook responses until resumed; a TOOLS PAUSED chip,
       and no terminal bytes are synthesized
@@ -394,8 +395,7 @@ through `AgentAdapter`:
   answers a following turn normally. A **PTY**-backed session has no control
   channel of its own — Claude's TUI owns that pipe — so its interrupt is still
   queued in `HookServer` and returns `{ continue: false }` at the next
-  attributable hook boundary; guidance is returned as `UserPromptSubmit`
-  `additionalContext` when that session next submits a prompt. The command
+  attributable hook boundary. The command
   hook's curl prints the HTTP response body to stdout, which is Claude's
   structured hook-response channel rather than terminal output.
 
@@ -425,16 +425,22 @@ through `AgentAdapter`:
   `turn/steer` with `expectedTurnId`, so a stale request is rejected instead of
   landing in the wrong turn; interrupt calls `turn/interrupt` with the thread
   and turn ids.
+- **Steering is the composer, not a separate action.** A message sent while
+  `turnActive` holds is offered to `steerTurn` before the queue: a Claude stream
+  session writes it to its stdin, which Claude folds into the running turn
+  (verified, 2.1.322), and Codex sends `turn/steer`. A PTY-backed Claude session
+  declines, since its input belongs to the TUI, and the message queues for the
+  boundary. A steer that fails for any reason queues rather than refuses.
+  Evidence: [docs/conversation.md](docs/conversation.md).
 - Grok's event log is read-only and a shell has no agent turn, so both decline
   with user-facing reasons. Their row-menu actions remain visible but disabled
   with that reason.
 
-These controls are available from a session's row menu and from the command
-palette for the focused session. Claude guidance may wait for the next prompt;
-Codex guidance requires an active turn. A failed active-turn precondition is
-reported in the session activity rather than silently ignored. Pending Claude
-control words and Codex turn ids are cleared when the owning PTY exits, so a
-later session cannot inherit them.
+Interrupt is available from a session's row menu, the command palette and the
+composer's stop sign; steering has no menu entry, because sending is steering. A
+failed interrupt is reported in the session activity rather than silently
+ignored. Pending Claude control words and Codex turn ids are cleared when the
+owning PTY exits, so a later session cannot inherit them.
 
 Claude additionally declares `tool-gate`. While enabled, every attributable
 `PreToolUse` hook receives `permissionDecision: "deny"` with a reason that
@@ -515,8 +521,9 @@ The waiting bubble is on because an adapter reported a turn in progress,
 never because output went quiet, and the stop button calls the declared
 `turn-interrupt` capability rather than writing Ctrl+C into a PTY.
 
-A message typed while the agent cannot take one is **queued rather than
-refused**, and goes in by itself at the next moment the session is
+A message typed mid-turn first **joins the running turn** where the agent
+declares `turn-steer` and can take it there (see "Structured turn control").
+One the agent cannot take is **queued rather than refused**, and goes in by itself at the next moment the session is
 receivable — the same bargain the model, thinking and permission chips
 already make. Receivable is read from the truth plane (`turnActive`), never
 from whether output went quiet, and one message goes in per turn boundary. The
@@ -554,8 +561,8 @@ a transport.
 - **The registry stays one registry.** `PtyManager.registerStream` records
   the snapshot with host-supplied controls, so tab close, daemon shutdown,
   discovery exclusion, rename and mute treat both transports identically.
-- **Hooks ride along**, so permission rules, the tool gate, steer and
-  interrupt work unchanged; permission questions ride the control channel
+- **Hooks ride along**, so permission rules, the tool gate and interrupt
+  work unchanged; permission questions ride the control channel
   instead (see [docs/approvals.md](docs/approvals.md)).
 - **`session-resume` starts a new process bound to a past conversation's own
   id** rather than beginning blank. Claude needs `RESUME_SETTLE_MS` before
@@ -1529,6 +1536,7 @@ scripts/
   test-gateway.ts             The gateway over real TLS with the fabric replaced by a recorder  [docs/mobile.md]
   smoke-gateway.ts            A phone's whole path against real agents, through the socket  [docs/mobile.md]
   smoke-chat-interrupt.ts     Structured-session interrupt: fast ack, correct end state, session stays usable
+  smoke-chat-steer.ts         A message sent mid-turn joins the running turn on real Claude and Codex hosts
   smoke-resume.ts             session-resume round trip: kill a session, resume it, confirm recall
   smoke-model-switch.ts       model-select: read each agent's catalogue, switch, confirm the turn ran on it
   smoke-effort-switch.ts      thinking-level: read each agent's ladder, switch, confirm the level was really taken

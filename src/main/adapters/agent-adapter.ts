@@ -5,6 +5,7 @@ import type {
   AgentEffortList,
   AgentKind,
   AgentModelList,
+  ChatAttachment,
   EffortChangeResult,
   ModelChangeResult,
 } from '../../shared/types';
@@ -17,6 +18,7 @@ import { resolveCodexBinary, type CodexAppServer } from './codex-app-server';
 import type { ClaudeChatHost } from './claude-chat';
 import type { CodexChatHost } from './codex-chat';
 import { grokModelCommand, listGrokEfforts, listGrokModels } from './grok';
+import { promptWithAttachments } from '../../shared/chat-attachments';
 
 /** The part of a session an adapter needs in order to act on it. */
 export interface AgentSessionRef {
@@ -73,7 +75,6 @@ const ENTER = '\r';
 const ENTER_DELAY_MS = 150;
 
 interface ClaudeTurnControl {
-  queueSteer(sessionId: string, text: string): void;
   queueInterrupt(sessionId: string): void;
   setToolGate(sessionId: string, paused: boolean): void;
 }
@@ -145,8 +146,17 @@ export interface AgentAdapter {
    */
   remoteControlArgs(label: string): string[];
 
-  /** Add guidance through the agent's structured control plane. */
-  steerTurn(session: AgentSessionRef, text: string): Promise<boolean>;
+  /**
+   * Put a message into the turn already running, as the agent's own composer
+   * does when typed into mid-turn. False when it cannot -- no turn, or no
+   * channel that reaches one -- and the composer then queues the message for
+   * the next turn boundary instead. Only called when `turn-steer` is ok.
+   */
+  steerTurn(
+    session: AgentSessionRef,
+    text: string,
+    attachments: ChatAttachment[],
+  ): Promise<boolean>;
 
   /** Stop an active turn through the agent's structured control plane. */
   interruptTurn(session: AgentSessionRef): Promise<boolean>;
@@ -209,6 +219,7 @@ class InertAgentAdapter implements AgentAdapter {
   async steerTurn(
     _session: AgentSessionRef,
     _text: string,
+    _attachments: ChatAttachment[],
   ): Promise<boolean> {
     return false;
   }
@@ -352,17 +363,30 @@ class CodexAdapter implements AgentAdapter {
     return [];
   }
 
-  async steerTurn(session: AgentSessionRef, text: string): Promise<boolean> {
+  async steerTurn(
+    session: AgentSessionRef,
+    text: string,
+    attachments: ChatAttachment[],
+  ): Promise<boolean> {
     const threadId = session.externalId;
     if (!threadId || !this.server.connected) return false;
     const turnId =
-      session.activeTurnId ?? (await this.readActiveTurn(threadId));
+      session.activeTurnId ??
+      this.chat().activeTurn(session.id) ??
+      (await this.readActiveTurn(threadId));
     if (!turnId) return false;
+    // The same input shape `turn/start` takes: images as native inputs, every
+    // other file as an explicit path in the text.
+    const images = attachments.filter((attachment) => attachment.kind === 'image');
+    const nativeImages = new Set(images.map((attachment) => attachment.path));
     try {
       await this.server.request('turn/steer', {
         threadId,
         expectedTurnId: turnId,
-        input: [{ type: 'text', text }],
+        input: [
+          { type: 'text', text: promptWithAttachments(text, attachments, nativeImages) },
+          ...images.map((attachment) => ({ type: 'localImage', path: attachment.path })),
+        ],
       });
       return true;
     } catch {
@@ -504,12 +528,17 @@ class ClaudeAdapter extends InertAgentAdapter {
       : ['--remote-control'];
   }
 
+  /**
+   * Only a conversation session has a channel into a running turn: its own
+   * stdin. A PTY-backed session's input belongs to its TUI, so it declines
+   * here and the message waits for the turn boundary.
+   */
   override async steerTurn(
     session: AgentSessionRef,
     text: string,
+    attachments: ChatAttachment[],
   ): Promise<boolean> {
-    this.control.queueSteer(session.id, text);
-    return true;
+    return this.chat.has(session.id) && this.chat.steer(session.id, text, attachments);
   }
 
   override async interruptTurn(session: AgentSessionRef): Promise<boolean> {

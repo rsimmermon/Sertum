@@ -289,6 +289,22 @@ export class ClaudeChatHost extends EventEmitter {
     return true;
   }
 
+  /**
+   * One user message into the turn already running.
+   *
+   * The same frame as `send`: Claude reads stdin throughout a turn and folds a
+   * message that arrives mid-turn into it at the next boundary, as it does one
+   * typed into its own composer. Verified against Claude Code 2.1.322: one
+   * `result`, the new instruction followed, and the transcript recording it as
+   * a `queued_command` attachment. A resumed process still settling has no turn
+   * to join, so it declines and the message waits for the boundary instead.
+   */
+  steer(id: string, text: string, attachments: ChatAttachment[] = []): boolean {
+    const entry = this.hosted.get(id);
+    if (!entry?.alive || !entry.child.stdin?.writable || entry.awaitingResumeSettle) return false;
+    return this.writeUserMessage(entry, text, attachments);
+  }
+
   private writeUserMessage(
     entry: Hosted,
     text: string,

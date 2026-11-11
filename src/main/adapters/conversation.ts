@@ -584,6 +584,10 @@ const CLAUDE_MACHINE_TEXT =
 
 function feedClaude(context: ParseContext, rec: Record<string, unknown>): void {
   const { items } = context;
+  if (rec.type === 'attachment') {
+    feedClaudeMidTurnMessage(items, rec);
+    return;
+  }
   if (rec.type !== 'user' && rec.type !== 'assistant') return;
   // Injected context and subagent traffic are not the conversation.
   if (rec.isMeta === true || rec.isSidechain === true) return;
@@ -631,6 +635,32 @@ function feedClaude(context: ParseContext, rec: Record<string, unknown>): void {
         if (tool) pushImages(items, block.content, tool.name, at);
         break;
       }
+    }
+  }
+}
+
+/**
+ * A message the user sent while a turn was running. Claude folds it into that
+ * turn rather than starting another, and records it as a `queued_command`
+ * attachment with no `user` record of its own -- verified against Claude Code
+ * 2.1.322 -- so without this it would vanish from the conversation.
+ */
+function feedClaudeMidTurnMessage(items: ChatItem[], rec: Record<string, unknown>): void {
+  if (rec.isSidechain === true) return;
+  const attachment = rec.attachment as Record<string, unknown> | undefined;
+  if (attachment?.type !== 'queued_command') return;
+  if (attachment.commandMode !== undefined && attachment.commandMode !== 'prompt') return;
+  const at = parseTime(attachment.timestamp ?? rec.timestamp);
+  const prompt = attachment.prompt;
+  if (typeof prompt === 'string') {
+    pushMessage(items, 'user', prompt, at, CLAUDE_MACHINE_TEXT);
+    return;
+  }
+  if (!Array.isArray(prompt)) return;
+  for (const raw of prompt) {
+    const block = raw as Record<string, unknown> | null;
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      pushMessage(items, 'user', block.text, at, CLAUDE_MACHINE_TEXT);
     }
   }
 }

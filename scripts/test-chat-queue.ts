@@ -14,6 +14,8 @@ function rig(options: {
   reportsOnWrite?: boolean;
   transportFails?: () => string | null;
   retryMs?: number;
+  /** Whether a running turn takes a message; unset means it never does. */
+  steers?: () => boolean;
 } = {}) {
   const session = {
     id: 's',
@@ -24,6 +26,7 @@ function rig(options: {
     queueStalled: null,
   } as unknown as SessionSnapshot;
   const sent: string[] = [];
+  const steered: string[] = [];
   const delivered: Array<{ text: string; stillQueued: number }> = [];
   let held: QueuedChatMessage[] = [];
   let stalled: string | null = null;
@@ -36,6 +39,11 @@ function rig(options: {
       if (options.reportsOnWrite) setTurn(true);
       return null;
     },
+    steer: async (_s, text) => {
+      if (!options.steers?.()) return false;
+      steered.push(text);
+      return true;
+    },
     publish: (_id, entries, why) => {
       held = entries;
       stalled = why;
@@ -47,7 +55,7 @@ function rig(options: {
     queue.sessionChanged(session);
   }
   return {
-    session, sent, delivered, queue, setTurn,
+    session, sent, steered, delivered, queue, setTurn,
     held: () => held.map((entry) => entry.text),
     stalled: () => stalled,
     idOf: (text: string) => held.find((entry) => entry.text === text)?.id ?? -1,
@@ -220,6 +228,42 @@ const checks: Array<[string, () => Promise<void>]> = [
     await wait(0);
     assert.deepEqual(r.sent, ['next']);
     assert.equal(r.stalled(), null);
+  }],
+  ['mid-turn, a message joins the running turn instead of queueing', async () => {
+    const r = rig({ reportsOnWrite: true, steers: () => true });
+    r.setTurn(true);
+    assert.deepEqual(await r.queue.submit('s', 'one', []), { outcome: 'sent' });
+    assert.deepEqual(r.steered, ['one']);
+    assert.deepEqual(r.sent, []);
+    assert.deepEqual(r.held(), []);
+    assert.deepEqual(r.delivered, [{ text: 'one', stillQueued: 0 }]);
+    r.setTurn(false);
+    await wait(0);
+    assert.deepEqual(r.sent, [], 'a steered message is not sent again at the boundary');
+  }],
+  ['an idle session is sent to, never steered', async () => {
+    const r = rig({ reportsOnWrite: true, steers: () => true });
+    assert.deepEqual(await r.queue.submit('s', 'one', []), { outcome: 'sent' });
+    assert.deepEqual(r.sent, ['one']);
+    assert.deepEqual(r.steered, []);
+  }],
+  ['a turn that will not take it queues the message for the boundary', async () => {
+    const r = rig({ reportsOnWrite: true, steers: () => false });
+    r.setTurn(true);
+    assert.deepEqual(await r.queue.submit('s', 'one', []), { outcome: 'queued', position: 1 });
+    r.setTurn(false);
+    await wait(0);
+    assert.deepEqual(r.sent, ['one']);
+  }],
+  ['a steer never overtakes a message already queued', async () => {
+    let steers = false;
+    const r = rig({ reportsOnWrite: true, steers: () => steers });
+    r.setTurn(true);
+    await r.queue.submit('s', 'one', []);
+    steers = true;
+    assert.deepEqual(await r.queue.submit('s', 'two', []), { outcome: 'queued', position: 2 });
+    assert.deepEqual(r.steered, []);
+    assert.deepEqual(r.held(), ['one', 'two']);
   }],
   ['an exited session refuses, and what it held stays visible', async () => {
     const r = rig();

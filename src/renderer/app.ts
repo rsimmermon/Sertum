@@ -16,7 +16,6 @@ import {
 } from './command-palette';
 import { openWorktreeDialog } from './worktree-dialog';
 import { openDiffReviewDialog } from './diff-review-dialog';
-import { openTextPrompt } from './text-prompt-dialog';
 import { openSessionInfoDialog } from './session-info-dialog';
 import {
   buildPaneGrid,
@@ -1440,7 +1439,6 @@ export class App {
    */
   private openRowMenu(s: SessionSnapshot, x: number, y: number): void {
     const running = s.origin === 'owned' && s.exitCode === null;
-    const steer = this.capabilities?.[s.agent]['turn-steer'];
     const interrupt = this.capabilities?.[s.agent]['turn-interrupt'];
     const toolGate = this.capabilities?.[s.agent]['tool-gate'];
     const modeAvailable = permissionModeAvailability(s, this.capabilities);
@@ -1549,12 +1547,6 @@ export class App {
       { label: 'Remove worktree…', destructive: true },
       SEPARATOR,
       {
-        label: 'Steer turn…',
-        accel: steer && !steer.ok ? steer.reason : undefined,
-        onSelect:
-          running && steer?.ok ? () => void this.promptSteer(s) : undefined,
-      },
-      {
         label: 'Interrupt turn',
         accel: interrupt && !interrupt.ok ? interrupt.reason : undefined,
         onSelect:
@@ -1574,18 +1566,6 @@ export class App {
         onSelect: () => void this.closeTab(s.id),
       },
     ]);
-  }
-
-  private async promptSteer(s: SessionSnapshot): Promise<void> {
-    const guidance = await openTextPrompt({
-      title: `Steer ${s.label}`,
-      description:
-        'Send guidance through the agent’s structured control channel. No terminal input is generated.',
-      placeholder: 'What should the agent account for next?',
-      submitLabel: 'Send guidance',
-    });
-    if (!guidance) return;
-    await api.steerSession(s.id, guidance);
   }
 
   private async interruptTurn(s: SessionSnapshot): Promise<void> {
@@ -1766,9 +1746,6 @@ export class App {
 
   private openPalette(): void {
     const active = this.activeId ? this.sessions.get(this.activeId) : undefined;
-    const activeSteer = active
-      ? this.capabilities?.[active.agent]['turn-steer']
-      : undefined;
     const activeInterrupt = active
       ? this.capabilities?.[active.agent]['turn-interrupt']
       : undefined;
@@ -1803,14 +1780,6 @@ export class App {
         label: 'Review changes in focused session…',
         accel: '⌘⇧D',
         run: active ? () => void openDiffReviewDialog(active.cwd) : undefined,
-      },
-      {
-        glyph: '↪',
-        label: 'Steer focused turn…',
-        run:
-          active && active.origin === 'owned' && active.exitCode === null && activeSteer?.ok
-            ? () => void this.promptSteer(active)
-            : undefined,
       },
       {
         glyph: active?.toolsPaused ? '▶' : '‖',

@@ -351,7 +351,37 @@ character item, and in the desktop app, where a 36,039 character message with em
 came back exact with its top edge unmoved, and a 400 line tool result came back
 whole and stayed open.
 
-## Typing while the agent is busy: the queue
+## Typing while the agent is busy: steer, then the queue
+
+**A message sent mid-turn joins the running turn first.** There is no separate
+Steer action any more: `ChatQueue.submit` offers a message typed while
+`turnActive` holds to the agent's declared `turn-steer` (`steerTurn`), and only a
+message that cannot join the turn is queued. It is offered only when nothing is
+already queued, so it never overtakes an earlier message, and `delivering` is held
+across the call so a second submit cannot slip past it.
+
+- **Claude, stream session:** the message is written to stdin as an ordinary
+  `user` frame. Claude reads stdin throughout a turn and folds what arrives into
+  it at the next boundary. Verified against Claude Code 2.1.322 with a turn
+  running `sleep 6` then `echo first`: a message sent at 3.5s was followed in the
+  same turn, with one `result`. The transcript records it as an `attachment`
+  record of type `queued_command` and no `user` record, which the conversation
+  parser turns into a user bubble. A turn with no tool call has no boundary to fold
+  it into, so Claude answers it as soon as that turn ends. A resumed process still
+  settling has no turn to join, so it declines and the message queues.
+- **Claude, PTY session:** declines. Its input belongs to the TUI, and the old
+  steer path (hook `additionalContext` on the next `UserPromptSubmit`) only ever
+  arrived with the next prompt, which is exactly what the queue already delivers.
+  That path has been removed.
+- **Codex:** `turn/steer` with `expectedTurnId` and the same input `turn/start`
+  takes: images as `localImage`, other files as paths in the text. The turn id comes
+  from `turn/started`, or `thread/read` before that notification lands; with neither
+  the steer is declined and the message queues.
+- **Grok and shell:** decline, so a mid-turn message queues as before.
+
+`scripts/smoke-chat-steer.ts` verifies both structured hosts against real agents: a
+mid-turn submit answers `sent`, nothing is queued, the message reaches the
+transcript and the agent acts on it.
 
 A turn in progress used to make the composer a dead end — `chat/send` refused
 the message and the note said to finish or stop the turn and try again — so a

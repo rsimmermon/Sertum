@@ -24,7 +24,7 @@ async function main() {
   const host = new CodexChatHost(server);
   const adapters = createAgentAdapters({
     codex: server,
-    claudeControl: { queueSteer() {}, queueInterrupt() {}, setToolGate() {} },
+    claudeControl: { queueInterrupt() {}, setToolGate() {} },
     claudeChat: { has: () => false, interrupt: async () => false } as unknown as ClaudeChatHost,
   });
   const adapter = adapters.get('codex')!;

@@ -29,6 +29,12 @@ export interface ChatQueueHost {
   session(id: string): SessionSnapshot | undefined;
   /** Puts one message in. Resolves null on success, otherwise why it did not go. */
   deliver(session: SessionSnapshot, text: string, attachments: ChatAttachment[]): Promise<string | null>;
+  /**
+   * Puts one message into the turn already running, the way the agent's own
+   * composer does when typed into mid-turn. False when this session cannot, or
+   * the turn ended first; the message is then queued for the next boundary.
+   */
+  steer(session: SessionSnapshot, text: string, attachments: ChatAttachment[]): Promise<boolean>;
   /** What every client should now show for this session's queue. */
   publish(id: string, queue: QueuedChatMessage[], stalled: string | null): void;
   /** Told once per message that went in, whichever client wrote it. */
@@ -54,8 +60,9 @@ interface SessionQueue {
  * Messages a session cannot take yet, held where every client can see them.
  *
  * This lives in the daemon because a queue in a window dies with that window and
- * cannot be seen from a phone. One message goes in per turn boundary, since
- * delivering starts a turn. Receivable comes from the truth plane, `turnActive`,
+ * cannot be seen from a phone. A message sent mid-turn is first offered to the
+ * running turn (`steer`); only one that cannot join it waits here. One message
+ * goes in per turn boundary, since delivering starts a turn. Receivable comes from the truth plane, `turnActive`,
  * never from output going quiet.
  */
 export class ChatQueue {
@@ -108,7 +115,12 @@ export class ChatQueue {
 
     const queue = this.queueFor(id);
     const message: QueuedChatMessage = { id: ++this.nextId, text, attachments };
-    if (this.blocked(queue) || session.turnActive || queue.entries.length) {
+    // Mid-turn, a message joins the running turn where the agent can take it
+    // there. Never past anything already queued, which would reorder them.
+    if (session.turnActive && !this.blocked(queue) && !queue.entries.length) {
+      if (await this.steerOne(id, queue, session, message)) return { outcome: 'sent' };
+    }
+    if (this.blocked(queue) || this.host.session(id)?.turnActive || queue.entries.length) {
       queue.entries.push(message);
       this.startOver(queue);
       this.publish(id, queue);
@@ -117,6 +129,28 @@ export class ChatQueue {
     }
     const failed = await this.deliverOne(id, queue, session, message);
     return failed ? { outcome: 'refused', reason: failed } : { outcome: 'sent' };
+  }
+
+  /**
+   * `delivering` is held for the call so a second submit, or the pump, cannot
+   * slip a message in ahead of this one.
+   */
+  private async steerOne(
+    id: string,
+    queue: SessionQueue,
+    session: SessionSnapshot,
+    message: QueuedChatMessage,
+  ): Promise<boolean> {
+    queue.delivering = true;
+    let taken = false;
+    try {
+      taken = await this.host.steer(session, message.text, message.attachments);
+    } catch {
+      taken = false;
+    }
+    queue.delivering = false;
+    if (taken) this.host.delivered(id, message, queue.entries.length);
+    return taken;
   }
 
   /** False when it is already going in, or gone. */

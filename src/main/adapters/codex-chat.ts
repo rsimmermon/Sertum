@@ -91,6 +91,9 @@ export class CodexChatHost extends EventEmitter {
 
   has(id: string): boolean { return this.sessions.has(id); }
 
+  /** The turn `turn/started` named and `turn/completed` has not yet ended. */
+  activeTurn(id: string): string | null { return this.sessions.get(id)?.turnId ?? null; }
+
   /** Agent-owned sub-sessions reported by Codex's thread lifecycle. */
   subSessions(id: string): SessionSubsessionInfo[] {
     const root = this.sessions.get(id);

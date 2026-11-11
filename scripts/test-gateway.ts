@@ -303,7 +303,7 @@ test('a signature cannot be replayed on a new connection or sent for another key
 test('every method not on the list is refused before the fabric', async () => {
   // Every fabric method a phone was decided against, plus the desktop's own.
   const refused = [
-    'settings/apply', 'session/diagnostics', 'session/rename', 'session/steer', 'session/tool-gate',
+    'settings/apply', 'session/diagnostics', 'session/rename', 'session/tool-gate',
     'pty/input', 'pty/resize', 'pty/replay', 'discovery/list', 'discovery/attach', 'discovery/monitor',
     'session/resumable', 'session/resume', 'agent/detect', 'adapters/status', 'codex/restart', 'codex/repair',
     'rules/get', 'rules/add', 'rules/remove', 'daemon/stop', 'daemon/ping', 'gateway/status',

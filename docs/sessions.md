@@ -58,7 +58,7 @@ newer checks named where they differ):
 - **Hooks ride along.** Command hooks fire in `--print` mode —
   UserPromptSubmit, PreToolUse, PostToolUse and Stop all verified arriving
   — so the same `--settings` blob is attached and permission rules, the
-  tool gate, steer and interrupt all work unchanged. Verified end to end: a
+  tool gate and interrupt all work unchanged. Verified end to end: a
   deny rule answered a stream session's `PreToolUse` and the tool result
   carried the rule's own reason.
 - **Permission questions ride the stream, not the hook.** See "A

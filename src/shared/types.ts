@@ -1407,8 +1407,6 @@ export interface SertumApi {
   listSessions(): Promise<SessionSnapshot[]>;
   sessionDiagnostics(id: string): Promise<SessionDiagnostics>;
   killSession(id: string): Promise<void>;
-  /** Add structured guidance to a turn without automating terminal input. */
-  steerSession(id: string, text: string): Promise<boolean>;
   /** Interrupt the active turn through its adapter, not with PTY bytes. */
   interruptTurn(id: string): Promise<boolean>;
   /** Enable or release the adapter's structured tool-execution gate. */

@@ -65,7 +65,6 @@ export class HookServer extends EventEmitter {
   private received = 0;
   /** Control replies waiting for the next attributable hook boundary. */
   private pendingInterrupts = new Set<string>();
-  private pendingSteers = new Map<string, string>();
   /** Sessions whose PreToolUse requests are denied until explicitly resumed. */
   private toolGates = new Set<string>();
   /**
@@ -239,11 +238,6 @@ export class HookServer extends EventEmitter {
     this.pendingInterrupts.add(sessionId);
   }
 
-  /** Add application context when this session next submits a user prompt. */
-  queueSteer(sessionId: string, text: string): void {
-    this.pendingSteers.set(sessionId, text);
-  }
-
   setToolGate(sessionId: string, paused: boolean): void {
     if (paused) this.toolGates.add(sessionId);
     else this.toolGates.delete(sessionId);
@@ -258,7 +252,6 @@ export class HookServer extends EventEmitter {
   /** Forget control words for a session that no longer exists. */
   clearControl(sessionId: string): void {
     this.pendingInterrupts.delete(sessionId);
-    this.pendingSteers.delete(sessionId);
     this.toolGates.delete(sessionId);
     this.hostAnswered.delete(sessionId);
     this.cancelApprovals(sessionId);
@@ -334,16 +327,7 @@ export class HookServer extends EventEmitter {
       return this.permissionRequestReply(sessionId, payload, onHold);
     }
 
-    if (event !== 'UserPromptSubmit') return null;
-    const steer = this.pendingSteers.get(sessionId);
-    if (!steer) return null;
-    this.pendingSteers.delete(sessionId);
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: steer,
-      },
-    };
+    return null;
   }
 
   /**
@@ -509,7 +493,6 @@ export class HookServer extends EventEmitter {
     });
     this.server = null;
     this.pendingInterrupts.clear();
-    this.pendingSteers.clear();
     this.toolGates.clear();
     this.hostAnswered.clear();
   }

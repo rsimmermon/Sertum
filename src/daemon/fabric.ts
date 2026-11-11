@@ -830,6 +830,7 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
   const chatQueue = new ChatQueue({
     session: (id) => ptys.get(id),
     deliver: deliverChatMessage,
+    steer: steerChatMessage,
     publish: (id, queue, stalled) => ptys.setMessageQueue(id, queue, stalled),
     delivered: (id, message, stillQueued) =>
       emit('chat:delivered', { id, message, stillQueued } satisfies ChatDeliveredEvent),
@@ -869,6 +870,21 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
     if (!ptys.write(id, body)) return 'The session’s terminal is gone.';
     await new Promise((resolve) => setTimeout(resolve, PTY_ENTER_DELAY_MS));
     return ptys.write(id, '\r') ? null : 'The session ended before Enter could be sent.';
+  }
+
+  /**
+   * Put one message into the turn already running, through the agent's
+   * declared `turn-steer`. False sends it to the queue for the next boundary,
+   * so an agent that declines -- or a turn that ended first -- loses nothing.
+   */
+  async function steerChatMessage(
+    session: SessionSnapshot,
+    text: string,
+    attachments: ChatAttachment[],
+  ): Promise<boolean> {
+    const adapter = agentAdapters.get(session.agent);
+    if (session.origin !== 'owned' || !adapter?.capabilities['turn-steer'].ok) return false;
+    return adapter.steerTurn(sessionRef(session.id, session), text.trim(), attachments);
   }
 
   // ------------------------------------------------------------- polling
@@ -1220,24 +1236,6 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         void adapter.renameRemote(sessionRef(p.id, session), stored);
       }
       return stored;
-    },
-    'session/steer': async (p: { id: string; text: string }) => {
-      const session = ptys.get(p.id);
-      const adapter = session && agentAdapters.get(session.agent);
-      const guidance = p.text.trim();
-      if (!session || !adapter?.capabilities['turn-steer'].ok || !guidance) {
-        return false;
-      }
-      const accepted = await adapter.steerTurn(
-        sessionRef(p.id, session),
-        guidance,
-      );
-      ptys.applyUpdate(p.id, {
-        activity: accepted
-          ? 'guidance accepted'
-          : 'could not steer — no active turn',
-      });
-      return accepted;
     },
     'session/interrupt-turn': async (id: string) => {
       const session = ptys.get(id);

@@ -107,8 +107,6 @@ const api: SertumApi = {
     return () => ipcRenderer.removeListener('session:reveal', handler);
   },
   killSession: (id: string) => ipcRenderer.invoke('session:kill', id),
-  steerSession: (id: string, text: string) =>
-    ipcRenderer.invoke('session:steer', { id, text }),
   interruptTurn: (id: string) =>
     ipcRenderer.invoke('session:interrupt-turn', id),
   setToolGate: (id: string, paused: boolean) =>

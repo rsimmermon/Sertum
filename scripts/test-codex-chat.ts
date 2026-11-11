@@ -138,7 +138,7 @@ async function main() {
   assert(!await host.send('b', 'late'));
 
   const adapters = createAgentAdapters({ codex: server as unknown as CodexAppServer,
-    claudeControl: { queueSteer() {}, queueInterrupt() {}, setToolGate() {} },
+    claudeControl: { queueInterrupt() {}, setToolGate() {} },
     claudeChat: { has: () => false, interrupt: async () => false } as unknown as ClaudeChatHost,
   });
   const caps = adapters.get('codex')!.capabilities;
