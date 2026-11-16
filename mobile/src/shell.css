@@ -24,6 +24,12 @@
 .phone-back { background: none; border: 0; color: var(--ink); font-size: 28px; line-height: 1; min-width: 40px; min-height: 40px; }
 
 .phone-list { flex: 1; min-height: 0; overflow-y: auto; }
+.phone-list-filter {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 6px 12px;
+  background: var(--surface-2); border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 13px;
+}
+.phone-list-filter-label { min-width: 0; }
+.phone-list-filter .btn { flex: none; min-height: 34px; }
 .phone-row {
   display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 10px 12px;
   background: none; border: 0; border-bottom: 1px solid var(--line-soft); color: inherit; text-align: left; font: inherit;

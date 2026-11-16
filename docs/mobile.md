@@ -138,11 +138,14 @@ when there is more than one, and remembers recent folders per PC.
   `ChatPane` runs unchanged. A file goes to the PC of the session on screen, and an
   image a message names goes to the PC whose session has that folder.
 - **Capabilities are per PC**, because two PCs can run different agent versions.
-- **A PC that is off still shows its sessions.** Each PC's list is saved at most
-  every 2s (`sertum.sessions.<pc id>`, 50 newest) and shown on start, marked PC
-  offline, until that PC answers and its own list replaces it. Verified on the
-  Fold6 by breaking the MacBook's port and reloading: its session came back offline,
-  and live again once the port was restored.
+- **A PC that is off keeps its sessions without crowding the actionable list.**
+  Each PC's list is saved at most every 2s (`sertum.sessions.<pc id>`, 50 newest)
+  and restored on start, but the main list defaults to sessions whose PC is
+  connected. When cached offline sessions exist, **Show offline** reveals them,
+  marked PC offline, until that PC answers and its own list replaces them. The
+  filter resets to connected sessions when the app starts. Reconnect attempts and
+  retry details stay on the PCs page rather than taking over the Sessions list;
+  an open conversation still reports when its own PC disconnects.
 - **A PC that is off is not hunted for.** After a failed attempt the next tries come
   10s, 30s and 1 min apart, then every 5 min. Nothing is tried while the app is in
   the background; coming back, Try again, or using one of that PC's sessions each

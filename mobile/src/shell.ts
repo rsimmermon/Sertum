@@ -131,6 +131,8 @@ export function startShell(host: HTMLElement, fleet: Fleet, api: SertumApi): voi
   const paneOrder: string[] = [];
   const stack: View[] = [{ kind: 'list' }];
   let shownChat: string | null = null;
+  /** The actionable default is sessions whose PC can answer right now. */
+  let showOfflineSessions = false;
 
   const root = el('div', 'phone-root');
   const banner = el('div', 'phone-banner');
@@ -219,14 +221,12 @@ export function startShell(host: HTMLElement, fleet: Fleet, api: SertumApi): voi
   }
 
   // --------------------------------------------------------------- the banner
-  /** Only PCs in trouble are named here, and in a chat, only that chat's PC. */
+  /** A list stays session-focused; an open chat names only its own PC trouble. */
   function drawBanner(): void {
     banner.replaceChildren();
     const view = top();
     const chatPc = view.kind === 'chat' ? fleet.ownerOf(view.id) : null;
-    const shown = view.kind === 'pcs' || view.kind === 'pair' || !fleet.list().length
-      ? []
-      : fleet.list().filter((m) => (!chatPc || m === chatPc) && describe(m.connection.state, m.pc.name));
+    const shown = chatPc && describe(chatPc.connection.state, chatPc.pc.name) ? [chatPc] : [];
     banner.hidden = !shown.length;
     banner.classList.toggle('is-trouble', shown.some((m) => m.connection.state.kind !== 'connecting'));
     for (const member of shown) {
@@ -545,13 +545,31 @@ export function startShell(host: HTMLElement, fleet: Fleet, api: SertumApi): voi
       button('PCs', 'btn ghost', () => go({ kind: 'pcs' })),
     );
     const list = el('div', 'phone-list');
-    const rows = [...sessions.values()].sort((a, b) =>
+    const allRows = [...sessions.values()].sort((a, b) =>
       STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.startedAt - a.startedAt);
+    const offlineCount = allRows.filter((session) =>
+      fleet.ownerOf(session.id)?.connection.state.kind !== 'connected').length;
+    if (offlineCount) {
+      const filter = el('div', 'phone-list-filter');
+      filter.append(
+        el('span', 'phone-list-filter-label', showOfflineSessions
+          ? 'Showing all sessions'
+          : `${offlineCount} offline ${offlineCount === 1 ? 'session' : 'sessions'} hidden`),
+        button(showOfflineSessions ? 'Hide offline' : 'Show offline', 'btn ghost', () => {
+          showOfflineSessions = !showOfflineSessions;
+          drawList();
+        }),
+      );
+      list.append(filter);
+    }
+    const rows = showOfflineSessions
+      ? allRows
+      : allRows.filter((session) => fleet.ownerOf(session.id)?.connection.state.kind === 'connected');
     for (const session of rows) list.append(sessionRow(session));
     if (!rows.length) {
       const anyConnected = fleet.list().some((m) => m.connection.state.kind === 'connected');
       list.append(el('div', 'phone-empty', anyConnected
-        ? 'No sessions. Start one with New.'
+        ? 'No sessions on a connected PC. Start one with New.'
         : 'Sessions appear here once a PC is connected.'));
     }
     page.append(head, list);
