@@ -1,9 +1,18 @@
 # Sertum for Android
 
-The phone client: always a client of a `sertumd` on a PC, never a host. Design and
-results are in [docs/mobile.md](../docs/mobile.md). To pair, turn on Settings > Phones
-on the PC and scan the code it shows. More PCs are added from the PCs page, and every
-PC's sessions are shown in one list, each marked with its PC.
+The Android companion is always a client of `sertumd` on a PC, never a host for
+agents or sessions. It can read conversations, send messages and files, answer
+approvals, and manage supported session controls. Terminals, desktop settings,
+diagnostics, and repairs stay on the PC.
+
+To pair, turn on **Settings > Phones** in the desktop app and scan the one-time
+code it shows. More PCs can be added from the phone's **PCs** page. Their live
+sessions share one list; sessions on connected PCs are shown by default, with
+cached offline sessions available through **Show offline**. Connection and retry
+details live on the **PCs** page.
+
+The security model, supported actions, architecture, and verification results
+are in [docs/mobile.md](../docs/mobile.md).
 
 ```
 scripts/make-icons.mjs   All Android art, generated from assets/icon-windows.svg

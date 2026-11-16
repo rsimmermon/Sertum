@@ -30,6 +30,8 @@ idle, or waiting for input.
 - Remap any menu shortcut, with collisions refused before they are saved.
 - Create isolated worktree sessions from the New Session dialog.
 - Discover supported agent sessions that were started outside Sertum.
+- Use the Android companion on your local network to follow sessions, send
+  messages and files, and answer approval requests away from the PC.
 
 ## Requirements
 
@@ -92,6 +94,31 @@ sessions. Claude can also use its own background host when you enable **Use
 Claude’s background host** for new sessions; that is a Claude-specific hosting
 option, not what makes ordinary Sertum sessions survive a window close.
 
+## Use the Android companion
+
+The Android app in [`mobile/`](mobile/) is a secure client for the Sertum
+session broker running on your PC; it does not run coding agents itself. It can
+connect to more than one PC and presents their live sessions in one list,
+showing sessions on connected PCs by default with an option to reveal cached
+offline sessions.
+
+From the phone you can read conversations, send messages and attachments,
+start or end sessions, answer approval requests, and change supported session
+modes, models, and thinking levels. PC settings, diagnostics, and terminal
+access remain on the desktop.
+
+To connect it:
+
+1. Build and install the Android app by following
+   [`mobile/README.md`](mobile/README.md).
+2. In the desktop app, open **Settings > Phones** and turn on phone access.
+3. Show the one-time pairing code and scan it with the phone.
+
+The phone and PC must be able to reach each other on the local network. Phone
+access is opt-in and can be revoked per device from **Settings > Phones**. See
+[`docs/mobile.md`](docs/mobile.md) for the security model, supported actions,
+and verified platforms.
+
 ## Useful commands
 
 ```sh
@@ -110,7 +137,8 @@ error.
 Working: conversation views and event-driven status for Claude Code, Codex,
 and Grok; a PTY-free structured conversation transport for Claude; persistent
 broker-owned sessions with PTY replay where applicable; a
-tray companion; external-session discovery; binary configuration; worktree
+tray companion; an Android companion over the local network;
+external-session discovery; binary configuration; worktree
 management; split-pane layouts; diff review with commit and pull request;
 permission rules and in-app tool approval; system notifications; and
 settings. Shell sessions remain embedded terminals.
