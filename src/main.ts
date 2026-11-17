@@ -754,6 +754,7 @@ ipcMain.handle(
 ipcMain.handle('chat:queue-remove', (_e, p: { id: string; messageId: number }) =>
   daemon.request('chat/queue-remove', p),
 );
+ipcMain.handle('mcp:refresh', (_e, id: string) => daemon.request('mcp/refresh', id));
 ipcMain.handle('conversation:read', (_e, id: string, request?: ConversationReadRequest) =>
   daemon.request('conversation/read', { ...request, id }),
 );

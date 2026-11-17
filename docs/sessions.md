@@ -81,6 +81,18 @@ plan mode, Claude's own diff and todo rendering. This is now the deliberate
 Claude default; adapters without a verified structured transport retain their
 PTY instead of being forced through a fictional chat protocol.
 
+`/mcp` is handled at the composer for owned stream sessions. Claude's control
+channel provides `mcp_status` and `mcp_reconnect { serverName }`; Sertum first
+lists the servers visible to that process, reconnects each enabled server, then
+reads status again. The installed Claude Code 2.1.325 answered `mcp_status`
+before a first turn with a `mcpServers` array. Codex CLI 0.167.0's generated
+app-server schema provides `config/mcpServer/reload` and
+`mcpServerStatus/list { threadId }`, so Sertum reloads then reports status for
+the owning thread. `/mcp` is not sent as a user turn, and neither agent's
+transcript is parsed for connection state. A server needing authentication or
+project approval can still report that state; reconnect does not grant it.
+The session working directory remains the source of project configuration.
+
 ## Owned Codex conversations
 
 `main/adapters/codex-chat.ts` owns `thread/start` and `turn/start` on the

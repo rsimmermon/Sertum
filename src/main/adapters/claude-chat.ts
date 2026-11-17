@@ -10,6 +10,7 @@ import type {
   PermissionModeResult,
   SessionStatus,
   ChatAttachment,
+  McpRefreshResult,
 } from '../../shared/types';
 import { promptWithAttachments } from '../../shared/chat-attachments';
 import { readChatImage } from '../chat-attachments';
@@ -594,6 +595,33 @@ export class ClaudeChatHost extends EventEmitter {
   async interrupt(id: string): Promise<boolean> {
     const reply = await this.request(id, { subtype: 'interrupt' });
     return reply.ok;
+  }
+
+  /** Reconnect the MCP servers visible to this Claude process, then read back their state. */
+  async refreshMcpServers(id: string): Promise<McpRefreshResult> {
+    const listed = await this.request(id, { subtype: 'mcp_status' });
+    if (!listed.ok) return { ok: false, message: listed.reason };
+    const servers = Array.isArray(listed.response.mcpServers)
+      ? listed.response.mcpServers as Array<Record<string, unknown>> : [];
+    if (!servers.length) {
+      return { ok: false, message: 'No MCP servers are configured for this Claude session’s folder.' };
+    }
+    const failures: string[] = [];
+    for (const server of servers) {
+      if (typeof server.name !== 'string' || server.status === 'disabled' || server.status === 'pending') continue;
+      const result = await this.request(id, { subtype: 'mcp_reconnect', serverName: server.name });
+      if (!result.ok) failures.push(`${server.name}: ${result.reason}`);
+    }
+    const refreshed = await this.request(id, { subtype: 'mcp_status' });
+    if (!refreshed.ok) return { ok: false, message: refreshed.reason };
+    const current = Array.isArray(refreshed.response.mcpServers)
+      ? refreshed.response.mcpServers as Array<Record<string, unknown>> : [];
+    const states = current.filter((server) => typeof server.name === 'string')
+      .map((server) => `${server.name}: ${typeof server.status === 'string' ? server.status : 'unknown'}${typeof server.error === 'string' ? ` (${server.error})` : ''}`);
+    return {
+      ok: failures.length === 0 && current.every((server) => server.status === 'connected' || server.status === 'disabled'),
+      message: [...states, ...failures].join('\n') || 'Claude did not report any MCP server states.',
+    };
   }
 
   /**

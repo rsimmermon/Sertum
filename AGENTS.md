@@ -574,6 +574,14 @@ a transport.
 What a stream session gives up is what the TUI carried: slash commands, plan
 mode, Claude's own diff and todo rendering.
 
+`/mcp` is the one stream command Sertum handles itself: in an owned Claude
+session it reconnects the servers that process configured, and in an owned
+Codex session it asks the app server to reload MCP configuration. The composer
+shows the connection states returned by the agent. This never imports MCP
+settings from a different working folder; the session's `cwd` still determines
+which project configuration the agent reads. PTY-backed sessions keep their
+agent's native `/mcp` command.
+
 The stream contract, Codex's owned-thread and approval rules, both resume
 mechanisms, and the two mechanisms tried and verified wrong before the
 settle timer: [docs/sessions.md](docs/sessions.md).

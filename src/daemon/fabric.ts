@@ -1285,6 +1285,18 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         p.text.replace(/\s+$/, ''),
         validateChatAttachments(Array.isArray(p.attachments) ? p.attachments : []),
       ),
+    'mcp/refresh': (id: string) => {
+      const session = ptys.get(id);
+      if (!session || session.exitCode !== null || session.origin === 'monitored') {
+        return { ok: false, message: 'This session is not running here.' };
+      }
+      if (session.transport !== 'stream') {
+        return { ok: false, message: 'This session uses an agent terminal; enter /mcp there.' };
+      }
+      if (session.agent === 'claude') return claudeChat.refreshMcpServers(id);
+      if (session.agent === 'codex') return codexChat.refreshMcpServers(id);
+      return { ok: false, message: `${session.agent} does not offer structured MCP reconnect.` };
+    },
     'chat/queue-remove': (p: { id: string; messageId: number }) =>
       chatQueue.remove(p.id, p.messageId),
     'upload/begin': (p: { name: string; size: number }) => uploads.begin(p),

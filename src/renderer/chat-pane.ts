@@ -1017,6 +1017,20 @@ export class ChatPane {
     const text = this.input.value.replace(/\s+$/, '');
     const attachments = [...this.attachments];
     if ((!text && !attachments.length) || this.input.disabled || this.submitting) return;
+    if (text === '/mcp' && !attachments.length && hasStructuredTransport(this.session)) {
+      this.submitting = true;
+      this.say('Reconnecting MCP servers…');
+      try {
+        const result = await api.refreshMcpServers(this.session.id);
+        this.say(result.message, result.ok ? NOTE_FADE_MS : null);
+        if (result.ok && this.input.value.replace(/\s+$/, '') === text) this.input.value = '';
+      } catch (error) {
+        this.say(`Could not reconnect MCP servers: ${String(error)}`);
+      } finally {
+        this.submitting = false;
+      }
+      return;
+    }
     this.submitting = true;
     let result: ChatSubmitResult;
     try {

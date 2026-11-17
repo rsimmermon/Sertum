@@ -1344,6 +1344,12 @@ export type ChatSubmitResult =
   | { outcome: 'queued'; position: number }
   | { outcome: 'refused'; reason: string };
 
+/** Result of asking a structured agent to reconnect its configured MCP servers. */
+export interface McpRefreshResult {
+  ok: boolean;
+  message: string;
+}
+
 /** A message went into its session, whichever client wrote it. */
 export interface ChatDeliveredEvent {
   id: string;
@@ -1607,6 +1613,7 @@ export interface SertumApi {
     text: string,
     attachments?: ChatAttachment[],
   ): Promise<ChatSubmitResult>;
+  refreshMcpServers(id: string): Promise<McpRefreshResult>;
   /** False when the message is already going in, or gone. */
   removeQueuedMessage(id: string, messageId: number): Promise<boolean>;
   onChatDelivered(cb: (e: ChatDeliveredEvent) => void): () => void;

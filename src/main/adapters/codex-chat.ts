@@ -9,6 +9,7 @@ import type {
   ChatAttachment,
   EffortChangeResult,
   ModelChangeResult,
+  McpRefreshResult,
   PendingApproval,
   PermissionMode,
   PermissionModeResult,
@@ -225,6 +226,38 @@ export class CodexChatHost extends EventEmitter {
         this.emit('update', { id, status: 'attention', activity: String(error) });
       }
       return false;
+    }
+  }
+
+  /** Reload Codex's MCP config, then inspect the connection state for this thread. */
+  async refreshMcpServers(id: string): Promise<McpRefreshResult> {
+    const session = this.sessions.get(id);
+    if (!session || session.closing) return { ok: false, message: 'That session is gone.' };
+    try {
+      await this.server.request('config/mcpServer/reload', {});
+      const states: string[] = [];
+      let allConnected = true;
+      let cursor: string | null = null;
+      do {
+        const result = object(await this.server.request('mcpServerStatus/list', {
+          threadId: session.threadId, ...(cursor ? { cursor } : {}),
+        }));
+        const rows = Array.isArray(result.data) ? result.data : [];
+        for (const row of rows) {
+          const server = object(row);
+          const name = string(server.name);
+          if (!name) continue;
+          const status = string(server.runtimeStatus) || 'not started';
+          states.push(`${name}: ${status}`);
+          if (status !== 'connected' && status !== 'disabled') allConnected = false;
+        }
+        cursor = string(result.nextCursor) || null;
+      } while (cursor);
+      return states.length
+        ? { ok: allConnected, message: states.join('\n') }
+        : { ok: false, message: 'No MCP servers are configured for this Codex session’s folder.' };
+    } catch (error) {
+      return { ok: false, message: `Could not reload MCP servers: ${String(error)}` };
     }
   }
 
