@@ -323,13 +323,56 @@ async function quitCompletely(): Promise<void> {
     noLink: true,
   });
   if (result.response !== 0) return;
-  shuttingDown = true;
+  let daemonPid: number | null = null;
   try {
+    daemonPid = (await daemon.request<{ pid: number }>('daemon/ping')).pid;
     await daemon.request('daemon/stop');
   } catch {
     // A clean daemon shutdown can close the socket immediately after its ack.
   }
+  // Disconnect before waiting: a client still reconnecting would answer the
+  // daemon's exit by spawning a fresh one, 1.5s into the wait below.
+  shutdown();
+  if (daemonPid) await waitForDaemonExit(daemonPid);
   app.quit();
+}
+
+/**
+ * Resolves once the daemon and the process group it leads are gone, or the
+ * deadline passes.
+ *
+ * The daemon acknowledges `daemon/stop` and then takes a few hundred
+ * milliseconds to leave -- gateway, sessions, QUIT_DRAIN_MS. Quitting on the
+ * ack meant the app died first, and macOS answers an app that dies with
+ * processes of its own still alive by marking its Dock tile "running in
+ * background". The mark is not withdrawn when those processes exit a moment
+ * later, so a complete quit left a tile only "Stop Running in Background"
+ * would clear. Verified in the unified log: app death, `Tile started running
+ * in background` 11ms later, daemon exit 185ms after that.
+ *
+ * The daemon is spawned detached and so leads a process group; signalling
+ * the negative pid with 0 asks whether anything in it -- the daemon, the
+ * codex app server, a stream host -- still exists.
+ */
+const DAEMON_EXIT_WAIT_MS = 5000;
+async function waitForDaemonExit(pid: number): Promise<void> {
+  const alive = (target: number): boolean => {
+    try {
+      process.kill(target, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  };
+  const deadline = Date.now() + DAEMON_EXIT_WAIT_MS;
+  while (Date.now() < deadline) {
+    const lingering = process.platform === 'win32'
+      ? alive(pid)
+      : alive(pid) || alive(-pid);
+    if (!lingering) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  console.error('[sertum] sertumd still running after stop; quitting anyway');
 }
 
 function refreshTray(force = false): void {

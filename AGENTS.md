@@ -693,7 +693,11 @@ window is a detach: the Electron tray process stays connected and the daemon
 keeps every session alive. The quit-drain dance (`QUIT_DRAIN_MS`) and the
 node-pty teardown crash it dodged live in the daemon, the process that owns
 the PTYs. “Quit Sertum completely…” in the tray and application menus first
-requests `daemon/stop`, then exits the tray process. “Shut down agent
+requests `daemon/stop`, waits for the daemon's process group to be gone, then
+exits the tray process. The wait is load-bearing on macOS: an app that dies
+with processes of its own still alive has its Dock tile marked "running in
+background", and the mark is not withdrawn when they exit a moment later.
+“Shut down agent
 daemon…” in the command palette remains useful while the window is open: it
 kills the daemon-owned sessions and reconnects to a fresh empty daemon.
 Claude `--bg` sessions created by Sertum are explicitly stopped through
