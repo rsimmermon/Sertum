@@ -9,7 +9,11 @@ import type {
   ChatAttachment,
   EffortChangeResult,
   ModelChangeResult,
-  McpRefreshResult,
+  McpConfigScope,
+  McpServerAction,
+  McpServerActionResult,
+  McpServerList,
+  McpServerView,
   PendingApproval,
   PermissionMode,
   PermissionModeResult,
@@ -229,35 +233,83 @@ export class CodexChatHost extends EventEmitter {
     }
   }
 
-  /** Reload Codex's MCP config, then inspect the connection state for this thread. */
-  async refreshMcpServers(id: string): Promise<McpRefreshResult> {
+  /** Inventory and details from this thread's effective MCP runtime and config layers. */
+  async listMcpServers(id: string): Promise<McpServerList> {
     const session = this.sessions.get(id);
-    if (!session || session.closing) return { ok: false, message: 'That session is gone.' };
+    if (!session || session.closing) return { ok: false, reason: 'That session is gone.', servers: [] };
     try {
-      await this.server.request('config/mcpServer/reload', {});
-      const states: string[] = [];
-      let allConnected = true;
+      const config = object(await this.server.request('config/read', {
+        cwd: session.cwd,
+        includeLayers: true,
+      }));
+      const scopes = codexMcpScopes(config.layers);
+      const servers: McpServerView[] = [];
       let cursor: string | null = null;
       do {
         const result = object(await this.server.request('mcpServerStatus/list', {
-          threadId: session.threadId, ...(cursor ? { cursor } : {}),
+          threadId: session.threadId,
+          detail: 'full',
+          ...(cursor ? { cursor } : {}),
         }));
         const rows = Array.isArray(result.data) ? result.data : [];
         for (const row of rows) {
-          const server = object(row);
-          const name = string(server.name);
-          if (!name) continue;
-          const status = string(server.runtimeStatus) || 'not started';
-          states.push(`${name}: ${status}`);
-          if (status !== 'connected' && status !== 'disabled') allConnected = false;
+          const server = codexMcpServer(row, scopes);
+          if (server) servers.push(server);
         }
         cursor = string(result.nextCursor) || null;
       } while (cursor);
-      return states.length
-        ? { ok: allConnected, message: states.join('\n') }
-        : { ok: false, message: 'No MCP servers are configured for this Codex session’s folder.' };
+      return { ok: true, servers };
     } catch (error) {
-      return { ok: false, message: `Could not reload MCP servers: ${String(error)}` };
+      return { ok: false, reason: `Could not read MCP servers: ${String(error)}`, servers: [] };
+    }
+  }
+
+  /** One explicit operation. Opening the manager and refreshing it are read-only. */
+  async manageMcpServer(
+    id: string,
+    name: string,
+    action: McpServerAction,
+  ): Promise<McpServerActionResult> {
+    const session = this.sessions.get(id);
+    if (!session || session.closing) return { ok: false, message: 'That session is gone.' };
+    const listed = await this.listMcpServers(id);
+    const server = listed.ok ? listed.servers.find((row) => row.name === name) : null;
+    if (!server) {
+      return { ok: false, message: `Codex did not list an MCP server named ${name}.` };
+    }
+    if (action === 'reconnect' && !server.actions.reconnect) {
+      return { ok: false, message: `${name} cannot be reconnected in its current state.` };
+    }
+    if ((action === 'authenticate' || action === 'reauthenticate') && !server.actions.authenticate) {
+      return { ok: false, message: `${name} does not expose OAuth authentication through Codex.` };
+    }
+    if ((action === 'clear-authentication' || action === 'reauthenticate') && !server.actions.clearAuthentication) {
+      return { ok: false, message: `${name} does not expose credentials Codex can clear.` };
+    }
+    try {
+      if (action === 'clear-authentication' || action === 'reauthenticate') {
+        const cleared = await this.server.clearMcpAuthentication(session.cwd, name);
+        if (!cleared.ok || action === 'clear-authentication') {
+          if (cleared.ok) await this.server.request('config/mcpServer/reload', {});
+          return cleared;
+        }
+      }
+      if (action === 'authenticate' || action === 'reauthenticate') {
+        const response = object(await this.server.request('mcpServer/oauth/login', {
+          name,
+          threadId: session.threadId,
+        }));
+        const authorizationUrl = httpUrl(response.authorizationUrl);
+        return authorizationUrl
+          ? { ok: true, message: `Continue authentication for ${name} in the browser.`, authorizationUrl }
+          : { ok: false, message: 'Codex did not return an OAuth authorization URL.' };
+      }
+      // Codex 0.169 has no per-server reconnect request. Reloading effective
+      // MCP configuration is its declared reconnect boundary.
+      await this.server.request('config/mcpServer/reload', {});
+      return { ok: true, message: `Reloaded MCP configuration for ${name}.` };
+    } catch (error) {
+      return { ok: false, message: `Could not ${mcpActionVerb(action)} ${name}: ${String(error)}` };
     }
   }
 
@@ -687,6 +739,113 @@ export class CodexChatHost extends EventEmitter {
     }
     this.asks.set(request.id, { session: s, wire, request, decisions });
     this.emit('approval', request);
+  }
+}
+
+function httpUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function codexLayerScope(value: unknown): McpConfigScope {
+  const source = object(value);
+  const type = string(source.type);
+  const file = string(source.file);
+  switch (type) {
+    case 'project':
+      return {
+        kind: 'project',
+        label: 'Project',
+        ...(string(source.dotCodexFolder) ? { detail: string(source.dotCodexFolder) } : {}),
+      };
+    case 'user':
+      return {
+        kind: 'user',
+        label: 'User (global)',
+        ...(file ? { detail: file } : {}),
+      };
+    case 'system':
+      return {
+        kind: 'global',
+        label: 'System',
+        ...(file ? { detail: file } : {}),
+      };
+    case 'mdm':
+    case 'enterpriseManaged':
+    case 'legacyManagedConfigTomlFromFile':
+    case 'legacyManagedConfigTomlFromMdm':
+      return { kind: 'managed', label: 'Managed', detail: 'Provided by organization policy' };
+    case 'packagedDefaults':
+      return { kind: 'global', label: 'Built in', ...(file ? { detail: file } : {}) };
+    case 'sessionFlags':
+      return { kind: 'unknown', label: 'Session' };
+    default:
+      return { kind: 'unknown', label: 'Unknown scope' };
+  }
+}
+
+/** Resolve each effective MCP declaration to the config layer that supplied it. */
+function codexMcpScopes(value: unknown): Map<string, McpConfigScope> {
+  const scopes = new Map<string, McpConfigScope>();
+  if (!Array.isArray(value)) return scopes;
+  for (const entry of value) {
+    const layer = object(entry);
+    const config = object(layer.config);
+    const definitions = object(config.mcp_servers ?? config.mcpServers);
+    const scope = codexLayerScope(layer.name);
+    for (const name of Object.keys(definitions)) scopes.set(name, scope);
+  }
+  return scopes;
+}
+
+function codexMcpServer(value: unknown, scopes: Map<string, McpConfigScope>): McpServerView | null {
+  const row = object(value);
+  const name = string(row.name);
+  if (!name) return null;
+  const info = object(row.serverInfo);
+  const status = string(row.runtimeStatus) || 'not started';
+  const authStatus = string(row.authStatus) || 'unknown';
+  const pluginId = string(row.pluginId);
+  const tools = object(row.tools);
+  const endpoint = httpUrl(row.httpOrigin);
+  return {
+    name,
+    title: string(info.title) || null,
+    description: string(info.description) || null,
+    version: string(info.version) || null,
+    websiteUrl: httpUrl(info.websiteUrl) ?? null,
+    status,
+    error: string(row.toolsError) || null,
+    authStatus,
+    scope: pluginId
+      ? { kind: 'plugin', label: 'Plugin', detail: pluginId }
+      : (scopes.get(name) ?? { kind: 'unknown', label: 'Unknown scope' }),
+    transport: endpoint ? 'HTTP' : null,
+    endpoint: endpoint ? new URL(endpoint).origin : null,
+    tools: Object.keys(tools),
+    resourceCount:
+      (Array.isArray(row.resources) ? row.resources.length : 0)
+      + (Array.isArray(row.resourceTemplates) ? row.resourceTemplates.length : 0),
+    capabilities: Object.keys(object(row.serverCapabilities)),
+    actions: {
+      reconnect: status !== 'disabled',
+      authenticate: authStatus !== 'unsupported' && (Boolean(endpoint) || status === 'authenticationRequired'),
+      clearAuthentication: authStatus === 'oAuth' || authStatus === 'notLoggedIn',
+    },
+  };
+}
+
+function mcpActionVerb(action: McpServerAction): string {
+  switch (action) {
+    case 'reconnect': return 'reload';
+    case 'authenticate': return 'authenticate';
+    case 'reauthenticate': return 'reauthenticate';
+    case 'clear-authentication': return 'clear authentication for';
   }
 }
 

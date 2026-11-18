@@ -104,6 +104,9 @@ export function makeBridge(fleet: Fleet): {
     },
     submitChatMessage: (id, text, attachments) => forSession(id, 'chat/submit', { id, text, attachments }),
     removeQueuedMessage: (id, messageId) => forSession(id, 'chat/queue-remove', { id, messageId }),
+    listMcpServers: (id) => forSession(id, 'mcp/list', id),
+    manageMcpServer: (id, name, action) =>
+      forSession(id, 'mcp/action', { id, name, action }),
     pendingApprovals: () => gather<PendingApproval>('approval/pending'),
     answerApproval: async (request, answer) => {
       await forSession(request.sessionId, 'approval/answer', { ...request, answer });
@@ -120,9 +123,13 @@ export function makeBridge(fleet: Fleet): {
       const { text } = await device.readClipboard();
       return text ? { kind: 'text', text } : { kind: 'empty' };
     },
-    openExternal: (url) => {
-      window.open(url, '_blank');
-      return Promise.resolve(true);
+    openExternal: async (url) => {
+      try {
+        await device.openUrl({ url });
+        return true;
+      } catch {
+        return false;
+      }
     },
     onSessionUpdated: on('session:updated') as SertumApi['onSessionUpdated'],
     onSessionRemoved: on('session:removed') as SertumApi['onSessionRemoved'],

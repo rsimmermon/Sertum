@@ -149,7 +149,9 @@ const api: SertumApi = {
   onGatewayChanged: (cb) => on<GatewayStatus>('gateway:changed', cb),
   submitChatMessage: (id: string, text: string, attachments: ChatAttachment[] = []) =>
     ipcRenderer.invoke('chat:submit', { id, text, attachments }),
-  refreshMcpServers: (id: string) => ipcRenderer.invoke('mcp:refresh', id),
+  listMcpServers: (id: string) => ipcRenderer.invoke('mcp:list', id),
+  manageMcpServer: (id, name, action) =>
+    ipcRenderer.invoke('mcp:action', { id, name, action }),
   removeQueuedMessage: (id: string, messageId: number) =>
     ipcRenderer.invoke('chat:queue-remove', { id, messageId }),
   onChatDelivered: (cb) => on<ChatDeliveredEvent>('chat:delivered', cb),

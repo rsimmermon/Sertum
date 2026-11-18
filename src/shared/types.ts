@@ -118,6 +118,12 @@ export type AgentCapability =
    */
   | 'session-resume'
   /**
+   * List and manage the MCP servers visible to this session. The inventory,
+   * connection state and actions come from the agent's structured control
+   * surface, so PTY-backed sessions retain their native `/mcp` UI.
+   */
+  | 'mcp-management'
+  /**
    * List the models this session could run, and switch it to one of them
    * without restarting it.
    *
@@ -1344,10 +1350,56 @@ export type ChatSubmitResult =
   | { outcome: 'queued'; position: number }
   | { outcome: 'refused'; reason: string };
 
-/** Result of asking a structured agent to reconnect its configured MCP servers. */
-export interface McpRefreshResult {
+/** Where the effective MCP server declaration visible to this session came from. */
+export interface McpConfigScope {
+  kind: 'project' | 'user' | 'global' | 'managed' | 'plugin' | 'unknown';
+  /** Short copy for the badge: Project, User (global), System, … */
+  label: string;
+  /** A safe path or explanation. Never includes configuration values or credentials. */
+  detail?: string;
+}
+
+/** One agent-neutral view of an MCP server configured for a live session. */
+export interface McpServerView {
+  name: string;
+  title: string | null;
+  description: string | null;
+  version: string | null;
+  websiteUrl: string | null;
+  status: string;
+  error: string | null;
+  authStatus: string;
+  scope: McpConfigScope;
+  /** stdio, HTTP, SSE, Claude connector, or the best safe description available. */
+  transport: string | null;
+  /** HTTP origin only. Commands, arguments, query strings and environment stay private. */
+  endpoint: string | null;
+  tools: string[];
+  resourceCount: number;
+  capabilities: string[];
+  actions: {
+    reconnect: boolean;
+    authenticate: boolean;
+    clearAuthentication: boolean;
+  };
+}
+
+/** MCP inventory as seen by one running agent session, never by global guessing. */
+export type McpServerList =
+  | { ok: true; servers: McpServerView[] }
+  | { ok: false; reason: string; servers: [] };
+
+export type McpServerAction =
+  | 'reconnect'
+  | 'authenticate'
+  | 'reauthenticate'
+  | 'clear-authentication';
+
+export interface McpServerActionResult {
   ok: boolean;
   message: string;
+  /** OAuth URL returned by the agent. The renderer opens only http(s). */
+  authorizationUrl?: string;
 }
 
 /** A message went into its session, whichever client wrote it. */
@@ -1613,7 +1665,12 @@ export interface SertumApi {
     text: string,
     attachments?: ChatAttachment[],
   ): Promise<ChatSubmitResult>;
-  refreshMcpServers(id: string): Promise<McpRefreshResult>;
+  listMcpServers(id: string): Promise<McpServerList>;
+  manageMcpServer(
+    id: string,
+    name: string,
+    action: McpServerAction,
+  ): Promise<McpServerActionResult>;
   /** False when the message is already going in, or gone. */
   removeQueuedMessage(id: string, messageId: number): Promise<boolean>;
   onChatDelivered(cb: (e: ChatDeliveredEvent) => void): () => void;

@@ -328,6 +328,28 @@ test('an allowed method reaches the fabric, and its error comes back', async () 
   assert.equal(failed.error, 'boom from fabric');
 });
 
+test('a phone may manage MCP only through the bounded session API', async () => {
+  const listed = await live.request('mcp/list', 'session-1');
+  assert.equal(listed.ok, true);
+  assert.deepEqual(calls.at(-1), { method: 'mcp/list', params: 'session-1' });
+
+  const acted = await live.request('mcp/action', {
+    id: 'session-1', name: 'docs', action: 'reauthenticate', extra: 'discard me',
+  });
+  assert.equal(acted.ok, true);
+  assert.deepEqual(calls.at(-1), {
+    method: 'mcp/action',
+    params: { id: 'session-1', name: 'docs', action: 'reauthenticate' },
+  });
+
+  const before = calls.length;
+  const invalid = await live.request('mcp/action', {
+    id: 'session-1', name: 'docs', action: 'delete-config',
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(calls.length, before, 'an unknown MCP action must not reach the fabric');
+});
+
 test('starting a session can name an agent, a folder and a label, and nothing else', async () => {
   const answer = await live.request('session/create', {
     agent: 'claude', cwd: dir, label: '  mine  ', command: 'calc.exe', args: ['/evil'], transport: 'pty',

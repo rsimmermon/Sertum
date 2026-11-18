@@ -28,6 +28,8 @@ export const GATEWAY_METHODS: ReadonlySet<string> = new Set([
   'image/read-local',
   'chat/submit',
   'chat/queue-remove',
+  'mcp/list',
+  'mcp/action',
   'upload/begin',
   'upload/chunk',
   'upload/finish',
@@ -49,6 +51,12 @@ export const GATEWAY_EVENTS: ReadonlySet<string> = new Set([
 /** The agents a phone can start. A shell is a terminal, which a phone cannot use. */
 const STARTABLE_AGENTS: ReadonlySet<string> = new Set(['claude', 'codex', 'grok']);
 const MAX_LABEL = 120;
+const MCP_ACTIONS = new Set([
+  'reconnect',
+  'authenticate',
+  'reauthenticate',
+  'clear-authentication',
+]);
 /** Enough for any message the composer takes, with room for its attachments. */
 export const MAX_SUBMITTED_ATTACHMENTS = 32;
 
@@ -119,6 +127,18 @@ function ownUpload(params: unknown, files: DeviceFiles): unknown {
   return p;
 }
 
+/** A paired phone may act only on a named server through the bounded MCP API. */
+function mcpAction(params: unknown): { id: string; name: string; action: string } {
+  const p = asRecord(params);
+  if (typeof p.id !== 'string' || typeof p.name !== 'string' || !p.name.trim()) {
+    throw new Error('That MCP server action is not shaped correctly.');
+  }
+  if (typeof p.action !== 'string' || !MCP_ACTIONS.has(p.action)) {
+    throw new Error('That MCP server action is not available.');
+  }
+  return { id: p.id, name: p.name.slice(0, 200), action: p.action };
+}
+
 /**
  * The params to hand the fabric, or a refusal. Throwing is the only way past
  * this that does not reach the fabric.
@@ -130,6 +150,8 @@ export function admit(method: string, params: unknown, files: DeviceFiles): unkn
       return startSpec(params);
     case 'chat/submit':
       return submission(params, files);
+    case 'mcp/action':
+      return mcpAction(params);
     case 'upload/chunk':
     case 'upload/finish':
     case 'upload/abort':

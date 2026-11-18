@@ -96,6 +96,7 @@ import {
   type ManagedAgent,
   type EffortChangeResult,
   type ModelChangeResult,
+  type McpServerAction,
   type PendingApproval,
   type PermissionMode,
   type PermissionModeResult,
@@ -114,6 +115,13 @@ const PTY_ENTER_DELAY_MS = 150;
 
 /** How often live transcripts are checked for clients waiting on a change. */
 const CONVERSATION_WATCH_MS = 500;
+
+const MCP_SERVER_ACTIONS: ReadonlySet<McpServerAction> = new Set([
+  'reconnect',
+  'authenticate',
+  'reauthenticate',
+  'clear-authentication',
+]);
 
 /** What the session's activity line reads once a held call is answered. */
 const ANSWERED_ACTIVITY: Record<
@@ -1285,17 +1293,41 @@ export function createFabric(opts: { userDataDir: string }): Fabric {
         p.text.replace(/\s+$/, ''),
         validateChatAttachments(Array.isArray(p.attachments) ? p.attachments : []),
       ),
-    'mcp/refresh': (id: string) => {
+    'mcp/list': (id: string) => {
       const session = ptys.get(id);
+      if (!session || session.exitCode !== null || session.origin === 'monitored') {
+        return { ok: false, reason: 'This session is not running here.', servers: [] };
+      }
+      const available = sessionCapability(
+        session,
+        agentAdapters.get(session.agent)?.capabilities,
+        'mcp-management',
+      );
+      if (!available.ok) return { ok: false, reason: available.reason, servers: [] };
+      if (session.agent === 'claude') return claudeChat.listMcpServers(id);
+      if (session.agent === 'codex') return codexChat.listMcpServers(id);
+      return { ok: false, reason: `${session.agent} does not expose structured MCP management.`, servers: [] };
+    },
+    'mcp/action': (p: { id: string; name: string; action: McpServerAction }) => {
+      if (!p || typeof p.id !== 'string' || typeof p.name !== 'string' || !p.name.trim()) {
+        return { ok: false, message: 'That MCP server action is not shaped correctly.' };
+      }
+      if (!MCP_SERVER_ACTIONS.has(p.action)) {
+        return { ok: false, message: 'That MCP server action is not available.' };
+      }
+      const session = ptys.get(p.id);
       if (!session || session.exitCode !== null || session.origin === 'monitored') {
         return { ok: false, message: 'This session is not running here.' };
       }
-      if (session.transport !== 'stream') {
-        return { ok: false, message: 'This session uses an agent terminal; enter /mcp there.' };
-      }
-      if (session.agent === 'claude') return claudeChat.refreshMcpServers(id);
-      if (session.agent === 'codex') return codexChat.refreshMcpServers(id);
-      return { ok: false, message: `${session.agent} does not offer structured MCP reconnect.` };
+      const available = sessionCapability(
+        session,
+        agentAdapters.get(session.agent)?.capabilities,
+        'mcp-management',
+      );
+      if (!available.ok) return { ok: false, message: available.reason };
+      if (session.agent === 'claude') return claudeChat.manageMcpServer(p.id, p.name, p.action);
+      if (session.agent === 'codex') return codexChat.manageMcpServer(p.id, p.name, p.action);
+      return { ok: false, message: `${session.agent} does not expose structured MCP management.` };
     },
     'chat/queue-remove': (p: { id: string; messageId: number }) =>
       chatQueue.remove(p.id, p.messageId),

@@ -964,6 +964,7 @@ export class App {
     this.chatPanes.get(id)?.dispose();
     this.chatPanes.delete(id);
     this.terminalViews.delete(id);
+    if (this.renaming === id) this.renaming = null;
     this.sessions.delete(id);
     // Ending a session vacates whatever pane held it. Backfilling only makes
     // sense in a single-pane window: with a split, an empty pane is a drop
@@ -1286,9 +1287,23 @@ export class App {
 
   private renderSidebar(): void {
     const list = this.el.sidebarList;
+    this.el.sidebarCount.textContent = String(this.sessions.size);
+
+    // Session snapshots can arrive several times during a turn. Replacing the
+    // list would detach the focused rename field, which fires blur and commits
+    // a half-typed name. The rest of the app may repaint; the sidebar catches
+    // up as soon as this field commits or is cancelled.
+    const renameField = list.querySelector<HTMLInputElement>('.sb-rename');
+    if (
+      this.renaming !== null &&
+      this.sessions.has(this.renaming) &&
+      renameField?.dataset.session === this.renaming
+    ) {
+      return;
+    }
+
     list.replaceChildren();
     const visible = this.visibleSessions();
-    this.el.sidebarCount.textContent = String(this.sessions.size);
 
     if (this.sessions.size === 0) {
       const empty = div('sb-empty');
@@ -1941,13 +1956,14 @@ export class App {
   /**
    * The inline name field — wireframe C3.
    *
-   * Rendered as part of the row rather than layered over it, so a session
-   * update repainting the sidebar mid-edit cannot destroy what is being
-   * typed.
+   * Rendered as part of the row rather than layered over it. `renderSidebar`
+   * leaves that row in place while this field is live, so truth-plane session
+   * updates cannot destroy what is being typed or fire a synthetic blur.
    */
   private renameField(s: SessionSnapshot): HTMLInputElement {
     const input = document.createElement('input');
     input.className = 'sb-rename';
+    input.dataset.session = s.id;
     input.value = s.label;
     input.spellcheck = false;
     input.setAttribute('aria-label', `Rename ${s.label}`);

@@ -20,6 +20,7 @@ export interface PhoneDevice {
   sign(options: { text: string }): Promise<{ signature: string }>;
   scanQr(): Promise<{ text?: string; cancelled?: boolean }>;
   readClipboard(): Promise<{ text: string }>;
+  openUrl(options: { url: string }): Promise<void>;
 }
 const socket = registerPlugin<PinnedSocket>('PinnedSocket');
 const nsd = registerPlugin<NsdBrowser>('NsdBrowser');

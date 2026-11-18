@@ -10,10 +10,14 @@ import type {
   PermissionModeResult,
   SessionStatus,
   ChatAttachment,
-  McpRefreshResult,
+  McpServerAction,
+  McpServerActionResult,
+  McpServerList,
+  McpServerView,
 } from '../../shared/types';
 import { promptWithAttachments } from '../../shared/chat-attachments';
 import { readChatImage } from '../chat-attachments';
+import { clearMcpAuthentication } from './mcp-cli';
 
 /** See `Hosted.awaitingResumeSettle`. */
 const RESUME_SETTLE_MS = 2000;
@@ -122,6 +126,9 @@ export interface ChatStreamEvents {
 
 interface Hosted {
   child: ChildProcess;
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
   buf: string;
   /** Rejected writes after exit answer false instead of throwing. */
   alive: boolean;
@@ -217,6 +224,9 @@ export class ClaudeChatHost extends EventEmitter {
 
     const entry: Hosted = {
       child,
+      command: opts.command,
+      cwd: opts.cwd,
+      env: opts.env,
       buf: '',
       alive: true,
       pendingAsks: new Set(),
@@ -597,31 +607,66 @@ export class ClaudeChatHost extends EventEmitter {
     return reply.ok;
   }
 
-  /** Reconnect the MCP servers visible to this Claude process, then read back their state. */
-  async refreshMcpServers(id: string): Promise<McpRefreshResult> {
+  /** The MCP inventory visible to this exact Claude process and working folder. */
+  async listMcpServers(id: string): Promise<McpServerList> {
     const listed = await this.request(id, { subtype: 'mcp_status' });
-    if (!listed.ok) return { ok: false, message: listed.reason };
-    const servers = Array.isArray(listed.response.mcpServers)
+    if (!listed.ok) return { ok: false, reason: listed.reason, servers: [] };
+    const rows = Array.isArray(listed.response.mcpServers)
       ? listed.response.mcpServers as Array<Record<string, unknown>> : [];
-    if (!servers.length) {
-      return { ok: false, message: 'No MCP servers are configured for this Claude session’s folder.' };
+    return { ok: true, servers: rows.map(claudeMcpServer).filter((s): s is McpServerView => s !== null) };
+  }
+
+  /** One explicit MCP operation; listing never reconnects or changes credentials. */
+  async manageMcpServer(
+    id: string,
+    name: string,
+    action: McpServerAction,
+  ): Promise<McpServerActionResult> {
+    const entry = this.hosted.get(id);
+    if (!entry?.alive) return { ok: false, message: 'That Claude session is gone.' };
+    const listed = await this.listMcpServers(id);
+    const server = listed.ok ? listed.servers.find((row) => row.name === name) : null;
+    if (!server) return { ok: false, message: `Claude did not list an MCP server named ${name}.` };
+    if (action === 'reconnect' && !server.actions.reconnect) {
+      return { ok: false, message: `${name} cannot be reconnected in its current state.` };
     }
-    const failures: string[] = [];
-    for (const server of servers) {
-      if (typeof server.name !== 'string' || server.status === 'disabled' || server.status === 'pending') continue;
-      const result = await this.request(id, { subtype: 'mcp_reconnect', serverName: server.name });
-      if (!result.ok) failures.push(`${server.name}: ${result.reason}`);
+    if ((action === 'authenticate' || action === 'reauthenticate') && !server.actions.authenticate) {
+      return { ok: false, message: `${name} does not expose authentication through Claude.` };
     }
-    const refreshed = await this.request(id, { subtype: 'mcp_status' });
-    if (!refreshed.ok) return { ok: false, message: refreshed.reason };
-    const current = Array.isArray(refreshed.response.mcpServers)
-      ? refreshed.response.mcpServers as Array<Record<string, unknown>> : [];
-    const states = current.filter((server) => typeof server.name === 'string')
-      .map((server) => `${server.name}: ${typeof server.status === 'string' ? server.status : 'unknown'}${typeof server.error === 'string' ? ` (${server.error})` : ''}`);
-    return {
-      ok: failures.length === 0 && current.every((server) => server.status === 'connected' || server.status === 'disabled'),
-      message: [...states, ...failures].join('\n') || 'Claude did not report any MCP server states.',
-    };
+    if ((action === 'clear-authentication' || action === 'reauthenticate') && !server.actions.clearAuthentication) {
+      return { ok: false, message: `${name} does not expose credentials Claude can clear.` };
+    }
+
+    if (action === 'clear-authentication' || action === 'reauthenticate') {
+      const cleared = await clearMcpAuthentication(entry.command, entry.cwd, entry.env, name);
+      if (!cleared.ok) return cleared;
+      if (action === 'clear-authentication') {
+        const refreshed = await this.request(id, { subtype: 'mcp_reconnect', serverName: name });
+        return refreshed.ok
+          ? cleared
+          : { ok: false, message: `Credentials were cleared, but Claude could not refresh ${name}: ${refreshed.reason}` };
+      }
+    }
+    if (action === 'authenticate' || action === 'reauthenticate') {
+      const reply = await this.request(
+        id,
+        { subtype: 'mcp_authenticate', serverName: name },
+        5 * 60_000,
+      );
+      if (!reply.ok) return { ok: false, message: reply.reason };
+      const authorizationUrl = firstHttpUrl(reply.response.authorizationUrl, reply.response.authUrl, reply.response.url);
+      return {
+        ok: true,
+        message: authorizationUrl
+          ? `Continue authentication for ${name} in the browser.`
+          : `Authentication completed for ${name}.`,
+        ...(authorizationUrl ? { authorizationUrl } : {}),
+      };
+    }
+    const reply = await this.request(id, { subtype: 'mcp_reconnect', serverName: name });
+    return reply.ok
+      ? { ok: true, message: `Reconnected ${name}.` }
+      : { ok: false, message: reply.reason };
   }
 
   /**
@@ -913,6 +958,87 @@ export class ClaudeChatHost extends EventEmitter {
   ): void {
     this.emit('update', { id, ...update } satisfies ChatStreamEvents['update']);
   }
+}
+
+function firstHttpUrl(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString();
+    } catch {
+      // Not a browser URL.
+    }
+  }
+  return undefined;
+}
+
+function claudeMcpScope(scope: unknown, source: unknown): McpServerView['scope'] {
+  const value = wireText(scope) ?? wireText(source) ?? 'unknown';
+  switch (value) {
+    case 'project':
+      return { kind: 'project', label: 'Project (shared)', detail: 'Shared .mcp.json project configuration' };
+    case 'local':
+      return { kind: 'project', label: 'Project (local)', detail: 'Private configuration for this project' };
+    case 'user':
+      return { kind: 'user', label: 'User (global)', detail: 'Claude user configuration; available across projects' };
+    case 'claudeai':
+      return { kind: 'managed', label: 'Claude.ai', detail: 'Managed by the connected Claude.ai account' };
+    case 'plugin':
+      return { kind: 'plugin', label: 'Plugin', detail: 'Provided by a Claude plugin' };
+    default:
+      return { kind: 'unknown', label: value === 'unknown' ? 'Unknown scope' : value };
+  }
+}
+
+/** Keep only the safe, agent-neutral portion of Claude's `mcp_status` row. */
+function claudeMcpServer(row: Record<string, unknown>): McpServerView | null {
+  const name = wireText(row.name);
+  if (!name) return null;
+  const info = row.serverInfo && typeof row.serverInfo === 'object'
+    ? row.serverInfo as Record<string, unknown>
+    : {};
+  const config = row.config && typeof row.config === 'object'
+    ? row.config as Record<string, unknown>
+    : {};
+  const transport = wireText(row.transport) ?? wireText(config.type) ?? null;
+  const status = wireText(row.status) ?? 'unknown';
+  const tools = Array.isArray(row.tools)
+    ? row.tools.flatMap((tool) => {
+        const value = tool && typeof tool === 'object'
+          ? wireText((tool as Record<string, unknown>).name)
+          : undefined;
+        return value ? [value] : [];
+      })
+    : [];
+  const remote = Boolean(
+    transport && ['http', 'https', 'sse', 'ws', 'websocket'].includes(transport.toLowerCase()),
+  );
+  return {
+    name,
+    title: wireText(info.title) ?? null,
+    description: wireText(info.description) ?? null,
+    version: wireText(info.version) ?? null,
+    websiteUrl: firstHttpUrl(info.websiteUrl) ?? null,
+    status,
+    error: wireText(row.error) ?? null,
+    authStatus: wireText(row.authStatus) ?? (/auth/i.test(status) ? 'not logged in' : 'unknown'),
+    scope: claudeMcpScope(row.scope, row.source),
+    transport,
+    // `config` may also contain command, args and environment. Only an HTTP
+    // origin crosses this boundary.
+    endpoint: firstHttpUrl(config.url) ? new URL(firstHttpUrl(config.url) as string).origin : null,
+    tools,
+    resourceCount: Array.isArray(row.resources) ? row.resources.length : 0,
+    capabilities: row.serverCapabilities && typeof row.serverCapabilities === 'object'
+      ? Object.keys(row.serverCapabilities as Record<string, unknown>)
+      : [],
+    actions: {
+      reconnect: status !== 'disabled' && status !== 'pending',
+      authenticate: remote || /auth/i.test(status),
+      clearAuthentication: remote,
+    },
+  };
 }
 
 /**

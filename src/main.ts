@@ -47,6 +47,7 @@ import type {
   PermissionRule,
   ManagedAgent,
   MenuState,
+  McpServerAction,
   DiscoveredSession,
   ResumableSession,
   SessionSnapshot,
@@ -754,7 +755,11 @@ ipcMain.handle(
 ipcMain.handle('chat:queue-remove', (_e, p: { id: string; messageId: number }) =>
   daemon.request('chat/queue-remove', p),
 );
-ipcMain.handle('mcp:refresh', (_e, id: string) => daemon.request('mcp/refresh', id));
+ipcMain.handle('mcp:list', (_e, id: string) => daemon.request('mcp/list', id));
+ipcMain.handle(
+  'mcp:action',
+  (_e, p: { id: string; name: string; action: McpServerAction }) => daemon.request('mcp/action', p),
+);
 ipcMain.handle('conversation:read', (_e, id: string, request?: ConversationReadRequest) =>
   daemon.request('conversation/read', { ...request, id }),
 );

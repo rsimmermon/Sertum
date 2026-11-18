@@ -18,7 +18,11 @@ never hosts a daemon, agents or sessions.
 
 A phone may start and end sessions, send messages and files, approve calls, and
 change a session's mode, model and thinking level, including Full Access. The owner
-chose each of these with the cost stated. It may not touch terminals, settings,
+chose each of these with the cost stated. It may also open the same session-scoped
+MCP manager as the desktop: inventory and safe details are read-only, while
+reconnect, authenticate, reauthenticate and clear-authentication remain explicit
+buttons. OAuth URLs open through Android's `ACTION_VIEW`, outside the WebView.
+It may not touch terminals, settings,
 stored rules, discovery, or Codex repairs, or read diagnostics. "Always allow" on
 the approval bar does write a rule, and is allowed because Full Access already
 reaches further. Snapshots leave without `command` and `args`, which on a Claude
@@ -29,7 +33,7 @@ only what it uploaded in this run of the app.
 
 ### What was verified, 2026-11-06
 
-`scripts/test-gateway.ts` runs 27 checks over a real socket with the fabric replaced
+`scripts/test-gateway.ts` runs 30 checks over a real socket with the fabric replaced
 by a recorder, so "never reached the fabric" is something a check can see.
 `scripts/smoke-gateway.ts` runs pairing, an upload, a real approval and ending a
 session against real Claude and Codex, inside Electron's runtime.

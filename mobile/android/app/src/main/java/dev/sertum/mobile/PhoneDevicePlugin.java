@@ -3,6 +3,8 @@ package dev.sertum.mobile;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -136,5 +138,31 @@ public class PhoneDevicePlugin extends Plugin {
         CharSequence text = clip == null || clip.getItemCount() == 0 ? null : clip.getItemAt(0).coerceToText(getContext());
         result.put("text", text == null ? "" : text.toString());
         call.resolve(result);
+    }
+
+    /** Open OAuth and documentation links outside the WebView. */
+    @PluginMethod
+    public void openUrl(PluginCall call) {
+        String value = call.getString("url");
+        Uri url;
+        try {
+            url = Uri.parse(value == null ? "" : value);
+        } catch (Exception e) {
+            call.reject("That URL is not valid.");
+            return;
+        }
+        String scheme = url.getScheme();
+        if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) {
+            call.reject("Only web URLs can be opened.");
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, url);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("No browser could open that URL.");
+        }
     }
 }

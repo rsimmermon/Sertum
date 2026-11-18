@@ -25,6 +25,22 @@ async function main() {
           id, allowed: !this.deniedProfiles.has(id),
         })),
       };
+      if (method === 'config/read') return {
+        layers: [{
+          name: { type: 'project', dotCodexFolder: 'C:/a/.codex' },
+          config: { mcp_servers: { docs: { url: 'https://example.test/private?token=nope' } } },
+        }],
+      };
+      if (method === 'mcpServerStatus/list') return {
+        data: [{
+          name: 'docs', runtimeStatus: 'authenticationRequired', authStatus: 'notLoggedIn',
+          httpOrigin: 'https://example.test', pluginId: null,
+          serverInfo: { name: 'docs', title: 'Docs', version: '1.2.3', description: 'Reference' },
+          tools: { search: {} }, resources: [{}], resourceTemplates: [{}],
+          serverCapabilities: { tools: {}, resources: {} }, toolsError: null,
+        }],
+        nextCursor: null,
+      };
       if (method === 'thread/settings/update') {
         const profile = String(params.permissions);
         const sandboxPolicy = {
@@ -52,6 +68,16 @@ async function main() {
   const a = await host.start('a', 'C:/a');
   const b = await host.start('b', 'C:/b');
   assert.equal(a.mode, 'codex-ask');
+  const mcp = await host.listMcpServers('a');
+  assert(mcp.ok);
+  assert.deepEqual(mcp.servers[0], {
+    name: 'docs', title: 'Docs', description: 'Reference', version: '1.2.3', websiteUrl: null,
+    status: 'authenticationRequired', error: null, authStatus: 'notLoggedIn',
+    scope: { kind: 'project', label: 'Project', detail: 'C:/a/.codex' },
+    transport: 'HTTP', endpoint: 'https://example.test', tools: ['search'], resourceCount: 2,
+    capabilities: ['tools', 'resources'],
+    actions: { reconnect: true, authenticate: true, clearAuthentication: true },
+  });
   server.emit('notification', {
     method: 'thread/started',
     params: {
@@ -147,6 +173,6 @@ async function main() {
   assert(!sessionCapability({ ...session, transport: 'pty' }, caps, 'permission-mode').ok);
   assert(!sessionCapability({ ...session, exitCode: 0 }, caps, 'permission-mode').ok);
   assert(!sessionCapability({ ...session, origin: 'monitored' }, caps, 'permission-mode').ok);
-  console.log('PASS: permission presets/readback/policy limits, question IDs, approval scopes, cancellation, isolation, stale events, session capabilities.');
+  console.log('PASS: MCP inventory/provenance, permission presets/readback/policy limits, question IDs, approval scopes, cancellation, isolation, stale events, session capabilities.');
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

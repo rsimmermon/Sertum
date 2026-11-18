@@ -12,6 +12,7 @@ import {
 } from './binary-resolve';
 import { sessionEnv } from '../login-env';
 import { nvmTrustPromptUnder } from './nvm-firewall';
+import { clearMcpAuthentication } from './mcp-cli';
 
 const run = promisify(execFile);
 
@@ -130,6 +131,11 @@ export class CodexAppServer extends EventEmitter {
   get unavailableReason(): string {
     const why = this.lastError;
     return why ? `Codex app server is unavailable: ${why}` : 'Codex app server is unavailable.';
+  }
+
+  /** Structured Codex exposes OAuth login but not logout; its own CLI does. */
+  clearMcpAuthentication(cwd: string, name: string): Promise<{ ok: boolean; message: string }> {
+    return clearMcpAuthentication(this.binary, cwd, sessionEnv(), name);
   }
 
   /** Stops whatever is running and starts afresh; the UI's retry. */

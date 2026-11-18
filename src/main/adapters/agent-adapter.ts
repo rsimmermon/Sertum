@@ -312,6 +312,7 @@ class CodexAdapter implements AgentAdapter {
     // Codex CLI 0.153.4 from an app server that never saw it: turn/start
     // afterward answered with full context from before that process existed.
     'session-resume': { ok: true, requires: 'structured-conversation' },
+    'mcp-management': { ok: true, requires: 'structured-conversation' },
     // `model/list` answers for the account and `turn/start` takes a `model`
     // override "for this turn and subsequent turns" -- but only a thread this
     // app owns has a turn/start of ours to put it on, so a TUI-backed Codex
@@ -498,6 +499,7 @@ class ClaudeAdapter extends InertAgentAdapter {
       // transcript file and answer a follow-up turn with full prior context,
       // even from a brand-new process.
       'session-resume': { ok: true, requires: 'structured-conversation' },
+      'mcp-management': { ok: true, requires: 'structured-conversation' },
       // `list_models` and `set_model` are control requests on the session's
       // own stream, verified against Claude Code 2.1.266. A PTY-backed
       // session's stream belongs to the TUI, which keeps `/model` for itself.
@@ -663,6 +665,10 @@ class GrokAdapter extends InertAgentAdapter {
       'session-resume': {
         ok: false,
         reason: 'Grok has no way to resume a past session by id.',
+      },
+      'mcp-management': {
+        ok: false,
+        reason: 'Grok exposes MCP connections only inside its terminal UI.',
       },
       // The one capability here a terminal session can answer: Grok's
       // catalogue is a file its own CLI wrote, and `/model` is a command on
@@ -837,6 +843,10 @@ export function createAgentAdapters(deps: {
         'session-resume': {
           ok: false,
           reason: 'A shell has no prior agent conversation to resume.',
+        },
+        'mcp-management': {
+          ok: false,
+          reason: 'A shell has no agent MCP connections to manage.',
         },
         'model-select': {
           ok: false,

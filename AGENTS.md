@@ -163,6 +163,9 @@ below, or a file of its own in `docs/`, is described there rather than here:
       clipboard images spilled to durable temp files, bounded image previews
       and file placeholders in drafts and sent messages, native Claude/Codex
       image inputs, and explicit paths for ordinary files and PTY-backed agents
+- [x] **Session MCP manager** — `/mcp` opens live Claude/Codex inventory with
+      details, configuration provenance and explicit reconnect/authentication
+      controls on desktop and phone; PTY sessions retain the agent-native UI
 
 ## How status actually works
 
@@ -574,13 +577,17 @@ a transport.
 What a stream session gives up is what the TUI carried: slash commands, plan
 mode, Claude's own diff and todo rendering.
 
-`/mcp` is the one stream command Sertum handles itself: in an owned Claude
-session it reconnects the servers that process configured, and in an owned
-Codex session it asks the app server to reload MCP configuration. The composer
-shows the connection states returned by the agent. This never imports MCP
-settings from a different working folder; the session's `cwd` still determines
-which project configuration the agent reads. PTY-backed sessions keep their
-agent's native `/mcp` command.
+`/mcp` is the one stream command Sertum handles itself: it opens a session-scoped
+manager rather than sending a turn or blindly reconnecting every server. Claude
+and Codex declare `mcp-management`; the manager lists the servers that exact
+process/thread sees, their live state, safe details, authentication state and
+configuration provenance, and offers only the reconnect/authentication actions
+the agent exposes. Project, private-project, user/global, system/managed and
+plugin sources remain distinct. Opening and refreshing are read-only; reconnect,
+authenticate, reauthenticate and clear-authentication are explicit per-server
+actions. PTY-backed sessions keep their agent's native `/mcp` command. The phone
+uses the same manager through its paired PC's gateway, so a server is always
+managed in the context of the session and machine that owns it.
 
 The stream contract, Codex's owned-thread and approval rules, both resume
 mechanisms, and the two mechanisms tried and verified wrong before the
@@ -1500,12 +1507,14 @@ src/
   main/adapters/interactive-tools.ts  Cards read from a tool's own input, and how each answer gets back  [docs/approvals.md]
   main/adapters/claude-chat.ts   Headless Claude over stream-json (conversation sessions)  [docs/sessions.md]
   main/adapters/codex-chat.ts    Owned Codex threads on the private app server  [docs/sessions.md]
+  main/adapters/mcp-cli.ts       Agent-native credential clearing for MCP servers  [docs/sessions.md]
   main/adapters/window-focus.ts  Raise the OS window owning a session
   preload.ts                  contextBridge API surface
   shared/types.ts             Contracts shared across processes
   renderer/app.ts             Shell: tabs, sidebar, pane, status bar
   renderer/terminal-pane.ts   One xterm bound to one PTY  [docs/terminal.md]
   renderer/chat-pane.ts       A session as a conversation; composer uses its declared transport  [docs/conversation.md]
+  renderer/mcp-dialog.ts      Session-scoped MCP inventory and controls  [docs/sessions.md]
   renderer/message-text.ts    Message text to DOM: markdown or source, never an HTML string  [docs/conversation.md]
   renderer/pane-grid.ts       Split-pane geometry, gutters and readable-size limits
   renderer/layout-picker.ts   Single/Columns/Rows/Grid picker and split actions

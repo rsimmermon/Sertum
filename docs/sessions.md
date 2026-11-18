@@ -81,17 +81,39 @@ plan mode, Claude's own diff and todo rendering. This is now the deliberate
 Claude default; adapters without a verified structured transport retain their
 PTY instead of being forced through a fictional chat protocol.
 
-`/mcp` is handled at the composer for owned stream sessions. Claude's control
-channel provides `mcp_status` and `mcp_reconnect { serverName }`; Sertum first
-lists the servers visible to that process, reconnects each enabled server, then
-reads status again. The installed Claude Code 2.1.325 answered `mcp_status`
-before a first turn with a `mcpServers` array. Codex CLI 0.167.0's generated
-app-server schema provides `config/mcpServer/reload` and
-`mcpServerStatus/list { threadId }`, so Sertum reloads then reports status for
-the owning thread. `/mcp` is not sent as a user turn, and neither agent's
-transcript is parsed for connection state. A server needing authentication or
-project approval can still report that state; reconnect does not grant it.
-The session working directory remains the source of project configuration.
+`/mcp` is handled at the composer for owned stream sessions. It opens the MCP
+manager and is not sent as a user turn. Merely opening or refreshing the manager
+does not reconnect anything: the old implementation synchronously reconnected
+every server and left the composer saying “Reconnecting MCP servers…” until the
+last control request returned, which looked like a hung turn and made one broken
+server hold the whole command hostage.
+
+Claude's control channel provides `mcp_status`, `mcp_reconnect { serverName }`
+and `mcp_authenticate`. A live Claude Code 2.1.325 `mcp_status` probe before a
+first turn returned each server's name, state, transport, scope/source, safe
+server identity and tool catalogue. Its config also carries commands, arguments
+and potentially environment, so the shared result deliberately emits only an
+HTTP origin; process configuration never reaches the renderer or a phone.
+Claude's scopes are preserved as shared project, private project (`local`),
+user/global, Claude.ai-managed and plugin.
+
+Codex CLI 0.169.0's generated app-server schema provides
+`mcpServerStatus/list { threadId, detail }`, `mcpServer/oauth/login`,
+`config/mcpServer/reload`, and `config/read { cwd, includeLayers }`. The status
+row carries runtime and authentication state, safe HTTP origin, server identity,
+tools, resources and capabilities. `config/read` identifies system, user,
+project, managed, packaged and session layers, so provenance is derived from the
+same effective configuration that thread uses rather than by scanning likely
+files. Codex exposes reload as the connection boundary, not a per-server
+reconnect request, and the UI says so.
+
+Neither structured protocol exposes logout, though both installed CLIs expose
+`mcp logout <name>`. Clear authentication therefore runs that exact agent CLI in
+the session's cwd, accepts only a server name the live inventory just returned,
+then refreshes the live connection. Authentication URLs are restricted to
+HTTP(S) before the desktop or Android host opens them. PTY-backed sessions keep
+their agent's native `/mcp` command. The session working directory remains the
+source of project configuration.
 
 ## Owned Codex conversations
 

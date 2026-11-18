@@ -1,4 +1,4 @@
-import { hasStructuredTransport } from '../shared/session-capabilities';
+import { hasStructuredTransport, sessionCapability } from '../shared/session-capabilities';
 import type {
   AgentCapabilities,
   AgentKind,
@@ -38,6 +38,7 @@ import {
   permissionModeLabel,
 } from './permission-mode';
 import { appendMessageText } from './message-text';
+import { openMcpDialog } from './mcp-dialog';
 
 const api = window.sertum;
 
@@ -1018,17 +1019,18 @@ export class ChatPane {
     const attachments = [...this.attachments];
     if ((!text && !attachments.length) || this.input.disabled || this.submitting) return;
     if (text === '/mcp' && !attachments.length && hasStructuredTransport(this.session)) {
-      this.submitting = true;
-      this.say('Reconnecting MCP servers…');
-      try {
-        const result = await api.refreshMcpServers(this.session.id);
-        this.say(result.message, result.ok ? NOTE_FADE_MS : null);
-        if (result.ok && this.input.value.replace(/\s+$/, '') === text) this.input.value = '';
-      } catch (error) {
-        this.say(`Could not reconnect MCP servers: ${String(error)}`);
-      } finally {
-        this.submitting = false;
+      const available = sessionCapability(
+        this.session,
+        this.capabilities?.[this.session.agent],
+        'mcp-management',
+      );
+      if (!available.ok) {
+        this.say(available.reason);
+        return;
       }
+      if (this.input.value.replace(/\s+$/, '') === text) this.input.value = '';
+      this.paintAction();
+      openMcpDialog(this.session);
       return;
     }
     this.submitting = true;
